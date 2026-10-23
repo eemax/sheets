@@ -481,3 +481,100 @@ func InsertLines(f, home, target string, cols bool, at, n int) string {
 	}
 	return b.String()
 }
+
+// ExtendRanges moves the end of ranges on sheet target that end at row
+// from down to row to: a total's =SUM(B4:B9) becomes =SUM(B4:B12) when rows
+// are added right above it. home is the sheet holding the formula.
+func ExtendRanges(f, home, target string, from, to int) string {
+	return ExtendRangesIn(f, home, target, from, to, 1, grid.MaxCols)
+}
+
+// ExtendRangesIn is ExtendRanges for the ranges within columns c1..c2 only.
+func ExtendRangesIn(f, home, target string, from, to, c1, c2 int) string {
+	ps := tokenize(f)
+	changed := false
+	for i := 0; i+2 < len(ps); i++ {
+		a, sep, b := &ps[i], ps[i+1], &ps[i+2]
+		if !a.isRef || sep.isRef || sep.text != ":" || !b.isRef || a.kind != cellRef || b.kind != cellRef {
+			continue
+		}
+		sheet := home
+		if a.qualified {
+			sheet = a.sheet
+		}
+		if strings.EqualFold(sheet, target) && b.row == from && a.row <= from && min(a.col, b.col) >= c1 && max(a.col, b.col) <= c2 {
+			b.row = to
+			changed = true
+		}
+		i += 2
+	}
+	if !changed {
+		return f
+	}
+	var out strings.Builder
+	for _, p := range ps {
+		if p.isRef {
+			out.WriteString(p.render())
+		} else {
+			out.WriteString(p.text)
+		}
+	}
+	return out.String()
+}
+
+// Ref is a cell or range a formula refers to.
+type Ref struct {
+	Sheet string // "" for the formula's own sheet
+	Range grid.Range
+}
+
+// Refs lists the cells and ranges a formula refers to. Whole rows and
+// columns extend to the sheet limits.
+func Refs(f string) []Ref {
+	ps := tokenize(f)
+	var out []Ref
+	bounds := func(p part) grid.Range {
+		switch p.kind {
+		case colRef:
+			return grid.Range{R1: 1, C1: p.col, R2: grid.MaxRows, C2: p.col}
+		case rowRef:
+			return grid.Range{R1: p.row, C1: 1, R2: p.row, C2: grid.MaxCols}
+		}
+		return grid.Range{R1: p.row, C1: p.col, R2: p.row, C2: p.col}
+	}
+	for i := 0; i < len(ps); i++ {
+		p := ps[i]
+		if !p.isRef {
+			continue
+		}
+		r := Ref{Range: bounds(p)}
+		if p.qualified {
+			r.Sheet = p.sheet
+		}
+		if i+2 < len(ps) && !ps[i+1].isRef && ps[i+1].text == ":" && ps[i+2].isRef {
+			r.Range = r.Range.Union(bounds(ps[i+2]))
+			i += 2
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// Numbers lists the numeric constants written in a formula (not row
+// numbers of references or ranges like 3:5).
+func Numbers(f string) []float64 {
+	ts := lex(f)
+	var out []float64
+	for i, t := range ts {
+		if !t.word || t.call {
+			continue
+		}
+		if i > 0 && ts[i-1].text == ":" || i+1 < len(ts) && ts[i+1].text == ":" {
+			continue
+		}
+		if n, err := strconv.ParseFloat(t.text, 64); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}

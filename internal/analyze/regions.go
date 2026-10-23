@@ -13,10 +13,13 @@ import (
 // Region is a block of connected non-empty cells.
 type Region struct {
 	Range     grid.Range
-	TitleRows int        // leading rows holding a single title cell
+	TitleRows int // leading rows holding a single title cell
+	// GroupRow is a row of labels above the header that group its columns
+	// (Q1 over Units and Revenue); 0 when there is none.
+	GroupRow  int
 	HeaderRow int        // 0 when the region has no header
 	TotalRow  int        // 0 when the region has no total row
-	Body      grid.Range // data rows: excludes title, header and total rows
+	Body      grid.Range // data rows: excludes title, group, header and total rows
 	// IsTitle marks a lone text cell that captions the table just below it.
 	IsTitle bool
 }
@@ -175,19 +178,97 @@ func Classify(wb *grid.Workbook, s *grid.Sheet, b grid.Range) Region {
 		reg.TitleRows++
 	}
 	h := b.R1 + reg.TitleRows
-	if h < b.R2 && isHeader(wb, s, h, b) {
+	switch {
+	case h+1 < b.R2 && isGroupRow(wb, s, h, b) && isHeader(wb, s, h+1, b):
+		reg.GroupRow, reg.HeaderRow = h, h+1
+	case h < b.R2 && isHeader(wb, s, h, b):
 		reg.HeaderRow = h
 	}
 	first := h
 	if reg.HeaderRow > 0 {
-		first = h + 1
+		first = reg.HeaderRow + 1
 	}
 	reg.Body = grid.Range{R1: first, C1: b.C1, R2: b.R2, C2: b.C2}
-	if reg.Body.Rows() >= 2 && isTotal(s, b.R2, b) {
+	if reg.Body.Rows() >= 2 && (isTotal(s, b.R2, b) || excelTotals(s, b)) {
 		reg.TotalRow = b.R2
 		reg.Body.R2--
 	}
 	return reg
+}
+
+// isGroupRow reports whether row h groups the labels of the row below:
+// text labels (or years) only, with fewer distinct labels than the row
+// below has, because each spans several columns.
+func isGroupRow(wb *grid.Workbook, s *grid.Sheet, h int, b grid.Range) bool {
+	if b.Cols() < 2 {
+		return false
+	}
+	labels := map[string]bool{}
+	ok := true
+	s.Each(grid.Range{R1: h, C1: b.C1, R2: h, C2: b.C2}, func(_, _ int, c *grid.Cell) {
+		switch {
+		case c.Formula != "":
+			ok = false
+		case c.Kind == grid.Text && strings.TrimSpace(c.Text) != "":
+			labels[strings.ToLower(strings.TrimSpace(c.Text))] = true
+		case c.Kind == grid.Number && c.Num == float64(int(c.Num)) && c.Num >= 1900 && c.Num <= 2100:
+			labels[grid.FormatNumber(c.Num)] = true
+		default:
+			ok = false
+		}
+	})
+	return ok && len(labels) > 0 && len(labels) < filled(s, h+1, b)
+}
+
+// ColumnLabel names a column of a region by its header, prefixed with its
+// group when the region has a group row: "Q1 / Units".
+func ColumnLabel(wb *grid.Workbook, s *grid.Sheet, reg Region, col int) string {
+	if reg.HeaderRow == 0 {
+		return ""
+	}
+	label := Label(wb, s, reg.HeaderRow, col)
+	if reg.GroupRow == 0 {
+		return label
+	}
+	group := GroupLabel(wb, s, reg, col)
+	switch {
+	case group == "" || strings.EqualFold(group, label):
+		return label
+	case label == "":
+		return group
+	}
+	return group + " / " + label
+}
+
+// GroupLabel returns the group a column falls under: the label above it, the
+// label of a merged range covering it, or (when the row has no merges) the
+// nearest label to its left.
+func GroupLabel(wb *grid.Workbook, s *grid.Sheet, reg Region, col int) string {
+	g := reg.GroupRow
+	if g == 0 {
+		return ""
+	}
+	if l := Label(wb, s, g, col); l != "" {
+		return l
+	}
+	merged := false
+	for _, m := range s.Merges {
+		if m.R1 <= g && m.R2 >= g {
+			merged = true
+			if m.Contains(g, col) {
+				return Label(wb, s, m.R1, m.C1)
+			}
+		}
+	}
+	if merged {
+		return ""
+	}
+	for c := col - 1; c >= reg.Range.C1; c-- {
+		if l := Label(wb, s, g, c); l != "" {
+			return l
+		}
+	}
+	return ""
 }
 
 func filled(s *grid.Sheet, row int, b grid.Range) int {
@@ -261,6 +342,17 @@ func isHeader(wb *grid.Workbook, s *grid.Sheet, h int, b grid.Range) bool {
 		}
 	}
 	return true
+}
+
+// excelTotals reports whether b is an Excel table whose last row is its
+// totals row.
+func excelTotals(s *grid.Sheet, b grid.Range) bool {
+	for _, t := range s.Tables {
+		if t.Range == b && t.Totals > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func isTotal(s *grid.Sheet, row int, b grid.Range) bool {

@@ -83,10 +83,10 @@ The file and sheet are created when missing. An empty value clears a cell.`,
 				res.Cells = append(res.Cells, setCell{Ref: grid.FormatRef(sheet, *rg), Input: args[i+1], Cells: rg.Rows() * rg.Cols()})
 			}
 			res.Formulas = evaluateFormulas(ed, toEval, true)
-			res.Warnings = ed.Warnings()
 			if err := ed.Save(a.dryRun); err != nil {
 				return err
 			}
+			res.Warnings = ed.Warnings()
 			if a.json {
 				return a.printJSON(res)
 			}

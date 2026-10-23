@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/eemax/sheets/internal/analyze"
@@ -19,13 +20,17 @@ type infoResult struct {
 }
 
 type sheetInfo struct {
-	Name     string       `json:"name"`
-	Hidden   bool         `json:"hidden,omitempty"`
-	Used     string       `json:"used"`
-	Formulas int          `json:"formulas"`
-	Merged   int          `json:"merged_ranges,omitempty"`
-	Regions  []regionInfo `json:"regions"`
-	More     int          `json:"more_regions,omitempty"`
+	Name     string `json:"name"`
+	Hidden   bool   `json:"hidden,omitempty"`
+	Used     string `json:"used"`
+	Formulas int    `json:"formulas"`
+	Merged   int    `json:"merged_ranges,omitempty"`
+	// Hidden rows and columns within the used range, as "5:9" and "C:D".
+	HiddenRows []string     `json:"hidden_rows,omitempty"`
+	HiddenCols []string     `json:"hidden_cols,omitempty"`
+	Charts     []grid.Chart `json:"charts,omitempty"`
+	Regions    []regionInfo `json:"regions"`
+	More       int          `json:"more_regions,omitempty"`
 }
 
 type regionInfo struct {
@@ -34,6 +39,7 @@ type regionInfo struct {
 	Named   string   `json:"excel_table,omitempty"`
 	Title   string   `json:"title,omitempty"`
 	Header  int      `json:"header_row,omitempty"`
+	Group   int      `json:"group_row,omitempty"`
 	Rows    int      `json:"rows"`
 	Cols    int      `json:"cols"`
 	Total   bool     `json:"total_row,omitempty"`
@@ -83,6 +89,11 @@ func describeSheet(wb *grid.Workbook, s *grid.Sheet) sheetInfo {
 	}
 	si.Used = used.String()
 	si.Merged = len(s.Merges)
+	si.HiddenRows = hiddenRuns(s.HiddenRows, used.R1, used.R2, strconv.Itoa)
+	si.HiddenCols = hiddenRuns(s.HiddenCols, used.C1, used.C2, grid.ColName)
+	for _, c := range s.Charts {
+		si.Charts = append(si.Charts, c.Shown())
+	}
 	s.Each(used, func(_, _ int, c *grid.Cell) {
 		if c.Formula != "" {
 			si.Formulas++
@@ -115,6 +126,7 @@ func describeRegion(wb *grid.Workbook, s *grid.Sheet, reg analyze.Region) region
 	case reg.IsTable():
 		ri.Kind = "table"
 		ri.Header = reg.HeaderRow
+		ri.Group = reg.GroupRow
 		ri.Rows = reg.Body.Rows()
 		ri.Total = reg.TotalRow > 0
 		if reg.TitleRows > 0 {
@@ -123,7 +135,7 @@ func describeRegion(wb *grid.Workbook, s *grid.Sheet, reg analyze.Region) region
 			})
 		}
 		for col := reg.Range.C1; col <= reg.Range.C2; col++ {
-			label := analyze.Label(wb, s, reg.HeaderRow, col)
+			label := analyze.ColumnLabel(wb, s, reg, col)
 			if label == "" {
 				label = "(" + grid.ColName(col) + ")"
 			}
@@ -154,6 +166,15 @@ func (a *app) printInfo(res infoResult) {
 		if s.Merged > 0 {
 			meta = append(meta, plural(s.Merged, "merged range"))
 		}
+		if len(s.Charts) > 0 {
+			meta = append(meta, plural(len(s.Charts), "chart"))
+		}
+		if len(s.HiddenRows) > 0 {
+			meta = append(meta, "hidden rows "+listRuns(s.HiddenRows))
+		}
+		if len(s.HiddenCols) > 0 {
+			meta = append(meta, "hidden columns "+listRuns(s.HiddenCols))
+		}
 		a.printf("%s  %s\n", s.Name, strings.Join(meta, " · "))
 		for _, r := range s.Regions {
 			a.printf("  %s\n", regionLine(r))
@@ -163,6 +184,9 @@ func (a *app) printInfo(res infoResult) {
 		}
 		if s.More > 0 {
 			a.printf("  … %s\n", plural(s.More, "more region"))
+		}
+		for _, c := range s.Charts {
+			a.printf("  %s  %s\n", c.Anchor, chartLine(c))
 		}
 		if best == "" && !s.Hidden && s.Used != "" {
 			best = s.Name
@@ -223,4 +247,29 @@ func humanBytes(n int64) string {
 		return fmt.Sprintf("%d KB", (n+512)>>10)
 	}
 	return fmt.Sprintf("%d B", n)
+}
+
+// hiddenRuns names the hidden runs that fall within lo..hi.
+func hiddenRuns(runs []grid.Run, lo, hi int, name func(int) string) []string {
+	var out []string
+	for _, r := range runs {
+		from, to := max(r.From, lo), min(r.To, hi)
+		if from > to {
+			continue
+		}
+		if from == to {
+			out = append(out, name(from))
+		} else {
+			out = append(out, name(from)+":"+name(to))
+		}
+	}
+	return out
+}
+
+// listRuns shows the first few runs.
+func listRuns(runs []string) string {
+	if len(runs) > 4 {
+		return strings.Join(runs[:4], ", ") + fmt.Sprintf(" and %d more", len(runs)-4)
+	}
+	return strings.Join(runs, ", ")
 }

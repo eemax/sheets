@@ -2,13 +2,13 @@ package xlsx
 
 import (
 	"fmt"
-
-	"github.com/xuri/excelize/v2"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/eemax/sheets/internal/formula"
 	"github.com/eemax/sheets/internal/grid"
+	"github.com/xuri/excelize/v2"
 )
 
 // Structural edits. excelize shifts formulas (on every sheet), names,
@@ -43,6 +43,9 @@ func (e *Editor) InsertRows(sheet string, at, n int) error {
 
 // DeleteRows deletes rows from..to (inclusive).
 func (e *Editor) DeleteRows(sheet string, from, to int) error {
+	if err := e.checkTableRows(sheet, from, to); err != nil {
+		return err
+	}
 	if err := e.deleteLines(sheet, false, from, to); err != nil {
 		return err
 	}
@@ -62,6 +65,9 @@ func (e *Editor) DeleteRows(sheet string, from, to int) error {
 
 // InsertCols inserts n empty columns before column at.
 func (e *Editor) InsertCols(sheet string, at, n int) error {
+	if err := e.checkTableCols(sheet, at, at, true); err != nil {
+		return err
+	}
 	err := e.relines(sheet, true,
 		func(f, home string) string { return formula.InsertLines(f, home, sheet, true, at, n) },
 		func(r, c int) (int, int, bool) {
@@ -88,6 +94,9 @@ func (e *Editor) InsertCols(sheet string, at, n int) error {
 
 // DeleteCols deletes columns from..to (inclusive).
 func (e *Editor) DeleteCols(sheet string, from, to int) error {
+	if err := e.checkTableCols(sheet, from, to, false); err != nil {
+		return err
+	}
 	if err := e.deleteLines(sheet, true, from, to); err != nil {
 		return err
 	}
@@ -197,6 +206,8 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 	if err := op(); err != nil {
 		return err
 	}
+	// Chart ranges are always sheet-qualified.
+	e.patches.rangeRewrites = append(e.patches.rangeRewrites, func(f string) string { return rewrite(f, "") })
 	for _, n := range names {
 		n.RefersTo = rewrite(n.RefersTo, "")
 		if err := e.f.SetDefinedName(&n); err != nil {
@@ -338,8 +349,25 @@ func (e *Editor) RenameSheet(from, to string) error {
 	}
 	e.patches.rename(from, to)
 	e.patches.sheetEdits = append(e.patches.sheetEdits, sheetEdit{from: from, to: to})
+	e.patches.rangeRewrites = append(e.patches.rangeRewrites, func(f string) string { return formula.RenameSheet(f, from, to) })
 	e.renameState(from, to)
+	e.rewriteSnapshot(func(f string) string { return formula.RenameSheet(f, from, to) })
 	return nil
+}
+
+// rewriteSnapshot applies a change of sheet references to the formulas
+// recorded at open, so later edits in the session see current names.
+func (e *Editor) rewriteSnapshot(fn func(string) string) {
+	for _, s := range e.wb.Sheets {
+		s.Each(s.Used(), func(_, _ int, c *grid.Cell) {
+			if c.Formula != "" {
+				c.Formula = fn(c.Formula)
+			}
+		})
+	}
+	for i, n := range e.wb.Names {
+		e.wb.Names[i].Ref = fn(n.Ref)
+	}
 }
 
 func (e *Editor) renameState(from, to string) {
@@ -358,19 +386,38 @@ func (e *Editor) renameState(from, to string) {
 
 // References lists the formula cells on other sheets that refer to sheet.
 func (e *Editor) References(sheet string) []string {
+	// Formulas reach a sheet by its name, or by the names of its Excel
+	// tables (Sales[Units]).
+	var tables []*regexp.Regexp
+	if s := e.wb.Sheet(sheet); s != nil {
+		for _, t := range s.Tables {
+			tables = append(tables, regexp.MustCompile(`(?i)(^|[^\w.])`+regexp.QuoteMeta(t.Name)+`($|[^\w.(])`))
+		}
+	}
+	refers := func(f string) bool {
+		if formula.RefersToSheet(f, sheet) {
+			return true
+		}
+		for _, re := range tables {
+			if re.MatchString(f) {
+				return true
+			}
+		}
+		return false
+	}
 	var refs []string
 	for _, s := range e.wb.Sheets {
 		if strings.EqualFold(s.Name, sheet) {
 			continue
 		}
 		s.Each(s.Used(), func(r, c int, cell *grid.Cell) {
-			if cell.Formula != "" && formula.RefersToSheet(cell.Formula, sheet) {
+			if cell.Formula != "" && refers(cell.Formula) {
 				refs = append(refs, grid.FormatRef(s.Name, grid.Range{R1: r, C1: c, R2: r, C2: c}))
 			}
 		})
 	}
 	for _, n := range e.wb.Names {
-		if formula.RefersToSheet(n.Ref, sheet) {
+		if refers(n.Ref) {
 			refs = append(refs, "name "+n.Name)
 		}
 	}
@@ -391,6 +438,8 @@ func (e *Editor) DeleteSheet(name string) error {
 		return err
 	}
 	e.patches.sheetEdits = append(e.patches.sheetEdits, sheetEdit{from: name})
+	e.patches.rangeRewrites = append(e.patches.rangeRewrites, func(f string) string { return formula.DropSheet(f, name) })
+	e.rewriteSnapshot(func(f string) string { return formula.DropSheet(f, name) })
 	for i, s := range e.wb.Sheets {
 		if s.Name == name {
 			e.wb.Sheets = append(e.wb.Sheets[:i], e.wb.Sheets[i+1:]...)

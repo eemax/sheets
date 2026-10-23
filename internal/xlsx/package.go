@@ -25,13 +25,31 @@ type patches struct {
 	dynamic    map[string]map[string]bool // cells to mark as dynamic arrays
 	plain      map[string]map[string]bool // cells to unmark
 	sheetEdits []sheetEdit                // renamed and deleted sheets
+	// rangeRewrites update chart and table ranges for moved rows and
+	// columns, renamed sheets, and rows appended to a table, in order.
+	rangeRewrites []func(string) string
+	// tables are the Excel tables of the file as opened; tableXML their
+	// parts as saved, by lower-cased part name (see fixTables).
+	tables   []tableSource
+	tableXML map[string][]byte
+	// columnRenames are table columns renamed after their headers, which
+	// the formulas naming them follow.
+	columnRenames []*columnRename
+	// newCharts are chart parts sheets created, which get the house style
+	// excelize cannot set.
+	newCharts map[string]chartFix
+}
+
+// chartFix is what a new chart needs beyond what excelize writes.
+type chartFix struct {
+	valueAxisAtEnd bool // the value axis crosses at the last category
 }
 
 // sheetEdit is a renamed sheet, or a deleted one when to is empty.
 type sheetEdit struct{ from, to string }
 
 func newPatches() *patches {
-	return &patches{plainCols: map[string]bool{}, noFilter: map[string]bool{}, dynamic: map[string]map[string]bool{}, plain: map[string]map[string]bool{}}
+	return &patches{plainCols: map[string]bool{}, noFilter: map[string]bool{}, dynamic: map[string]map[string]bool{}, plain: map[string]map[string]bool{}, newCharts: map[string]chartFix{}}
 }
 
 // markCell records whether a cell holds a dynamic array formula.
@@ -154,14 +172,41 @@ func serialize(f *excelize.File, pt *patches) ([]byte, error) {
 			list[i].data = applySheetEdits(zp.name, zp.data, pt.sheetEdits)
 		}
 	}
+	for i, zp := range list {
+		if !strings.HasPrefix(zp.name, "xl/charts/chart") || !strings.HasSuffix(zp.name, ".xml") {
+			continue
+		}
+		if len(pt.rangeRewrites) > 0 {
+			list[i].data = rewriteFormulas(list[i].data, func(f string) string {
+				for _, fn := range pt.rangeRewrites {
+					f = fn(f)
+				}
+				return f
+			})
+		}
+		if fix, ok := pt.newCharts[zp.name]; ok {
+			list[i].data = surfaceGaps(list[i].data)
+			if fix.valueAxisAtEnd {
+				list[i].data = valueAxisAt(list[i].data, "max")
+			}
+		}
+	}
 
 	for i, zp := range list {
+		if b, ok := pt.tableXML[strings.ToLower(zp.name)]; ok {
+			list[i].data = b
+		}
 		if strings.HasPrefix(zp.name, "xl/drawings/") && strings.HasSuffix(zp.name, ".xml") {
 			list[i].data = declareNamespaces(zp.data)
 		}
 		if zp.name == "xl/workbook.xml" || zp.name == wbPath {
 			// Left behind when the last defined name is deleted.
 			list[i].data = bytes.Replace(zp.data, []byte("<definedNames></definedNames>"), nil, 1)
+			if len(pt.columnRenames) > 0 {
+				list[i].data = rewriteFormulas(list[i].data, func(f string) string {
+					return pt.renameColumns(f, func(*columnRename) bool { return false })
+				})
+			}
 		}
 		sheet, ok := partOf[zp.name]
 		if !ok {
@@ -180,6 +225,9 @@ func serialize(f *excelize.File, pt *patches) ([]byte, error) {
 		}
 		if dyn, plain := pt.dynamic[sheet], pt.plain[sheet]; len(dyn)+len(plain) > 0 {
 			b = patchCells(b, dyn, plain, cm)
+		}
+		if len(pt.columnRenames) > 0 {
+			b = renameColumnsIn(b, sheet, pt)
 		}
 		list[i].data = b
 	}
@@ -369,11 +417,12 @@ var (
 // cell formulas, conditional formats and validations in worksheets, chart
 // series, pivot sources and (for deleted sheets) names.
 func applySheetEdits(name string, b []byte, edits []sheetEdit) []byte {
+	// Charts are left to rangeRewrites, which hold renames and deletions
+	// in order with the other changes to chart ranges.
 	isSheet := strings.HasPrefix(name, "xl/worksheets/") && strings.HasSuffix(name, ".xml")
-	isChart := strings.HasPrefix(name, "xl/charts/chart") && strings.HasSuffix(name, ".xml")
 	isPivot := strings.HasPrefix(name, "xl/pivotCache/") && strings.HasSuffix(name, ".xml")
 	isBook := name == "xl/workbook.xml"
-	if !isSheet && !isChart && !isPivot && !isBook {
+	if !isSheet && !isPivot && !isBook {
 		return b
 	}
 	transform := func(f string) string {
@@ -386,17 +435,7 @@ func applySheetEdits(name string, b []byte, edits []sheetEdit) []byte {
 		}
 		return f
 	}
-	b = formulaText.ReplaceAllFunc(b, func(m []byte) []byte {
-		g := formulaText.FindSubmatch(m)
-		text := html.UnescapeString(string(g[2]))
-		out := transform(text)
-		if out == text {
-			return m
-		}
-		var esc bytes.Buffer
-		xml.EscapeText(&esc, []byte(out))
-		return append(append(append([]byte{}, g[1]...), esc.Bytes()...), g[3]...)
-	})
+	b = rewriteFormulas(b, transform)
 	if isPivot {
 		b = sourceSheet.ReplaceAllFunc(b, func(m []byte) []byte {
 			g := sourceSheet.FindSubmatch(m)
@@ -439,8 +478,24 @@ var (
 // drops declarations Excel puts on inner elements (xmlns:c on c:chart),
 // which leaves a file Excel has to repair.
 func declareNamespaces(b []byte) []byte {
+	// Only declarations on the root element cover the whole part; one on an
+	// inner element (as excelize writes for the charts it adds) covers just
+	// that element.
+	start := 0
+	if bytes.HasPrefix(b, []byte("<?xml")) {
+		start = bytes.Index(b, []byte("?>")) + 2
+	}
+	loc := rootTag.FindIndex(b[start:])
+	if loc == nil {
+		return b
+	}
+	at := start + loc[1]
+	end := bytes.IndexByte(b[at:], '>')
+	if end < 0 {
+		return b
+	}
 	declared := map[string]bool{"xml": true, "xmlns": true}
-	for _, m := range declaredPrefix.FindAllSubmatch(b, -1) {
+	for _, m := range declaredPrefix.FindAllSubmatch(b[at:at+end], -1) {
 		declared[string(m[1])] = true
 	}
 	var add []string
@@ -462,31 +517,41 @@ func declareNamespaces(b []byte) []byte {
 		return b
 	}
 	sort.Strings(add)
-	// Insert after the root element's name, past any XML declaration.
-	start := 0
-	if bytes.HasPrefix(b, []byte("<?xml")) {
-		start = bytes.Index(b, []byte("?>")) + 2
-	}
-	loc := rootTag.FindIndex(b[start:])
-	if loc == nil {
-		return b
-	}
-	at := start + loc[1]
 	return append(b[:at:at], append([]byte(strings.Join(add, "")), b[at:]...)...)
 }
 
-func hasCharts(pkgData []byte) bool {
-	zr, err := zip.NewReader(bytes.NewReader(pkgData), int64(len(pkgData)))
-	if err != nil {
-		return false
-	}
-	for _, f := range zr.File {
-		if strings.HasPrefix(f.Name, "xl/charts/chart") {
-			return true
+// rewriteFormulas applies fn to the text of formula-bearing elements.
+func rewriteFormulas(b []byte, fn func(string) string) []byte {
+	return formulaText.ReplaceAllFunc(b, func(m []byte) []byte {
+		g := formulaText.FindSubmatch(m)
+		text := html.UnescapeString(string(g[2]))
+		out := fn(text)
+		if out == text {
+			return m
 		}
-	}
-	return false
+		var esc bytes.Buffer
+		xml.EscapeText(&esc, []byte(out))
+		return append(append(append([]byte{}, g[1]...), esc.Bytes()...), g[3]...)
+	})
 }
+
+// surfaceGaps outlines fill-only shapes (bars, stacked segments, areas,
+// pie slices) in the surface colour: a 2px gap that separates touching
+// marks without drawing a border around them. Lines and markers, whose
+// shape properties end with a line, are left alone.
+func surfaceGaps(b []byte) []byte {
+	const gap = `</a:solidFill><a:ln w="19050"><a:solidFill><a:srgbClr val="FFFFFF"></a:srgbClr></a:solidFill></a:ln></spPr>`
+	return bytes.ReplaceAll(b, []byte(`</a:solidFill></spPr>`), []byte(gap))
+}
+
+// valueAxisAt sets where the value axis crosses the category axis.
+func valueAxisAt(b []byte, at string) []byte {
+	return valAxis.ReplaceAllFunc(b, func(m []byte) []byte {
+		return bytes.Replace(m, []byte(`<crosses val="autoZero">`), []byte(`<crosses val="`+at+`">`), 1)
+	})
+}
+
+var valAxis = regexp.MustCompile(`(?s)<valAx>.*?</valAx>`)
 
 // stripStyles resets the style of every cell and row the reader saw
 // styled. Column styles are dropped at save time (see serialize).

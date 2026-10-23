@@ -22,9 +22,11 @@ type peekResult struct {
 
 type peekTable struct {
 	regionInfo
-	TotalRow int          `json:"total_row_number,omitempty"`
-	Profile  []peekColumn `json:"profile"`
-	Sample   []readRow    `json:"sample"`
+	TotalRow   int          `json:"total_row_number,omitempty"`
+	HiddenRows []string     `json:"hidden_rows,omitempty"`
+	HiddenCols []string     `json:"hidden_cols,omitempty"`
+	Profile    []peekColumn `json:"profile"`
+	Sample     []readRow    `json:"sample"`
 }
 
 type peekColumn struct {
@@ -106,6 +108,8 @@ written with {r} for the current row (D{r}-E{r}). A few sample rows follow.`,
 
 func profileTable(wb *grid.Workbook, s *grid.Sheet, reg analyze.Region, sample int) peekTable {
 	pt := peekTable{regionInfo: describeRegion(wb, s, reg), TotalRow: reg.TotalRow}
+	pt.HiddenRows = hiddenRuns(s.HiddenRows, reg.Range.R1, reg.Range.R2, strconv.Itoa)
+	pt.HiddenCols = hiddenRuns(s.HiddenCols, reg.Range.C1, reg.Range.C2, grid.ColName)
 	if pt.Kind == "cell" {
 		pt.Kind = "block"
 	}
@@ -244,7 +248,10 @@ func (a *app) printPeek(file string, wb *grid.Workbook, s *grid.Sheet, res peekR
 		if t.Title != "" {
 			head[1] += fmt.Sprintf(" %q", t.Title)
 		}
-		if t.Header > 0 {
+		switch {
+		case t.Group > 0:
+			head = append(head, fmt.Sprintf("header rows %d-%d", t.Group, t.Header))
+		case t.Header > 0:
 			head = append(head, fmt.Sprintf("header row %d", t.Header))
 		}
 		rows := plural(t.Rows, "row")
@@ -252,6 +259,12 @@ func (a *app) printPeek(file string, wb *grid.Workbook, s *grid.Sheet, res peekR
 			rows += fmt.Sprintf(" + total row %d", t.TotalRow)
 		}
 		head = append(head, rows)
+		if len(t.HiddenRows) > 0 {
+			head = append(head, "hidden rows "+listRuns(t.HiddenRows))
+		}
+		if len(t.HiddenCols) > 0 {
+			head = append(head, "hidden columns "+listRuns(t.HiddenCols))
+		}
 		a.printf("%s\n", strings.Join(head, " · "))
 
 		tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
@@ -268,7 +281,10 @@ func (a *app) printPeek(file string, wb *grid.Workbook, s *grid.Sheet, res peekR
 		if len(t.Sample) > 0 {
 			rg, _ := grid.ParseRange(t.Range)
 			first := t.Sample[0].Row
-			if t.Header > 0 {
+			switch {
+			case t.Group > 0:
+				first = t.Group
+			case t.Header > 0:
 				first = t.Header
 			}
 			sr := grid.Range{R1: first, C1: rg.C1, R2: t.Sample[len(t.Sample)-1].Row, C2: rg.C2}

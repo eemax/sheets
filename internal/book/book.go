@@ -38,6 +38,12 @@ type Editor interface {
 	// SheetList is the current sheet order, hidden sheets marked.
 	SheetList() []string
 
+	AddChart(spec ChartSpec) error
+	DeleteChart(sheet, cell string) error
+	// ExtendTable grows the charts and Excel table of the table whose data
+	// is body by n rows written right below it.
+	ExtendTable(sheet string, body grid.Range, n int)
+
 	// Save writes the file; with dryRun it only works out the outcome.
 	Save(dryRun bool) error
 	Close() error
@@ -46,6 +52,8 @@ type Editor interface {
 }
 
 type (
+	ChartSpec     = xlsx.ChartSpec
+	SeriesSpec    = xlsx.SeriesSpec
 	FormatOptions = xlsx.FormatOptions
 	Override      = xlsx.Override
 	FormatResult  = xlsx.FormatResult
@@ -65,6 +73,20 @@ func Open(path string) (*grid.Workbook, error) {
 		return nil, err
 	}
 	return xlsx.Read(path)
+}
+
+// OpenBytes reads a workbook held in memory; name gives its format.
+func OpenBytes(name string, data []byte) (*grid.Workbook, error) {
+	if _, err := format(name); err != nil {
+		return nil, err
+	}
+	wb, err := xlsx.ReadBytes(data)
+	if err != nil {
+		return nil, err
+	}
+	wb.Path = name
+	wb.Size = int64(len(data))
+	return wb, nil
 }
 
 // Edit opens a workbook for changes, creating it when missing and create is

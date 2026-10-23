@@ -3,7 +3,10 @@
 // displays data works on this model only.
 package grid
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // Kind is the type of a cell's value.
 type Kind uint8
@@ -52,14 +55,92 @@ type Sheet struct {
 	// Tables are named tables defined in the file (Excel "Format as
 	// Table"), which carry their own style and filter.
 	Tables []NamedTable
+	// Charts on the sheet.
+	Charts []Chart
+	// HiddenRows and HiddenCols are the rows and columns hidden in the
+	// file (filtered out, or hidden by hand), as sorted runs.
+	HiddenRows, HiddenCols []Run
+	// Filter is the range of the sheet's filter, whose first row shows
+	// the filter buttons; zero when there is none.
+	Filter Range
 	rows   [][]Cell
 	maxCol int
 }
 
+// Run is a run of row or column numbers, From to To inclusive.
+type Run struct{ From, To int }
+
+// RowHidden reports whether row r is hidden.
+func (s *Sheet) RowHidden(r int) bool { return inRuns(s.HiddenRows, r) }
+
+// ColHidden reports whether column c is hidden.
+func (s *Sheet) ColHidden(c int) bool { return inRuns(s.HiddenCols, c) }
+
+func inRuns(runs []Run, n int) bool {
+	i := sort.Search(len(runs), func(i int) bool { return runs[i].To >= n })
+	return i < len(runs) && runs[i].From <= n
+}
+
+// AddRun adds n..m to runs read in order, joining it to the last run when
+// they touch.
+func AddRun(runs []Run, n, m int) []Run {
+	if len(runs) > 0 && runs[len(runs)-1].To >= n-1 && runs[len(runs)-1].From <= n {
+		runs[len(runs)-1].To = max(runs[len(runs)-1].To, m)
+		return runs
+	}
+	return append(runs, Run{n, m})
+}
+
+// Chart is a chart placed on a sheet.
+type Chart struct {
+	Anchor string        `json:"anchor"` // top-left cell
+	Type   string        `json:"type"`   // column, bar, line, area, pie, scatter, ...; "stacked column"
+	Title  string        `json:"title,omitempty"`
+	Series []ChartSeries `json:"series"`
+
+	// For drawing it.
+	To          string `json:"-"` // bottom-right cell, when anchored to two cells
+	Width       int    `json:"-"` // pixels, when anchored by size
+	Height      int    `json:"-"`
+	Legend      string `json:"-"` // legend position (t, b, l, r, tr), "" for none
+	ValueFormat string `json:"-"` // number format of the value axis
+	Reversed    bool   `json:"-"` // categories run from the far end (maxMin)
+	CrossesMax  bool   `json:"-"` // the value axis crosses at the last category
+}
+
+// ChartSeries is the data of one series, as references (Sheet!$B$2:$B$9).
+type ChartSeries struct {
+	Name       string `json:"name,omitempty"`
+	Categories string `json:"categories,omitempty"`
+	Values     string `json:"values"`
+
+	Color       string   `json:"-"` // hex RGB, "" when themed
+	PointColors []string `json:"-"` // per data point (pie slices)
+	Kind        string   `json:"-"` // plot type of this series (in combined charts)
+	// Outline marks a line drawn along the edge of an area series of the
+	// same data: part of how the area looks, not data of its own.
+	Outline bool `json:"-"`
+}
+
+// Shown returns the chart as described to a reader: without the outline
+// series, which only draw an area's edge.
+func (c Chart) Shown() Chart {
+	var series []ChartSeries
+	for _, s := range c.Series {
+		if !s.Outline {
+			series = append(series, s)
+		}
+	}
+	c.Series = series
+	return c
+}
+
 // NamedTable is a table object stored in the file.
 type NamedTable struct {
-	Name  string
-	Range Range
+	Name   string
+	Range  Range
+	Totals int  // totals rows at the bottom of Range
+	Filter bool // its header row shows filter buttons
 }
 
 // TableAt returns the named table overlapping r, if any.

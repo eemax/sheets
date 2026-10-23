@@ -249,7 +249,7 @@ unless --force (those references then become #REF!, as in Excel).`,
 					if len(refs) > 10 {
 						list += fmt.Sprintf(", … %d more", len(refs)-10)
 					}
-					return fmt.Errorf("%s is still referenced by %s: %s; fix those first or pass --force (they become #REF!)", grid.QuoteSheet(name), plural(len(refs), "reference"), list)
+					return fmt.Errorf("%s is still used in %s: %s; fix those first or pass --force (they become #REF!)", grid.QuoteSheet(name), plural(len(refs), "place"), list)
 				}
 				s.Each(s.Used(), func(int, int, *grid.Cell) { res.Removed++ })
 				if err := ed.DeleteSheet(name); err != nil {

@@ -91,7 +91,7 @@ Run 'sheets agent-docs' for a guide written for AI agents.`,
 	}
 	root.PersistentFlags().BoolVar(&a.json, "json", false, "print JSON instead of text")
 	root.PersistentFlags().BoolVar(&a.dryRun, "dry-run", false, "show what a change would do without saving it")
-	root.AddCommand(a.infoCmd(), a.peekCmd(), a.readCmd(), a.findCmd(), a.writeCmd(), a.setCmd(), a.fmtCmd(),
+	root.AddCommand(a.infoCmd(), a.peekCmd(), a.readCmd(), a.findCmd(), a.queryCmd(), a.lintCmd(), a.diffCmd(), a.chartCmd(), a.renderCmd(), a.writeCmd(), a.setCmd(), a.fmtCmd(),
 		a.linesCmd(false), a.linesCmd(true), a.sheetCmd(), a.undoCmd(), a.docsCmd(), a.skillCmd())
 	root.CompletionOptions.HiddenDefaultCmd = true
 	return root
@@ -193,7 +193,9 @@ func plural(n int, word string) string {
 		return "1 " + word
 	}
 	suffix := "s"
-	if strings.HasSuffix(word, "ch") || strings.HasSuffix(word, "s") || strings.HasSuffix(word, "x") {
+	if strings.HasSuffix(word, "series") {
+		suffix = ""
+	} else if strings.HasSuffix(word, "ch") || strings.HasSuffix(word, "s") || strings.HasSuffix(word, "x") {
 		suffix = "es"
 	}
 	return grid.FormatNumber(float64(n)) + " " + word + suffix

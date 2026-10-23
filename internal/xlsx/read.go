@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eemax/sheets/internal/cache"
 	"github.com/eemax/sheets/internal/formula"
 	"github.com/eemax/sheets/internal/grid"
 )
@@ -34,10 +35,36 @@ func Read(filename string) (*grid.Workbook, error) {
 	return wb, nil
 }
 
-// ReadBytes parses an xlsx package held in memory.
+// ReadBytes parses an xlsx package held in memory. A large file is kept
+// parsed in the cache, so reading it again skips the parse.
 func ReadBytes(data []byte) (*grid.Workbook, error) {
+	if len(data) < cache.MinSize || cache.Disabled() {
+		wb, _, err := parse(data)
+		return wb, err
+	}
+	key := cache.Key("xlsx", data)
+	if b, ok := cache.Get(key); ok {
+		wb := &grid.Workbook{}
+		if len(b) > 0 && wb.UnmarshalBinary(b[1:]) == nil {
+			if b[0] == 1 {
+				wb.Resolver = &calc{data: data}
+			}
+			return wb, nil
+		}
+		cache.Remove(key)
+	}
 	wb, _, err := parse(data)
-	return wb, err
+	if err != nil {
+		return nil, err
+	}
+	if b, err := wb.MarshalBinary(); err == nil {
+		pending := byte(0)
+		if wb.Resolver != nil {
+			pending = 1
+		}
+		cache.Put(key, append([]byte{pending}, b...))
+	}
+	return wb, nil
 }
 
 // layout is formatting the reader saw that the grid model does not carry:
@@ -51,6 +78,21 @@ type layout struct {
 	// spills maps the anchor cell of each dynamic array formula (Excel 365
 	// spilling formulas) to the range its result currently fills.
 	spills map[[2]int]grid.Range
+	tables []tablePart
+}
+
+// tablePart is an Excel table (Insert › Table) as stored: its part, its
+// range with the header and totals rows it counts, and the XML, which
+// sheets rewrites itself when rows move (excelize misses tables stored
+// under absolute paths and drops their totals rows).
+type tablePart struct {
+	part    string
+	name    string
+	ref     grid.Range
+	headers int  // header rows at the top of ref (0 or 1)
+	totals  int  // totals rows at the bottom
+	filter  bool // the header row shows filter buttons
+	xml     []byte
 }
 
 // oleMagic starts Compound File Binary files: legacy .xls, and .xlsx files
@@ -133,7 +175,15 @@ func parse(data []byte) (*grid.Workbook, map[string]*layout, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("reading sheet %q: %w", s.Name, err)
 		}
-		sh.Tables, lay.drawing = p.sheetRels(rel.Target)
+		tables, drawing := p.sheetRels(rel.Target)
+		for _, t := range tables {
+			sh.Tables = append(sh.Tables, grid.NamedTable{Name: t.name, Range: t.ref, Totals: t.totals, Filter: t.filter && t.headers > 0})
+		}
+		lay.tables = tables
+		if drawing != "" {
+			lay.drawing = true
+			sh.Charts = p.charts(drawing)
+		}
 		pending = pending || hasPending
 		wb.Sheets = append(wb.Sheets, sh)
 	}
@@ -324,41 +374,61 @@ func (p *pkg) styles(name string, wb *grid.Workbook) ([]uint16, error) {
 	return out, nil
 }
 
-// sheetRels lists the table objects attached to a worksheet and whether it
-// has a drawing (charts, pictures). Parts that cannot be read are skipped:
+// sheetRels lists the table objects attached to a worksheet and its drawing
+// part (charts, pictures), if any. Parts that cannot be read are skipped:
 // this only refines formatting and warnings.
-func (p *pkg) sheetRels(sheetPart string) (out []grid.NamedTable, drawing bool) {
+func (p *pkg) sheetRels(sheetPart string) (out []tablePart, drawing string) {
 	dir := path.Dir(sheetPart)
 	rels, err := p.rels(path.Join(dir, "_rels", path.Base(sheetPart)+".rels"), dir)
 	if err != nil {
-		return nil, false
+		return nil, ""
 	}
 	for _, r := range rels {
 		if strings.HasSuffix(r.Type, "/drawing") {
-			drawing = true
+			drawing = r.Target
 		}
 		if !strings.HasSuffix(r.Type, "/table") {
+			continue
+		}
+		data, err := p.read(r.Target)
+		if err != nil {
 			continue
 		}
 		var t struct {
 			Name        string `xml:"name,attr"`
 			DisplayName string `xml:"displayName,attr"`
 			Ref         string `xml:"ref,attr"`
+			Headers     *int   `xml:"headerRowCount,attr"`
+			Totals      int    `xml:"totalsRowCount,attr"`
 		}
-		if err := p.decode(r.Target, &t); err != nil {
+		if err := xml.Unmarshal(data, &t); err != nil {
 			continue
 		}
 		rg, err := grid.ParseRange(t.Ref)
 		if err != nil {
 			continue
 		}
-		name := t.DisplayName
-		if name == "" {
-			name = t.Name
+		tp := tablePart{part: r.Target, name: t.DisplayName, ref: rg, headers: 1, totals: t.Totals, xml: data,
+			filter: bytes.Contains(data, []byte("<autoFilter"))}
+		if tp.name == "" {
+			tp.name = t.Name
 		}
-		out = append(out, grid.NamedTable{Name: name, Range: rg})
+		if t.Headers != nil {
+			tp.headers = *t.Headers
+		}
+		out = append(out, tp)
 	}
 	return out, drawing
+}
+
+// read returns a part's bytes.
+func (p *pkg) read(name string) ([]byte, error) {
+	r, err := p.open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
 }
 
 type sharedFormula struct {
@@ -401,6 +471,24 @@ func (p *pkg) worksheet(name string, sh *grid.Sheet, lay *layout, sst []string, 
 			col = 0
 			if st := attr(se, "s"); st != "" && st != "0" {
 				lay.rows = append(lay.rows, row)
+			}
+			if truthy(attr(se, "hidden")) {
+				sh.HiddenRows = grid.AddRun(sh.HiddenRows, row, row)
+			}
+
+		case "autoFilter":
+			// The sheet's filter comes before any in custom views.
+			if rg, err := grid.ParseRange(attr(se, "ref")); err == nil && sh.Filter.R1 == 0 {
+				sh.Filter = rg
+			}
+
+		case "col":
+			if truthy(attr(se, "hidden")) {
+				lo, err1 := strconv.Atoi(attr(se, "min"))
+				hi, err2 := strconv.Atoi(attr(se, "max"))
+				if err1 == nil && err2 == nil && 1 <= lo && lo <= hi {
+					sh.HiddenCols = grid.AddRun(sh.HiddenCols, lo, min(hi, grid.MaxCols))
+				}
 			}
 
 		case "c":
@@ -605,3 +693,6 @@ loop:
 	}
 	return c, fRef, nil
 }
+
+// truthy reads an xsd:boolean attribute.
+func truthy(v string) bool { return v == "1" || v == "true" }

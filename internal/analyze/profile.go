@@ -32,6 +32,9 @@ type Column struct {
 	Formulas []FormulaGroup
 	// FormulaGroupsMore counts groups beyond those listed.
 	FormulaGroupsMore int
+	// Derived marks a type taken from the columns a formula computes from
+	// (=Units*Price is currency when Price is), not from the values.
+	Derived bool
 }
 
 // FormulaGroup is a run of cells in a column sharing one relative formula.
@@ -52,11 +55,19 @@ func Profile(wb *grid.Workbook, s *grid.Sheet, reg Region) []Column {
 	cols := make([]Column, 0, reg.Range.Cols())
 	for col := reg.Range.C1; col <= reg.Range.C2; col++ {
 		c := Column{Col: col}
-		if reg.HeaderRow > 0 {
-			c.Header = Label(wb, s, reg.HeaderRow, col)
-		}
+		c.Header = ColumnLabel(wb, s, reg, col)
 		profileColumn(wb, s, reg.Body, &c)
 		cols = append(cols, c)
+	}
+	fmts := make([]grid.Format, len(cols))
+	for i, c := range cols {
+		fmts[i] = typed(c)
+	}
+	for i, changed := range Propagate(s, cols, fmts, nil) {
+		if changed {
+			cols[i].Kind, cols[i].Symbol, cols[i].Type = fmts[i].Kind, fmts[i].Symbol, fmts[i].Kind.String()
+			cols[i].Derived = true
+		}
 	}
 	return cols
 }

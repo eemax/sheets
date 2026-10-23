@@ -1,0 +1,38 @@
+# lint reports problems with the cells involved and fails on errors.
+stdin data.tsv
+exec sheets write book.xlsx Sales
+exec sheets set book.xlsx B5 1,200 --raw
+exec sheets set book.xlsx D6 999
+
+! exec sheets lint book.xlsx
+cmp stdout lint.out
+
+exec sheets lint book.xlsx --fail-on never
+exec sheets lint book.xlsx --json --fail-on never
+stdout '"rule":"error-value","severity":"error","sheet":"Sales","cells":\["D7"\]'
+
+exec sheets set book.xlsx D6 =B6*C6 D7 =B7*C7 B5 1200 B9 =SUM(B2:B8)
+exec sheets lint book.xlsx
+stdout 'no problems found'
+
+exec sheets lint --rules
+stdout '^total-range +warning'
+
+-- data.tsv --
+Item	Units	Price	Revenue
+a	1	2.5	=B{r}*C{r}
+b	2	2.5	=B{r}*C{r}
+c	3	2.5	=B{r}*C{r}
+d	4	2.5	=B{r}*C{r}
+e	5	2.5	=B{r}*C{r}
+f	6	0	=B{r}/C{r}
+g	7	2.5	=B{r}*C{r}
+Total	=SUM(B2:B6)		=SUM(D2:D8)
+-- lint.out --
+book.xlsx: 1 error, 5 warnings, 0 notes
+error    Sales!D7  1 cell shows #DIV/0!
+warning  Sales!B5  1 value in Units is a number stored as text; SUM and sorting ignore them (rewrite them with sheets set)
+warning  Sales!D5  1 cell shows #VALUE! as computed by sheets; Excel may accept the inputs, but check for text where a number belongs
+warning  Sales!D6  typed-in 999 where the column computes =B{r}*C{r}
+warning  Sales!D7  =B7/C7 breaks the column pattern =B{r}*C{r}
+warning  Sales!B9  total =SUM(B2:B6) covers B2:B6 but the column's data runs B2:B8: rows 7-8 left out

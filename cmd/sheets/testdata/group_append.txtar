@@ -1,0 +1,39 @@
+# Two-row headers name columns "Group / Header"; appending lands inside the
+# table, above its total row, and the totals grow to cover the new rows.
+stdin report.tsv
+exec sheets write book.xlsx
+
+exec sheets info book.xlsx
+stdout 'table "Sales by quarter" · 2 rows \+ total · Region, Q1 / Units, Q1 / Revenue, Q2 / Units, Q2 / Revenue'
+
+exec sheets peek book.xlsx --sample 0
+stdout 'header rows 2-3'
+stdout 'E +Q2 / Revenue +currency \$'
+
+stdin more.tsv
+exec sheets write book.xlsx --append
+stdout 'wrote 2 rows × 5 cols to Sheet1!A6:E7'
+stdout 'inserted above the total row'
+stdout 'formulas: B8 = 17, C8 = 240, D8 = 14, E8 = 420'
+
+exec sheets read book.xlsx A8:E10 --formulas
+stdout '^8\tTotal\t=SUM\(B4:B7\)\t=SUM\(C4:C7\)\t=SUM\(D4:D7\)\t=SUM\(E4:E7\)$'
+stdout '^10\tSource: CRM$'
+
+exec sheets fmt book.xlsx --as 'Q1 / Units=decimal'
+stdout 'Q1 / Units decimal'
+exec sheets fmt book.xlsx --check
+
+-- report.tsv --
+Sales by quarter
+Region	Q1		Q2	
+Region	Units	Revenue	Units	Revenue
+North	5	$100	6	$120
+South	7	$140	8	$160
+Total	=SUM(B4:B5)	=SUM(C4:C5)	=SUM(D4:D5)	=SUM(E4:E5)
+
+Source: CRM
+-- more.tsv --
+Region	Q2 / Revenue	Q1 / Units
+West	$90	3
+East	$50	2

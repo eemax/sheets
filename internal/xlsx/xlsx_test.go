@@ -6,11 +6,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/eemax/sheets/internal/cache"
 	"github.com/eemax/sheets/internal/grid"
 	"github.com/eemax/sheets/internal/input"
 	"github.com/eemax/sheets/internal/style"
@@ -504,6 +506,12 @@ func TestFormatPropagatesTypes(t *testing.T) {
 	if st.Alignment == nil || !st.Alignment.WrapText || st.Alignment.Vertical != "top" {
 		t.Errorf("long notes not wrapped: %+v", st.Alignment)
 	}
+	// Headers are left-aligned, numbers below or not: the filter button
+	// takes the right edge.
+	id, _ = f.GetCellStyle("Data", "F1")
+	if st, _ = f.GetStyle(id); st.Alignment == nil || st.Alignment.Horizontal != "left" {
+		t.Errorf("Revenue header alignment: %+v", st.Alignment)
+	}
 	if ok, _, _ := Check(path, FormatOptions{Preset: style.Default}); !ok {
 		t.Error("not idempotent")
 	}
@@ -594,8 +602,9 @@ func TestStructureKeepsCharts(t *testing.T) {
 	if strings.Contains(drawing, "<c:chart") && !strings.Contains(drawing, `xmlns:c="`) {
 		t.Errorf("drawing uses c: without declaring it:\n%s", drawing)
 	}
-	if chart := sheetXML(t, path, "xl/charts/chart1.xml"); !strings.Contains(chart, "&#39;Sales Data&#39;!$B$2:$B$4") {
-		t.Errorf("chart series not renamed:\n%s", chart)
+	// Renamed, and moved down by the row inserted above the data.
+	if chart := sheetXML(t, path, "xl/charts/chart1.xml"); !strings.Contains(chart, "&#39;Sales Data&#39;!$B$3:$B$5") {
+		t.Errorf("chart series not renamed and moved:\n%s", chart)
 	}
 	wb, err := Read(path)
 	if err != nil {
@@ -614,6 +623,11 @@ func TestDeclareNamespaces(t *testing.T) {
 	}
 	if got := string(declareNamespaces([]byte(out))); got != out {
 		t.Error("not idempotent")
+	}
+	// A declaration on an inner element does not cover other elements.
+	in = `<xdr:wsDr xmlns:xdr="x"><c:chart r:id="1"/><c:chart xmlns:c="y" r:id="2"/></xdr:wsDr>`
+	if out := string(declareNamespaces([]byte(in))); !strings.HasPrefix(out, `<xdr:wsDr xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r=`) {
+		t.Errorf("inner declaration taken for a root one: %s", out)
 	}
 }
 
@@ -643,5 +657,142 @@ func TestFormatForeignWorkbook(t *testing.T) {
 	}
 	if props, _ := f.GetSheetProps("Budget 2026"); props.TabColorRGB == nil {
 		t.Error("tab colour lost")
+	}
+}
+
+// Group labels centre across the columns they group, with no borders
+// inside the group.
+func TestFormatGroupRow(t *testing.T) {
+	path := writeBook(t, [][]string{
+		{"Region", "Q1", "", "Q2", ""},
+		{"Region", "Units", "Revenue", "Units", "Revenue"},
+		{"North", "5", "$100", "6", "$120"},
+		{"South", "7", "$140", "8", "$160"},
+	})
+	res, err := Format(path, FormatOptions{Preset: style.Default})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tb := res.Sheets[0].Tables[0]; tb.Columns[2].Header != "Q1 / Revenue" {
+		t.Fatalf("columns = %+v", tb.Columns)
+	}
+	f, _ := excelize.OpenFile(path)
+	defer f.Close()
+	look := func(cell string) (string, string) {
+		id, _ := f.GetCellStyle("Data", cell)
+		st, _ := f.GetStyle(id)
+		var sides []string
+		for _, b := range st.Border {
+			sides = append(sides, b.Type[:1])
+		}
+		slices.Sort(sides)
+		return st.Alignment.Horizontal, strings.Join(sides, "")
+	}
+	for cell, want := range map[string][2]string{
+		"A1": {"center", "blrt"},
+		"B1": {"centerContinuous", "blt"},
+		"C1": {"centerContinuous", "brt"},
+		"D1": {"centerContinuous", "blt"},
+		"E1": {"centerContinuous", "brt"},
+	} {
+		if a, s := look(cell); a != want[0] || s != want[1] {
+			t.Errorf("%s: %s %s, want %s %s", cell, a, s, want[0], want[1])
+		}
+	}
+	if ok, _, _ := Check(path, FormatOptions{Preset: style.Default}); !ok {
+		t.Error("not idempotent")
+	}
+}
+
+func TestReadHiddenRowsAndCols(t *testing.T) {
+	f := excelize.NewFile()
+	for r := 1; r <= 6; r++ {
+		f.SetCellValue("Sheet1", "A"+strconv.Itoa(r), r)
+	}
+	f.SetRowVisible("Sheet1", 3, false)
+	f.SetRowVisible("Sheet1", 4, false)
+	f.SetRowVisible("Sheet1", 6, false)
+	f.SetColVisible("Sheet1", "C:E", false)
+	var buf bytes.Buffer
+	if err := f.Write(&buf); err != nil {
+		t.Fatal(err)
+	}
+	wb, err := ReadBytes(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := wb.Sheets[0]
+	if want := []grid.Run{{From: 3, To: 4}, {From: 6, To: 6}}; !equalRuns(s.HiddenRows, want) {
+		t.Errorf("hidden rows %v, want %v", s.HiddenRows, want)
+	}
+	if want := []grid.Run{{From: 3, To: 5}}; !equalRuns(s.HiddenCols, want) {
+		t.Errorf("hidden cols %v, want %v", s.HiddenCols, want)
+	}
+	if !s.RowHidden(4) || s.RowHidden(5) || !s.ColHidden(5) || s.ColHidden(2) {
+		t.Error("RowHidden/ColHidden disagree with the runs")
+	}
+}
+
+func equalRuns(a, b []grid.Run) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// A large file is cached parsed: the second read decodes the same grid,
+// and formulas without values still compute.
+func TestReadCache(t *testing.T) {
+	t.Setenv("SHEETS_CACHE_DIR", t.TempDir())
+	f := excelize.NewFile()
+	sw, err := f.NewStreamWriter("Sheet1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw.SetRow("A1", []any{"Order", "Customer", "Units", "Price", "Revenue"})
+	for r := 2; r <= 40000; r++ {
+		sw.SetRow("A"+strconv.Itoa(r), []any{"ORD-" + strconv.Itoa(r), "Customer " + strconv.Itoa(r%997), r % 17, float64(r%100) / 4,
+			excelize.Cell{Formula: "C" + strconv.Itoa(r) + "*D" + strconv.Itoa(r)}})
+	}
+	if err := sw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := f.Write(&buf); err != nil {
+		t.Fatal(err)
+	}
+	data := buf.Bytes()
+	if len(data) < cache.MinSize {
+		t.Fatalf("fixture is %d bytes, under the cache threshold", len(data))
+	}
+	first, err := ReadBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cache.Get(cache.Key("xlsx", data)); !ok {
+		t.Fatal("not cached")
+	}
+	second, err := ReadBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := first.Sheets[0], second.Sheets[0]
+	if a.Used() != b.Used() || second.Resolver == nil {
+		t.Fatalf("cached read differs: used %v vs %v, resolver %v", a.Used(), b.Used(), second.Resolver)
+	}
+	for r := 1; r <= 40000; r++ {
+		for c := 1; c <= 5; c++ {
+			if a.Get(r, c) != b.Get(r, c) {
+				t.Fatalf("%s: %+v vs %+v", grid.CellName(r, c), a.Get(r, c), b.Get(r, c))
+			}
+		}
+	}
+	if v := second.Value(b, 3, 5); v.Kind != grid.Number || v.Num != 3*0.75 {
+		t.Errorf("E3 = %+v, want 2.25", v)
 	}
 }

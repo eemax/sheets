@@ -72,7 +72,7 @@ regular expression, --formulas searches formula text too.`,
 					}
 					for _, reg := range regions {
 						if reg.HeaderRow > 0 && row > reg.HeaderRow && reg.Range.Contains(row, col) {
-							m.Header = analyze.Label(wb, s, reg.HeaderRow, col)
+							m.Header = analyze.ColumnLabel(wb, s, reg, col)
 						}
 					}
 					res.Matches = append(res.Matches, m)

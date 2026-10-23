@@ -48,7 +48,7 @@ B    Region   text        3       "North", "South", "East"
 C    Units    integer     3       80 … 2000 · sum 2200
 D    Price    currency $  3       12.5 … 30 · sum 55
 E    Share    percent     3       -3% … 22.5%
-F    Revenue  integer     3       =C{r}*D{r} · 1500 … 25000 · sum 28900
+F    Revenue  currency $  3       =C{r}*D{r} · 1500 … 25000 · sum 28900
 sample:
 	A	B	C	D	E	F
 1	Date	Region	Units	Price	Share	Revenue

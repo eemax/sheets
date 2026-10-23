@@ -1,0 +1,47 @@
+# SQL over detected tables: totals left out, dates as ISO text, _row for
+# mapping back, results written into a sheet with their formats.
+stdin sales.tsv
+exec sheets write book.xlsx Sales
+
+exec sheets query book.xlsx
+cmp stdout schema.out
+
+exec sheets query book.xlsx 'SELECT Region, SUM(Units) AS Units, SUM(Revenue) AS Revenue FROM Sales GROUP BY Region ORDER BY Revenue DESC'
+cmp stdout grouped.out
+
+exec sheets query book.xlsx 'SELECT _row, Date FROM Sales WHERE Date >= ''2026-07-02'' AND Share > 0.2'
+stdout '^3\t2026-07-02$'
+stdout '^5\t2026-07-04$'
+! stdout '^4\t'
+
+exec sheets query book.xlsx 'SELECT Region FROM Sales' -n 2
+stdout '… 2 more rows; narrow the query or raise --limit'
+
+exec sheets query book.xlsx 'SELECT Region, SUM(Revenue) AS Revenue FROM Sales GROUP BY Region ORDER BY Region' --into Summary
+stdout 'wrote 4 rows × 2 cols to Summary!A1:B4 \(new sheet\)'
+stdout 'types: B currency'
+exec sheets query book.xlsx 'SELECT COUNT(*) FROM Summary'
+stdout '^3$'
+
+! exec sheets query book.xlsx 'SELECT * FROM Nope'
+stderr 'no such table: Nope \(tables: Sales, Summary\)$'
+! exec sheets query book.xlsx 'SELECT Nope FROM Sales'
+stderr 'no such column: Nope \(columns: Sales\(Date, Region, Units, Price, Share, Revenue\)\)'
+! exec sheets query book.xlsx 'SELECT 1' --into A1
+stderr '--into needs a sheet'
+
+-- sales.tsv --
+Date	Region	Units	Price	Share	Revenue
+2026-07-01	North	120	$12.50	18%	=C{r}*D{r}
+2026-07-02	South	80	$30.00	22.5%	=C{r}*D{r}
+2026-07-03	East	2,000	$12.50	-3%	=C{r}*D{r}
+2026-07-04	North	10	$12.50	25%	=C{r}*D{r}
+Total		=SUM(C2:C5)			=SUM(F2:F5)
+-- schema.out --
+Sales  Sales!A1:F6 · 4 rows (total row left out)
+  _row INTEGER, Date TEXT (date), Region TEXT, Units INTEGER, Price REAL (currency), Share REAL (percent), Revenue REAL (currency)
+-- grouped.out --
+Region	Units	Revenue
+East	2000	25000
+South	80	2400
+North	130	1625

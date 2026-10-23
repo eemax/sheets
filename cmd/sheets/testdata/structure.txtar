@@ -34,7 +34,7 @@ exec sheets read book.xlsx Summary --formulas
 stdout '=''Sales 2026''!C6'
 
 ! exec sheets sheet delete book.xlsx 'Sales 2026'
-stderr 'still referenced by 2 references: Summary!A1, Summary!A2'
+stderr 'still used in 2 places: Summary!A1, Summary!A2'
 
 exec sheets sheet copy book.xlsx 'Sales 2026' Backup
 stdout 'sheets: Sales 2026, Backup, Summary'

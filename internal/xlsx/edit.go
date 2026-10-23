@@ -54,6 +54,9 @@ func OpenEditor(path string, create bool) (*Editor, error) {
 		}
 		for name, l := range e.layouts {
 			e.hasDrawings[name] = l.drawing
+			for _, t := range l.tables {
+				e.patches.tables = append(e.patches.tables, tableSource{name, t})
+			}
 		}
 	case errors.Is(err, fs.ErrNotExist) && create:
 		e.f = excelize.NewFile()
@@ -296,6 +299,9 @@ func (e *Editor) Clear(sheet string) error {
 	if s == nil {
 		return nil
 	}
+	if ts := e.tablesOn(sheet); len(ts) > 0 {
+		return fmt.Errorf("%s holds Excel table %s, which clearing would leave without its header; write into it, or use another sheet", grid.QuoteSheet(sheet), ts[0])
+	}
 	used := s.Used()
 	if used.Empty() {
 		return nil
@@ -351,10 +357,14 @@ func (e *Editor) Save(dryRun bool) error {
 			return err
 		}
 	}
+	if err := e.fixTables(); err != nil {
+		return err
+	}
 	buf, err := serialize(e.f, e.patches)
 	if err != nil {
 		return err
 	}
+	e.warnings = append(e.warnings, e.patches.renameNotes()...)
 	if e.structural && e.data != nil {
 		before, err1 := ReadBytes(e.data)
 		after, err2 := ReadBytes(buf)
@@ -363,9 +373,6 @@ func (e *Editor) Save(dryRun bool) error {
 				e.warnings = append(e.warnings, fmt.Sprintf("%s now %s #REF! (a reference pointed into what was removed): %s",
 					countOf(len(refs), "formula"), map[bool]string{true: "contains", false: "contain"}[len(refs) == 1], strings.Join(refs[:min(len(refs), 10)], ", ")))
 			}
-		}
-		if hasCharts(buf) {
-			e.warnings = append(e.warnings, "the workbook has charts; their data ranges are not adjusted for moved rows, columns or renamed sheets")
 		}
 	}
 	if dryRun {

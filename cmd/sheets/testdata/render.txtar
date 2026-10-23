@@ -1,0 +1,19 @@
+# render draws a PNG (or HTML) next to the workbook, or where -o says.
+stdin data.tsv
+exec sheets write book.xlsx Sales
+exec sheets chart add book.xlsx Sales --y Units
+exec sheets render book.xlsx Sales
+stdout '^drew Sales!A1:N21 → book-Sales.png \(\d+x\d+ at 2x\), 1 chart$'
+exists book-Sales.png
+
+exec sheets render book.xlsx 'Sales!A1:B3' -o out.html
+stdout '^drew Sales!A1:B3 → out.html'
+grep '<td>North</td>' out.html
+
+! exec sheets render book.xlsx Sales --scale 9
+stderr 'scale must be between 1 and 4'
+
+-- data.tsv --
+Region	Units
+North	5
+South	7

@@ -66,6 +66,50 @@ s fmt 05-restyled.xlsx
 cp "$root/internal/xlsx/testdata/rich.xlsx" 06-excel-table.xlsx
 s fmt 06-excel-table.xlsx
 
+# 7. Charts of each kind, in the house style.
+printf '%s\n' $'Region\tQ1\tQ2\tQ3' $'North America\t120\t135\t150' $'South America\t80\t95\t70' \
+  $'Europe\t140\t160\t175' $'Asia Pacific\t200\t190\t230' | "$bin" write 07-charts.xlsx Regions >/dev/null
+{
+  printf 'Month\tVisits\tSignups\n'
+  for i in $(seq 1 12); do printf '2026-%02d-01\t%d\t%d\n' "$i" $((900 + i * 70 + (i % 3) * 120)) $((40 + i * 6 + (i % 4) * 9)); done
+} | "$bin" write 07-charts.xlsx Traffic >/dev/null
+printf '%s\n' $'Channel\tShare' $'Search\t42%' $'Social\t23%' $'Email\t18%' $'Direct\t12%' $'Other\t5%' |
+  "$bin" write 07-charts.xlsx Mix >/dev/null
+printf '%s\n' $'Spend\tClicks' $'$100\t40' $'$250\t95' $'$400\t170' $'$650\t240' $'$800\t310' $'$1,000\t360' |
+  "$bin" write 07-charts.xlsx Ads >/dev/null
+s fmt 07-charts.xlsx
+s chart add 07-charts.xlsx Regions --at Regions!F2
+s chart add 07-charts.xlsx Regions --type bar --stacked --at Regions!F22
+s chart add 07-charts.xlsx Traffic --y Visits --at Traffic!E2
+s chart add 07-charts.xlsx Traffic --y Signups --type area --at Traffic!E22
+s chart add 07-charts.xlsx Mix --type pie --at Mix!D2
+s chart add 07-charts.xlsx Ads --x Spend --y Clicks --type scatter --at Ads!D2
+
+# 8. A two-row header, formatted.
+printf '%s\n' \
+  'Sales by quarter' \
+  $'Region\tQ1\t\tQ2\t' \
+  $'\tUnits\tRevenue\tUnits\tRevenue' \
+  $'North\t5\t$100\t6\t$120' \
+  $'South\t7\t$140\t8\t$160' \
+  $'Total\t=SUM(B4:B5)\t=SUM(C4:C5)\t=SUM(D4:D5)\t=SUM(E4:E5)' |
+  "$bin" write 08-two-row-header.xlsx >/dev/null
+s fmt 08-two-row-header.xlsx
+
+# 9. An Excel table with a totals row (made by openpyxl) through edits:
+#    rows appended above its totals row, headers renamed (one that
+#    formulas name), rows inserted above it.
+cp "$root/internal/xlsx/testdata/tables.xlsx" 09-excel-table-edits.xlsx
+printf '%s\n' $'West\t4\t1.5' $'Central\t6\t2' | "$bin" write 09-excel-table-edits.xlsx Sales --append >/dev/null
+s set 09-excel-table-edits.xlsx Sales!C1 'Unit price' Sales!B1 'Qty'
+s rows insert 09-excel-table-edits.xlsx Sales!1 -n 2
+s set 09-excel-table-edits.xlsx Sales!A1 'Inserted above the table'
+
+# 10. A query result written back as a table.
+cp 01-house-style.xlsx 10-query-into.xlsx
+s query 10-query-into.xlsx 'SELECT Region, SUM(Units) AS Units, SUM(Revenue) AS Revenue FROM Sales GROUP BY Region ORDER BY Revenue DESC' --into Summary
+s fmt 10-query-into.xlsx
+
 cat > CHECKLIST.md <<'MD'
 # Excel check
 
@@ -76,7 +120,8 @@ If it asks to repair, note which file and what the repair log says.
 ## 01-house-style.xlsx
 - Title "Q3 sales by region" bold, larger, above the table.
 - Header row dark with white bold text, filter buttons, frozen when
-  scrolling.
+  scrolling. Every label left-aligned and fully visible: no filter button
+  covers any of it (Units, Price, Revenue, Margin included).
 - Data rows alternate white and light gray. Sort Units with the filter
   button: the banding should stay alternating.
 - Thin light borders, no gridlines.
@@ -114,5 +159,37 @@ If it asks to repair, note which file and what the repair log says.
 ## 06-excel-table.xlsx
 - Sheet T: the table keeps its blue table style (no dark sheets header on
   top of it), no extra filter.
+
+## 07-charts.xlsx
+- Regions: a clustered column chart (three quarters per region, blue,
+  orange, green, with a legend) and a stacked bar chart below it with
+  North America at the top and the value axis along the bottom.
+- Traffic: a line chart of Visits by Month with dates on the axis, no
+  legend (one series), and an area chart of Signups.
+- Mix: a pie with five slices in five distinct colours, thin white gaps
+  between slices.
+- Ads: a scatter of Clicks against Spend, markers only.
+- Every chart: thin hairline gridlines, no chart border shadow, titles
+  in dark gray, bars and columns thin with small white gaps between
+  neighbouring bars.
+
+## 08-two-row-header.xlsx
+- Rows 2 and 3 both dark header rows. "Q1" centred across Units and
+  Revenue with no line between them; the same for "Q2".
+- Units integers, Revenue in $; total row bold.
+
+## 09-excel-table-edits.xlsx
+- The table (blue style) now spans rows 3-9: the header, North, South,
+  East, West, Central, and the Total row last. Click inside it: Table
+  Design shows "Total Row" ticked.
+- The headers read Region, Qty, Unit price.
+- B9 (the total row) sums all five quantities: 24; its formula reads
+  =SUBTOTAL(109,SalesT[Qty]). E4 shows 24 too, with =SUM(SalesT[Qty]).
+- Table Design › Total Row still works: untick and tick it again.
+- A1 reads "Inserted above the table".
+
+## 10-query-into.xlsx
+- A Summary sheet with Region, Units, Revenue, one row per region, sorted
+  by Revenue, in the house style; Revenue in $.
 MD
 echo "wrote $(ls "$out" | grep -c xlsx) workbooks to $out; see CHECKLIST.md"

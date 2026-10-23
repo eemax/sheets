@@ -178,6 +178,11 @@ func ParseRef(s string, isSheet func(string) bool) (Ref, error) {
 	if s == "" {
 		return Ref{}, nil
 	}
+	// A sheet's own name wins, even one that ends in "!" or looks like a
+	// cell.
+	if isSheet != nil && isSheet(unquoteSheet(s)) {
+		return Ref{Sheet: unquoteSheet(s)}, nil
+	}
 	if i := strings.LastIndex(s, "!"); i >= 0 {
 		sheet := unquoteSheet(s[:i])
 		rest := s[i+1:]
@@ -189,9 +194,6 @@ func ParseRef(s string, isSheet func(string) bool) (Ref, error) {
 			return Ref{}, err
 		}
 		return Ref{Sheet: sheet, Range: &r}, nil
-	}
-	if isSheet != nil && isSheet(unquoteSheet(s)) {
-		return Ref{Sheet: unquoteSheet(s)}, nil
 	}
 	if r, err := ParseRange(s); err == nil {
 		return Ref{Range: &r}, nil

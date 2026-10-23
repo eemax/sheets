@@ -1,6 +1,7 @@
 package analyze
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/eemax/sheets/internal/grid"
@@ -120,5 +121,78 @@ func TestHeaderShapes(t *testing.T) {
 		if r.HeaderRow != tt.header || r.TitleRows != tt.title {
 			t.Errorf("%s: header %d title %d, want %d %d", tt.name, r.HeaderRow, r.TitleRows, tt.header, tt.title)
 		}
+	}
+}
+
+func TestGroupHeader(t *testing.T) {
+	wb, s := sheet(
+		[]any{"Region", "Q1", nil, "Q2", nil},
+		[]any{nil, "Units", "Revenue", "Units", "Revenue"},
+		[]any{"North", 5, 100, 6, 120},
+		[]any{"South", 7, 140, 8, 160},
+	)
+	r := Regions(wb, s)[0]
+	if r.GroupRow != 1 || r.HeaderRow != 2 || r.Body.String() != "A3:E4" {
+		t.Fatalf("region = %+v", r)
+	}
+	var labels []string
+	for col := 1; col <= 5; col++ {
+		labels = append(labels, ColumnLabel(wb, s, r, col))
+	}
+	if got := strings.Join(labels, ","); got != "Region,Q1 / Units,Q1 / Revenue,Q2 / Units,Q2 / Revenue" {
+		t.Errorf("labels = %s", got)
+	}
+
+	// With merges, a group covers exactly its merged range.
+	s.Merges = []grid.Range{{R1: 1, C1: 2, R2: 1, C2: 3}, {R1: 1, C1: 1, R2: 2, C2: 1}}
+	s.Set(1, 4, grid.Cell{}) // drop Q2: its columns now have no group
+	r = Regions(wb, s)[0]
+	if got := ColumnLabel(wb, s, r, 3); got != "Q1 / Revenue" {
+		t.Errorf("merged = %s", got)
+	}
+	if got := ColumnLabel(wb, s, r, 5); got != "Revenue" {
+		t.Errorf("outside merges = %s", got)
+	}
+}
+
+func TestNotGroupHeader(t *testing.T) {
+	// A plain header over text data is not a group row over a header.
+	wb, s := sheet(
+		[]any{"Name", "City", "Score"},
+		[]any{"Ada", "London", 9},
+		[]any{"Bob", "Paris", 4},
+	)
+	if r := Regions(wb, s)[0]; r.GroupRow != 0 || r.HeaderRow != 1 {
+		t.Errorf("region = %+v", r)
+	}
+	// Repeated group labels on every column are still a group row.
+	wb, s = sheet(
+		[]any{"Region", "Q1", "Q1", "Q2", "Q2"},
+		[]any{"Region", "Units", "Revenue", "Units", "Revenue"},
+		[]any{"North", 5, 100, 6, 120},
+	)
+	r := Regions(wb, s)[0]
+	if r.GroupRow != 1 || r.HeaderRow != 2 {
+		t.Errorf("repeated groups: %+v", r)
+	}
+	if got := ColumnLabel(wb, s, r, 1); got != "Region" {
+		t.Errorf("same label in both rows = %s", got)
+	}
+}
+
+// An Excel table says which row is its totals row, whatever it holds.
+func TestExcelTotalsRow(t *testing.T) {
+	wb, s := sheet(
+		[]any{"Name", "Qty"},
+		[]any{"a", 1},
+		[]any{"b", 3},
+		[]any{"Mean", 2},
+	)
+	if reg := Regions(wb, s)[0]; reg.TotalRow != 0 {
+		t.Fatalf("a plain block's last row is data: %+v", reg)
+	}
+	s.Tables = []grid.NamedTable{{Name: "T", Range: grid.Range{R1: 1, C1: 1, R2: 4, C2: 2}, Totals: 1}}
+	if reg := Regions(wb, s)[0]; reg.TotalRow != 4 || reg.Body.String() != "A2:B3" {
+		t.Errorf("table = %+v", reg)
 	}
 }

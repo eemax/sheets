@@ -14,7 +14,8 @@ from openpyxl.comments import Comment
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Border, Font, PatternFill, Side
 from openpyxl.worksheet.datavalidation import DataValidation
-from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.worksheet.filters import AutoFilter
+from openpyxl.worksheet.table import Table, TableColumn, TableStyleInfo
 
 out = sys.argv[1]
 
@@ -80,3 +81,26 @@ rates["A1"] = "EUR"
 rates["B1"] = 1.08
 rates.sheet_state = "hidden"
 wb.save(f"{out}/styled.xlsx")
+
+# tables.xlsx: an Excel table with a totals row, stored (as openpyxl does)
+# under an absolute part path, with a note below it. The columns carry the
+# totals settings Excel writes (a label, a function).
+wb = Workbook()
+ws = wb.active
+ws.title = "Sales"
+ws.append(["Region", "Units", "Price"])
+for row in [("North", 5, 2.5), ("South", 7, 3.0), ("East", 2, 4.0)]:
+    ws.append(row)
+ws.append(["Total", "=SUBTOTAL(109,SalesT[Units])", None])
+# As Excel writes it, the filter leaves out the totals row.
+table = Table(displayName="SalesT", ref="A1:C5", totalsRowCount=1, autoFilter=AutoFilter(ref="A1:C4"))
+table.tableColumns = [
+    TableColumn(id=1, name="Region", totalsRowLabel="Total"),
+    TableColumn(id=2, name="Units", totalsRowFunction="sum"),
+    TableColumn(id=3, name="Price"),
+]
+table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+ws.add_table(table)
+ws["A8"] = "Source: CRM"
+ws["E2"] = "=SUM(SalesT[Units])"
+wb.save(f"{out}/tables.xlsx")

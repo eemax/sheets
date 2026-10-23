@@ -17,7 +17,7 @@ func TestColumns(t *testing.T) {
 }
 
 func TestParseRef(t *testing.T) {
-	isSheet := func(s string) bool { return s == "Q1" || s == "My Sheet" }
+	isSheet := func(s string) bool { return s == "Q1" || s == "My Sheet" || s == "Wow!" }
 	tests := []struct {
 		in, sheet, rng string
 	}{
@@ -30,6 +30,10 @@ func TestParseRef(t *testing.T) {
 		{"B7", "", "B7"},
 		{"Sales", "Sales", ""},
 		{"Data!$A$1", "Data", "A1"},
+		{"Wow!", "Wow!", ""}, // a sheet's whole name wins
+		{"'Wow!'!B2", "Wow!", "B2"},
+		{"Wow!!B2", "Wow!", "B2"},
+		{"New!", "New", ""},
 	}
 	for _, tt := range tests {
 		r, err := ParseRef(tt.in, isSheet)

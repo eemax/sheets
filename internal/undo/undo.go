@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/eemax/sheets/internal/cache"
 )
 
 // Keep is how many versions are kept per file.
@@ -35,18 +37,8 @@ func digest(b []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
-// root is the journal directory: $SHEETS_CACHE_DIR, or sheets/undo in the
-// user cache directory.
-func root() (string, error) {
-	if d := os.Getenv("SHEETS_CACHE_DIR"); d != "" {
-		return filepath.Join(d, "undo"), nil
-	}
-	d, err := os.UserCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(d, "sheets", "undo"), nil
-}
+// root is the journal directory.
+func root() (string, error) { return cache.Dir("undo") }
 
 func dirFor(path string) (string, string, error) {
 	abs, err := filepath.Abs(path)
@@ -211,4 +203,33 @@ func replace(path string, data []byte) error {
 	}
 	os.Chmod(tmp.Name(), mode)
 	return os.Rename(tmp.Name(), path)
+}
+
+// Before returns the file as it was before the last n recorded changes
+// (n = 1: before the last one), with the oldest of those changes. It also
+// reports whether the file still is what sheets last wrote.
+func Before(path string, n int) (data []byte, e Entry, current bool, err error) {
+	dir, _, err := dirFor(path)
+	if err != nil {
+		return nil, e, false, err
+	}
+	entries, err := list(dir)
+	if err != nil {
+		return nil, e, false, err
+	}
+	if n < 1 || n > len(entries) {
+		if len(entries) == 0 {
+			return nil, e, false, ErrNothing
+		}
+		return nil, e, false, fmt.Errorf("only %d recorded changes to %s", len(entries), path)
+	}
+	e = entries[len(entries)-n]
+	if cur, err := os.ReadFile(path); err == nil {
+		current = digest(cur) == entries[len(entries)-1].After
+	}
+	if !e.Existed {
+		return nil, e, current, nil
+	}
+	data, err = os.ReadFile(filepath.Join(dir, name(e.Seq, ".xlsx")))
+	return data, e, current, err
 }

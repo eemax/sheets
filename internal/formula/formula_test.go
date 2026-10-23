@@ -1,6 +1,10 @@
 package formula
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/eemax/sheets/internal/grid"
+)
 
 func TestShift(t *testing.T) {
 	tests := []struct {
@@ -141,5 +145,30 @@ func TestInsertLines(t *testing.T) {
 		if got := InsertLines(tt.f, tt.home, "Data", false, 3, 2); got != tt.want {
 			t.Errorf("InsertLines(%s on %s) = %s, want %s", tt.f, tt.home, got, tt.want)
 		}
+	}
+}
+
+func TestExtendRanges(t *testing.T) {
+	for in, want := range map[string]string{
+		"SUM(B4:B9)":                "SUM(B4:B12)",
+		"SUM(B$4:B$9)/COUNT(B4:B9)": "SUM(B$4:B$12)/COUNT(B4:B12)",
+		"B9":                        "B9",
+		"SUM(B4:B8)":                "SUM(B4:B8)",
+		"SUM(Other!B4:B9)":          "SUM(Other!B4:B9)",
+	} {
+		if got := ExtendRanges(in, "Data", "Data", 9, 12); got != want {
+			t.Errorf("ExtendRanges(%s) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+func TestRefsAndNumbers(t *testing.T) {
+	refs := Refs("SUM(C3:C7)+Other!B2*1.21+A:A")
+	if len(refs) != 3 || refs[0].Range.String() != "C3:C7" || refs[1].Sheet != "Other" || refs[1].Range.String() != "B2" || refs[2].Range.C1 != 1 || refs[2].Range.R2 != grid.MaxRows {
+		t.Errorf("Refs = %+v", refs)
+	}
+	nums := Numbers(`ROUND(B2*1.21,2)+SUM(3:5)+"7"+LOG10(A1)`)
+	if len(nums) != 2 || nums[0] != 1.21 || nums[1] != 2 {
+		t.Errorf("Numbers = %v", nums)
 	}
 }

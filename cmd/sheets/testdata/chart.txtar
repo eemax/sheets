@@ -1,0 +1,65 @@
+# Charts: defaults chosen from the data, refusals that would mislead, and
+# ranges that follow the table.
+stdin sales.tsv
+exec sheets write book.xlsx Sales
+
+! exec sheets chart add book.xlsx Sales
+stderr 'different units \(number: Units; currency \$: Price, Revenue\); pick the ones to plot with --y, e.g. --y Revenue'
+
+exec sheets chart add book.xlsx Sales --y Revenue
+stdout 'added column chart "Revenue by Region" at Sales!F1: Revenue by Region, 3 points'
+
+! exec sheets chart add book.xlsx Sales --y Units,Revenue
+stderr 'Units \(number\) and Revenue \(currency \$\) have different units'
+
+exec sheets chart add book.xlsx Sales --x Region --y Units --type pie --at Sales!F21
+stdout 'added pie chart "Units" at Sales!F21'
+
+! exec sheets chart add book.xlsx Sales --y Nope
+stderr '--y Nope: no such column in Sales \(columns: Region, Units, Price, Revenue\)'
+
+exec sheets chart list book.xlsx
+stdout '^Sales!F1  column "Revenue by Region" · 1 series: Sales!\$D\$2:\$D\$4$'
+stdout '^Sales!F21  pie "Units" · 1 series: Sales!\$B\$2:\$B\$4$'
+
+# Appending to the table extends its charts.
+stdin more.tsv
+exec sheets write book.xlsx Sales --append
+exec sheets chart list book.xlsx
+stdout '^Sales!F1  column "Revenue by Region" · 1 series: Sales!\$D\$2:\$D\$5$'
+
+exec sheets info book.xlsx
+stdout 'Sales  A1:D5 · 4 formulas · 2 charts'
+
+exec sheets chart delete book.xlsx Sales!F21
+stdout 'deleted the chart at Sales!F21'
+! exec sheets chart delete book.xlsx Sales!F21
+stderr 'no chart anchored at F21 \(charts on Sales are at F1\)'
+
+# A chart of a table with a total row takes in rows appended above the
+# total, and not the total itself.
+stdin totals.tsv
+exec sheets write totals.xlsx Units
+exec sheets chart add totals.xlsx Units
+stdout 'Units by Region, 2 points'
+stdin west.tsv
+exec sheets write totals.xlsx Units --append
+stdout 'inserted above the total row'
+exec sheets chart list totals.xlsx
+stdout '^Units!D1  column "Units by Region" · 1 series: Units!\$B\$2:\$B\$4$'
+
+-- totals.tsv --
+Region	Units
+North	5
+South	7
+Total	=SUM(B2:B3)
+-- west.tsv --
+West	4
+-- sales.tsv --
+Region	Units	Price	Revenue
+North	120	$12.50	=B{r}*C{r}
+South	80	$30.00	=B{r}*C{r}
+East	2000	$12.50	=B{r}*C{r}
+-- more.tsv --
+Region	Units	Price	Revenue
+West	15	$120.00	=B{r}*C{r}

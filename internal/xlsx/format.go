@@ -222,6 +222,8 @@ type cellStyle struct {
 	valign  string
 	wrap    bool
 	border  bool
+	noLeft  bool // border on every side but these
+	noRight bool
 	topRule bool
 }
 
@@ -239,11 +241,12 @@ func (fm *formatter) styleID(cs cellStyle) (int, error) {
 			// Medium weight so it wins over the thin border of the row above.
 			top.Color, top.Style = fm.p.TotalBorder, 2
 		}
-		st.Border = []excelize.Border{
-			{Type: "left", Color: fm.p.Border, Style: 1},
-			top,
-			{Type: "bottom", Color: fm.p.Border, Style: 1},
-			{Type: "right", Color: fm.p.Border, Style: 1},
+		st.Border = []excelize.Border{top, {Type: "bottom", Color: fm.p.Border, Style: 1}}
+		if !cs.noLeft {
+			st.Border = append(st.Border, excelize.Border{Type: "left", Color: fm.p.Border, Style: 1})
+		}
+		if !cs.noRight {
+			st.Border = append(st.Border, excelize.Border{Type: "right", Color: fm.p.Border, Style: 1})
 		}
 	}
 	if cs.align != "" || cs.valign != "" || cs.wrap {
@@ -289,11 +292,10 @@ func (fm *formatter) bandStyle() (int, error) {
 
 // colFormat is the decision for one column.
 type colFormat struct {
-	fmt     grid.Format // Kind General: decide per cell
-	plain   bool        // no thousands separator (ids, years)
-	numeric bool        // right-align the header
-	forced  bool        // from --as: applies to every number in the column
-	wrap    bool        // text too long for the widest column: wrap it
+	fmt    grid.Format // Kind General: decide per cell
+	plain  bool        // no thousands separator (ids, years)
+	forced bool        // from --as: applies to every number in the column
+	wrap   bool        // text too long for the widest column: wrap it
 }
 
 func (fm *formatter) decide(s *grid.Sheet, reg analyze.Region, col analyze.Column) colFormat {
@@ -308,8 +310,14 @@ func (fm *formatter) decide(s *grid.Sheet, reg analyze.Region, col analyze.Colum
 		if o.Sheet != "" && !strings.EqualFold(o.Sheet, s.Name) {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(o.Column), strings.TrimSpace(col.Header)) && col.Header != "" ||
-			strings.EqualFold(o.Column, grid.ColName(col.Col)) {
+		plain := ""
+		if reg.HeaderRow > 0 {
+			plain = analyze.Label(fm.wb, s, reg.HeaderRow, col.Col)
+		}
+		name := strings.TrimSpace(o.Column)
+		if col.Header != "" && strings.EqualFold(name, strings.TrimSpace(col.Header)) ||
+			plain != "" && strings.EqualFold(name, strings.TrimSpace(plain)) ||
+			strings.EqualFold(name, grid.ColName(col.Col)) {
 			fm.matched[i] = true
 			kind, cf.forced = o.Format.Kind, true
 			if o.Format.Symbol != "" {
@@ -333,7 +341,6 @@ func (fm *formatter) decide(s *grid.Sheet, reg analyze.Region, col analyze.Colum
 		f.Decimals = timeSeconds(fm.wb, s, reg.Body, col.Col)
 	}
 	cf.fmt = f
-	cf.numeric = kind != grid.General && kind != grid.TextFmt
 	return cf
 }
 
@@ -344,100 +351,6 @@ func decimalPlaces(needed int, magnitude float64) int {
 		return min(max(needed, 2), 4)
 	}
 	return 2
-}
-
-// propagate gives formula columns the type of what they compute from:
-// =Units*Price is money when Price is. A division is left alone (a ratio of
-// two amounts is not an amount), and date arithmetic stays a date only
-// when one date is shifted (=Due+30), not when dates are subtracted.
-func (fm *formatter) propagate(s *grid.Sheet, reg analyze.Region, cols []analyze.Column, cfs []colFormat) {
-	index := map[int]int{}
-	for i, c := range cols {
-		index[c.Col] = i
-	}
-	for pass := 0; pass < 3; pass++ {
-		changed := false
-		for i, c := range cols {
-			if cfs[i].forced || len(c.Formulas) == 0 || c.FormulaGroupsMore > 0 {
-				continue
-			}
-			kind := cfs[i].fmt.Kind
-			if kind != grid.Integer && kind != grid.Decimal {
-				continue
-			}
-			var currency, dates int
-			symbol := ""
-			ok := true
-			for _, g := range c.Formulas {
-				cell := s.Get(g.Range.R1, c.Col)
-				if formula.Divides(cell.Formula) {
-					ok = false
-					break
-				}
-				for _, rc := range formula.SameRowColumns(cell.Formula, g.Range.R1) {
-					j, in := index[rc]
-					if !in || rc == c.Col {
-						continue
-					}
-					switch cfs[j].fmt.Kind {
-					case grid.Currency:
-						currency++
-						if symbol == "" {
-							symbol = cfs[j].fmt.Symbol
-						}
-					case grid.Date, grid.DateTime:
-						dates++
-					}
-				}
-			}
-			if !ok {
-				continue
-			}
-			first := s.Get(c.Formulas[0].Range.R1, c.Col).Formula
-			switch {
-			case currency > 0 && dates == 0 && callsOnly(first, keepsAmount):
-				cfs[i].fmt = grid.Format{Kind: grid.Currency, Symbol: symbol}
-				if c.Decimals > 0 {
-					cfs[i].fmt.Decimals = 2
-				}
-				cfs[i].plain = false
-				changed = true
-			case dates == 1 && currency == 0 && !formula.Multiplies(first) && callsOnly(first, keepsDate):
-				cfs[i].fmt = grid.Format{Kind: grid.Date}
-				if c.Min != math.Trunc(c.Min) || c.Max != math.Trunc(c.Max) {
-					cfs[i].fmt.Kind = grid.DateTime
-				}
-				cfs[i].plain = false
-				changed = true
-			}
-		}
-		if !changed {
-			return
-		}
-	}
-}
-
-// Functions whose result has the type of their arguments.
-var (
-	keepsAmount = setOf("SUM ROUND ROUNDUP ROUNDDOWN MROUND CEILING FLOOR CEILING.MATH FLOOR.MATH MAX MIN ABS IF IFS IFERROR IFNA AVERAGE SUMIF SUMIFS AVERAGEIF AVERAGEIFS")
-	keepsDate   = setOf("EDATE EOMONTH WORKDAY WORKDAY.INTL MAX MIN IF IFS IFERROR IFNA")
-)
-
-func setOf(s string) map[string]bool {
-	m := map[string]bool{}
-	for _, f := range strings.Fields(s) {
-		m[f] = true
-	}
-	return m
-}
-
-func callsOnly(f string, allowed map[string]bool) bool {
-	for _, fn := range formula.Calls(f) {
-		if !allowed[fn] {
-			return false
-		}
-	}
-	return true
 }
 
 func timeSeconds(wb *grid.Workbook, s *grid.Sheet, body grid.Range, col int) int {
@@ -600,7 +513,22 @@ func (fm *formatter) region(s *grid.Sheet, reg analyze.Region, w widths, listObj
 	for i, c := range cols {
 		cfs[i] = fm.decide(s, reg, c)
 	}
-	fm.propagate(s, reg, cols, cfs)
+	// Overrides can change what formula columns compute from
+	// (--as Price=currency makes =Units*Price currency too).
+	fmts := make([]grid.Format, len(cfs))
+	locked := make([]bool, len(cfs))
+	for i, cf := range cfs {
+		fmts[i], locked[i] = cf.fmt, cf.forced
+	}
+	for i, changed := range analyze.Propagate(s, cols, fmts, locked) {
+		if !changed {
+			continue
+		}
+		cfs[i].fmt, cfs[i].plain = fmts[i], false
+		if fmts[i].Kind == grid.Currency && cols[i].Decimals > 0 {
+			cfs[i].fmt.Decimals = 2
+		}
+	}
 	wraps := false
 	for i, c := range cols {
 		if style.TextWidth(strings.Repeat("n", c.MaxLen))+2 > p.MaxWidth && c.Type != "empty" {
@@ -651,15 +579,39 @@ func (fm *formatter) region(s *grid.Sheet, reg analyze.Region, w widths, listObj
 		if table {
 			filter = 3 // room for the filter button
 		}
-		for i, c := range cols {
-			align := "left"
-			if cfs[i].numeric {
-				align = "right"
-			}
-			if err := set(reg.HeaderRow, c.Col, cellStyle{bold: true, size: p.Size, color: p.HeaderFont, fill: p.HeaderFill, align: align, valign: "center", border: true}); err != nil {
+		for _, c := range cols {
+			// Left-aligned, every column: the filter button sits at the
+			// right edge of the cell, and the width leaves it room.
+			if err := set(reg.HeaderRow, c.Col, cellStyle{bold: true, size: p.Size, color: p.HeaderFont, fill: p.HeaderFill, align: "left", valign: "center", border: true}); err != nil {
 				return ft, err
 			}
-			w.see(c.Col, style.TextWidth(c.Header)*1.1+filter)
+			w.see(c.Col, style.TextWidth(analyze.Label(fm.wb, s, reg.HeaderRow, c.Col))*1.1+filter)
+		}
+		// A group row (Q1 over Units, Revenue) looks like the header, each
+		// label centred across the empty cells after it that it groups,
+		// with no borders inside the group. Merged labels centre already.
+		if reg.GroupRow > 0 {
+			r := reg.GroupRow
+			label := 0 // column of the label the empty cells belong to
+			empty := func(col int) bool { c := s.At(r, col); return c == nil || c.IsEmpty() }
+			for col := reg.Range.C1; col <= reg.Range.C2; col++ {
+				cs := cellStyle{bold: true, size: p.Size, color: p.HeaderFont, fill: p.HeaderFill, align: "center", valign: "center", border: true}
+				if !empty(col) {
+					label = col
+				}
+				if inMerge(s, r, col) {
+					label = 0
+				}
+				grouped := label > 0 && col+1 <= reg.Range.C2 && empty(col+1) && !inMerge(s, r, col+1)
+				if label > 0 && (col > label || grouped) {
+					cs.align = "centerContinuous"
+					cs.noLeft = col > label
+					cs.noRight = grouped
+				}
+				if err := set(r, col, cs); err != nil {
+					return ft, err
+				}
+			}
 		}
 	}
 
@@ -770,4 +722,14 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// inMerge reports whether a cell is part of a merged area.
+func inMerge(s *grid.Sheet, r, c int) bool {
+	for _, m := range s.Merges {
+		if m.Contains(r, c) {
+			return true
+		}
+	}
+	return false
 }

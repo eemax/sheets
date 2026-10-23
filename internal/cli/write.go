@@ -26,6 +26,7 @@ type writeResult struct {
 	CreatedFile  bool              `json:"created_file,omitempty"`
 	CreatedSheet bool              `json:"created_sheet,omitempty"`
 	Types        map[string]string `json:"types,omitempty"`
+	Note         string            `json:"note,omitempty"`
 	Formulas     *formulaReport    `json:"formulas,omitempty"`
 	Warnings     []string          `json:"warnings,omitempty"`
 }
@@ -93,10 +94,10 @@ skipped.`,
 			if err != nil {
 				return err
 			}
-			res.Warnings = ed.Warnings()
 			if err := ed.Save(a.dryRun); err != nil {
 				return err
 			}
+			res.Warnings = ed.Warnings()
 			if a.json {
 				return a.printJSON(res)
 			}
@@ -153,7 +154,8 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 	for i := range cols {
 		cols[i] = col0 + i
 	}
-	skipped := 0 // input rows consumed as a header
+	skipped := 0                         // input rows consumed as a header
+	var totals func() ([]cellRef, error) // extends a total row over appended rows
 	if clear {
 		if err := ed.Clear(sheet); err != nil {
 			return nil, err
@@ -161,8 +163,12 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 	} else if appendRows {
 		if used := s.Used(); !used.Empty() {
 			row0 = used.R2 + 1
+			table := lastTable(wb, s)
 			if anchor == nil {
 				col0 = used.C1
+				if table != nil {
+					col0 = table.Range.C1
+				}
 				for i := range cols {
 					cols[i] = col0 + i
 				}
@@ -176,6 +182,49 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 				if len(rows) == 0 {
 					return nil, errors.New("input has a header row but no data rows")
 				}
+			}
+			// Append to the table, not below whatever follows it: above its
+			// total row (whose sums then grow to cover the new rows), or
+			// pushing notes below it down.
+			if table != nil && (table.TotalRow > 0 || table.Range.R2 < used.R2) {
+				at := table.Range.R2 + 1
+				if table.TotalRow > 0 {
+					at = table.TotalRow
+				}
+				if err := ed.InsertRows(sheet, at, len(rows)); err != nil {
+					return nil, err
+				}
+				row0 = at
+				if table.TotalRow > 0 {
+					res.Note = "inserted above the total row, whose formulas now cover the new rows"
+					totals = func() ([]cellRef, error) {
+						n := len(rows)
+						var changed []cellRef
+						for col := table.Range.C1; col <= table.Range.C2; col++ {
+							f := s.Get(table.TotalRow, col).Formula
+							if f == "" {
+								continue
+							}
+							moved := formula.InsertLines(f, sheet, sheet, false, at, n)
+							grown := formula.ExtendRanges(moved, sheet, sheet, table.Body.R2, table.Body.R2+n)
+							if grown == moved {
+								continue
+							}
+							if err := ed.Set(sheet, table.TotalRow+n, col, input.Value{Formula: grown}); err != nil {
+								return nil, err
+							}
+							changed = append(changed, cellRef{sheet, table.TotalRow + n, col, false})
+						}
+						return changed, nil
+					}
+				} else {
+					res.Note = "inserted below the table, moving what follows it down"
+				}
+			}
+			if table != nil {
+				// Its charts and Excel table take in the new rows; after
+				// the insertion, which moves what lay below.
+				ed.ExtendTable(sheet, table.Body, len(rows))
 			}
 		}
 	}
@@ -211,6 +260,13 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 			}
 		}
 	}
+	if totals != nil {
+		changed, err := totals()
+		if err != nil {
+			return nil, err
+		}
+		formulas = append(formulas, changed...)
+	}
 	res.Rows, res.Cols = len(rows), maxCol-minCol+1
 	res.Range = grid.Range{R1: row0, C1: minCol, R2: row0 + len(rows) - 1, C2: maxCol}.String()
 	res.Types = map[string]string{}
@@ -235,6 +291,18 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 	return res, nil
 }
 
+// lastTable returns the bottom-most table on a sheet.
+func lastTable(wb *grid.Workbook, s *grid.Sheet) *analyze.Region {
+	var t *analyze.Region
+	for _, reg := range analyze.Regions(wb, s) {
+		if reg.IsTable() && (t == nil || reg.Range.R2 > t.Range.R2) {
+			r := reg
+			t = &r
+		}
+	}
+	return t
+}
+
 // matchHeader maps input columns to sheet columns by header name when the
 // first input row consists of the sheet's header labels.
 func matchHeader(wb *grid.Workbook, s *grid.Sheet, first []input.Value) ([]int, bool, error) {
@@ -251,13 +319,23 @@ func matchHeader(wb *grid.Workbook, s *grid.Sheet, first []input.Value) ([]int, 
 	if header == nil {
 		return nil, false, nil
 	}
+	// Columns match by their full label (Q1 / Units) or, when that is
+	// unambiguous, by the header alone (Units).
 	byName := map[string]int{}
+	plain := map[string][]int{}
 	var names []string
 	for col := header.Range.C1; col <= header.Range.C2; col++ {
-		h := strings.TrimSpace(analyze.Label(wb, s, header.HeaderRow, col))
-		if h != "" {
-			byName[strings.ToLower(h)] = col
-			names = append(names, h)
+		if full := strings.TrimSpace(analyze.ColumnLabel(wb, s, *header, col)); full != "" {
+			byName[strings.ToLower(full)] = col
+			names = append(names, full)
+		}
+		if p := strings.ToLower(strings.TrimSpace(analyze.Label(wb, s, header.HeaderRow, col))); p != "" {
+			plain[p] = append(plain[p], col)
+		}
+	}
+	for p, cols := range plain {
+		if _, taken := byName[p]; !taken && len(cols) == 1 {
+			byName[p] = cols[0]
 		}
 	}
 	cols := make([]int, len(first))
@@ -343,6 +421,9 @@ func (a *app) printWrite(res *writeResult) {
 		line += " (" + strings.Join(notes, ", ") + ")"
 	}
 	a.printf("%s\n", line)
+	if res.Note != "" {
+		a.printf("%s\n", res.Note)
+	}
 	if len(res.Types) > 0 {
 		var cols []string
 		for c := range res.Types {

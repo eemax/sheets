@@ -1,0 +1,46 @@
+# diff shows what a command changed (from the undo history) or how two
+# files differ, aligning rows so insertions read as insertions.
+stdin data.tsv
+exec sheets write book.xlsx Data
+exec sheets diff book.xlsx
+stdout 'the file did not exist before'
+stdout '^Data: added \(A1:D5\)$'
+
+exec sheets set book.xlsx B3 30
+exec sheets diff book.xlsx
+stdout '^book.xlsx: before sheets set book.xlsx B3 30 \(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\) → now$'
+stdout '^Data: 4 cells changed$'
+stdout '^  B3  3 → 30$'
+stdout '^  D3  12 → 120  \(result of =B3\*C3\)$'
+stdout '^  D5  44 → 152  \(result of =SUM\(D2:D4\)\)$'
+
+stdin more.tsv
+exec sheets write book.xlsx --append
+exec sheets diff book.xlsx
+stdout '^Data: 1 row added, 2 cells changed$'
+stdout '^  \+ row 5: "z", 9, 1$'
+stdout '^  B6 \(was B5\)  =SUM\(B2:B4\) → =SUM\(B2:B5\)$'
+
+exec sheets diff book.xlsx --since 2 --json
+stdout '"rows_added":\[\{"from":5,"to":5,"content":"\\"z\\", 9, 1"\}\]'
+
+cp book.xlsx copy.xlsx
+exec sheets sheet rename copy.xlsx Data Stock
+exec sheets diff book.xlsx copy.xlsx
+stdout '^Stock: renamed from Data$'
+! exec sheets diff book.xlsx copy.xlsx --exit-code
+exec sheets diff book.xlsx book.xlsx --exit-code
+stdout 'no differences'
+
+! exec sheets diff other.xlsx
+stderr 'no recorded changes to other.xlsx'
+
+-- data.tsv --
+Item	Qty	Price	Total
+a	1	2	=B{r}*C{r}
+b	3	4	=B{r}*C{r}
+c	5	6	=B{r}*C{r}
+Sum	=SUM(B2:B4)		=SUM(D2:D4)
+-- more.tsv --
+Item	Qty	Price
+z	9	1
