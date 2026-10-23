@@ -1,0 +1,42 @@
+# fmt is idempotent and --check reports via exit status.
+stdin data.tsv
+exec sheets write book.xlsx Data
+
+! exec sheets fmt book.xlsx --check
+stdout 'needs formatting'
+
+exec sheets fmt book.xlsx
+cmp stdout fmt.out
+
+exec sheets fmt book.xlsx --check
+stdout 'is formatted'
+
+# The detected types persist in the number formats, so a second run with
+# an override changes the file, and --check without it is still clean.
+exec sheets fmt book.xlsx --as Amount=currency:€
+stdout 'Amount currency €'
+exec sheets fmt book.xlsx --check
+
+! exec sheets fmt book.xlsx --check --preset finance --json
+! stdout '"formatted":true'
+
+! exec sheets fmt book.xlsx --as Nope=currency
+stderr 'no table column'
+
+! exec sheets fmt book.xlsx --as Amount=money2
+stderr 'unknown type'
+
+! exec sheets fmt book.xlsx --preset loud
+stderr 'unknown preset "loud" \(presets: default, finance\)'
+
+exec sheets fmt --list-presets
+stdout '^finance'
+
+-- data.tsv --
+Order ID	Year	Amount	Rate
+1001	2024	1200.5	0.0325
+1002	2025	900	0.041
+1003	2026	15000	0.05
+-- fmt.out --
+formatted book.xlsx · preset default
+Data  table A1:D4: Order ID integer, Year integer, Amount decimal, Rate decimal

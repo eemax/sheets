@@ -1,0 +1,38 @@
+# set: single cells, fill-down with shifted references, formula errors.
+exec sheets set book.xlsx A1 Qty B1 Price C1 Total A2 3 B2 2.5 A3 4 B3 1.5
+exec sheets set book.xlsx C2:C3 =A2*B2
+cmp stdout fill.out
+
+exec sheets read book.xlsx --formulas
+cmp stdout formulas.out
+
+exec sheets set book.xlsx D2 =A2/0
+stdout '1 formula error: Sheet1!D2 #DIV/0!'
+
+exec sheets set book.xlsx D3 =NOPE(A3)
+stdout '1 formula error: Sheet1!D3 #NAME\? \(unknown function NOPE\)'
+
+# A real Excel function the calculator lacks is not an error.
+exec sheets set book.xlsx D4 '=LET(x,A2,x*2)'
+stdout 'not evaluated: Sheet1!D4: .*Excel computes it on open'
+! stdout 'formula error'
+
+exec sheets set book.xlsx 'Other!B2' hello
+exec sheets info book.xlsx
+stdout '^Other  B2$'
+
+! exec sheets set book.xlsx A1
+stderr 'expected <file> followed by <cell> <value> pairs'
+
+! exec sheets set book.xlsx A:A 1
+stderr 'whole rows or columns'
+
+-- fill.out --
+Sheet1!C2:C3 ← =A2*B2 (2 cells)
+formulas: Sheet1!C2 = 7.5, Sheet1!C3 = 6
+-- formulas.out --
+Sheet1!A1:C3
+	A	B	C
+1	Qty	Price	Total
+2	3	2.5	=A2*B2
+3	4	1.5	=A3*B3

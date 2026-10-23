@@ -1,0 +1,33 @@
+# {r} in a written formula is the row it lands on, so peek's patterns can be
+# written back, including with --append where the row is not known upfront.
+stdin first.tsv
+exec sheets write book.xlsx Sales
+stdout 'formulas: C2 = 50, C3 = 120'
+
+stdin more.tsv
+exec sheets write book.xlsx Sales --append
+stdout 'formulas: C4 = 9'
+
+exec sheets set book.xlsx 'Sales!D2:D4' '=C{r}*2'
+stdout 'Sales!D2 = 100'
+
+exec sheets read book.xlsx Sales!C1:D4 --formulas
+cmp stdout formulas.out
+
+exec sheets peek book.xlsx --sample 0
+stdout 'C +Total +integer +3 +=A\{r\}\*B\{r\}'
+
+-- first.tsv --
+Units	Price	Total
+5	10	=A{r}*B{r}
+6	20	=A{r}*B{r}
+-- more.tsv --
+Units	Price	Total
+3	3	=A{r}*B{r}
+-- formulas.out --
+Sales!C1:D4
+	C	D
+1	Total
+2	=A2*B2	=C2*2
+3	=A3*B3	=C3*2
+4	=A4*B4	=C4*2

@@ -1,0 +1,83 @@
+# Write TSV into a new workbook, then look at it every way.
+stdin sales.tsv
+exec sheets write book.xlsx Sales
+cmp stdout write.out
+
+exec sheets info book.xlsx
+cmp stdout info.out
+
+exec sheets peek book.xlsx
+cmp stdout peek.out
+
+exec sheets read book.xlsx Sales!A1:D3
+cmp stdout read.out
+
+exec sheets read book.xlsx 'Sales!F2:F4' --formulas
+cmp stdout formulas.out
+
+exec sheets read book.xlsx Sales -n 2
+cmp stdout paged.out
+
+exec sheets read book.xlsx Sales!A2:C3 --json
+cmp stdout read.json
+
+exec sheets read book.xlsx Sales!A1:C3 --format csv
+cmp stdout read.csv
+
+-- sales.tsv --
+Date	Region	Units	Price	Share	Revenue
+2026-07-01	North	120	$12.50	18%	=C2*D2
+2026-07-02	South	80	$30.00	22.5%	=C3*D3
+2026-07-03	East	2,000	$12.50	-3%	=C4*D4
+Total		=SUM(C2:C4)			=SUM(F2:F4)
+-- write.out --
+wrote 5 rows × 6 cols to Sales!A1:F5 (new file)
+types: A date, C integer, D currency, E percent, F formula
+formulas: F2 = 1500, F3 = 2400, F4 = 25000, C5 = 2200, F5 = 28900
+next: sheets fmt book.xlsx
+-- info.out --
+book.xlsx · xlsx · 6 KB · 1 sheet
+Sales  A1:F5 · 5 formulas
+  A1:F5  table · 3 rows + total · Date, Region, Units, Price, Share, Revenue
+next: sheets peek book.xlsx Sales
+-- peek.out --
+Sales!A1:F5 · table · header row 1 · 3 rows + total row 5
+col  header   type        filled  values
+A    Date     date        3       2026-07-01 … 2026-07-03
+B    Region   text        3       "North", "South", "East"
+C    Units    integer     3       80 … 2000 · sum 2200
+D    Price    currency $  3       12.5 … 30 · sum 55
+E    Share    percent     3       -3% … 22.5%
+F    Revenue  integer     3       =C{r}*D{r} · 1500 … 25000 · sum 28900
+sample:
+	A	B	C	D	E	F
+1	Date	Region	Units	Price	Share	Revenue
+2	2026-07-01	North	120	12.5	18%	1500
+3	2026-07-02	South	80	30	22.5%	2400
+4	2026-07-03	East	2000	12.5	-3%	25000
+next: sheets read book.xlsx 'Sales!A1:F5'
+-- read.out --
+Sales!A1:D3
+	A	B	C	D
+1	Date	Region	Units	Price
+2	2026-07-01	North	120	12.5
+3	2026-07-02	South	80	30
+-- formulas.out --
+Sales!F2:F4
+	F
+2	=C2*D2
+3	=C3*D3
+4	=C4*D4
+-- paged.out --
+Sales!A1:F2 (of A1:F5)
+	A	B	C	D	E	F
+1	Date	Region	Units	Price	Share	Revenue
+2	2026-07-01	North	120	12.5	18%	1500
+… 3 more rows
+next: sheets read book.xlsx 'Sales!A3:F4'
+-- read.json --
+{"sheet":"Sales","range":"A2:C3","columns":["A","B","C"],"rows":[{"row":2,"values":["2026-07-01","North",120]},{"row":3,"values":["2026-07-02","South",80]}]}
+-- read.csv --
+Date,Region,Units
+2026-07-01,North,120
+2026-07-02,South,80

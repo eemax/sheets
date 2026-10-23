@@ -1,0 +1,28 @@
+# Newer Excel functions are stored the way Excel expects, and the calculator
+# says when it cannot evaluate something rather than reporting an error.
+stdin data.tsv
+exec sheets write book.xlsx
+
+exec sheets set book.xlsx D1 '=XLOOKUP("b",A2:A4,B2:B4)' D2 '=UNIQUE(A2:A4)' D3 '=LET(x,B2,x*2)' D4 '=NOPE(1)'
+stdout 'formulas: Sheet1!D1 = 2, Sheet1!D2 = "a" \(spills\)'
+stdout '1 formula error: Sheet1!D4 #NAME\? \(unknown function NOPE\)'
+stdout 'not evaluated: Sheet1!D3: LET is not supported by the sheets calculator'
+
+# Formulas read back as typed, without the file format's prefixes.
+exec sheets read book.xlsx D1:D3 --formulas
+cmp stdout formulas.out
+
+exec sheets read book.xlsx D3
+stdout '^3\t\?$'
+
+-- data.tsv --
+Name	Score
+a	1
+b	2
+a	3
+-- formulas.out --
+Sheet1!D1:D3
+	D
+1	=XLOOKUP("b",A2:A4,B2:B4)
+2	=UNIQUE(A2:A4)
+3	=LET(x,B2,x*2)

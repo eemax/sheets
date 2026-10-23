@@ -1,0 +1,19 @@
+# Errors name the problem and the way out.
+! exec sheets info missing.xlsx
+stderr 'no such file'
+
+! exec sheets info notes.txt
+stderr 'unsupported file type ".txt"'
+
+exec sheets set book.xlsx Data!A1 x
+! exec sheets read book.xlsx Nope!A1
+stderr 'sheet "Nope" not found \(sheets: Data\)'
+
+! exec sheets read book.xlsx Data!ZZZZ1
+stderr 'invalid'
+
+! exec sheets info notes.txt --json
+stderr '^\{"error":'
+
+-- notes.txt --
+not a spreadsheet

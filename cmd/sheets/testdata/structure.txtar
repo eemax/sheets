@@ -1,0 +1,62 @@
+# Inserting and deleting rows, columns and sheets keeps formulas right, and
+# undo takes changes back.
+stdin data.tsv
+exec sheets write book.xlsx Data
+exec sheets set book.xlsx Summary!A1 '=Data!B4' Summary!A2 '=SUM(Data!B2:B5)'
+
+exec sheets rows insert book.xlsx Data!3 -n 2
+stdout 'inserted 2 rows before Data!3 \(new: Data!3:4\)'
+exec sheets read book.xlsx Summary --formulas
+stdout '=Data!B6'
+stdout '=SUM\(Data!B2:B7\)'
+
+# Deleting a row a formula points into gives #REF!, as in Excel.
+exec sheets rows delete book.xlsx Data!6
+stdout 'deleted Data!6 \(2 values\)'
+stdout 'warning: 1 formula now contains #REF! .*Summary!A1'
+exec sheets read book.xlsx Summary --formulas
+stdout '=Data!#REF!'
+stdout '=SUM\(Data!B2:B6\)'
+
+exec sheets undo book.xlsx
+stdout 'undid sheets rows delete'
+exec sheets read book.xlsx Summary --formulas
+stdout '=Data!B6'
+
+exec sheets cols insert book.xlsx Data!B
+exec sheets read book.xlsx Summary --formulas
+stdout '=Data!C6'
+
+# Renaming a sheet updates every formula that refers to it.
+exec sheets sheet rename book.xlsx Data 'Sales 2026'
+stdout 'renamed Data to ''Sales 2026'' \(2 references updated\)'
+exec sheets read book.xlsx Summary --formulas
+stdout '=''Sales 2026''!C6'
+
+! exec sheets sheet delete book.xlsx 'Sales 2026'
+stderr 'still referenced by 2 references: Summary!A1, Summary!A2'
+
+exec sheets sheet copy book.xlsx 'Sales 2026' Backup
+stdout 'sheets: Sales 2026, Backup, Summary'
+exec sheets sheet move book.xlsx Summary --first
+stdout 'sheets: Summary, Sales 2026, Backup'
+exec sheets sheet hide book.xlsx Backup
+stdout 'Backup \(hidden\)'
+
+exec sheets --dry-run sheet delete book.xlsx Backup
+stdout 'dry run: nothing was saved'
+exec sheets info book.xlsx
+stdout '^Backup  hidden'
+
+! exec sheets rows delete book.xlsx 'Sales 2026!x'
+stderr 'give rows like Sheet!5 or Sheet!5:9'
+
+exec sheets undo book.xlsx --list
+stdout 'sheets sheet hide book.xlsx Backup'
+
+-- data.tsv --
+Item	Qty
+a	1
+b	2
+c	3
+d	4

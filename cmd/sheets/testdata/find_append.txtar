@@ -1,0 +1,38 @@
+# find reports addresses with their column header; --append matches headers.
+stdin people.json
+exec sheets write book.xlsx People
+stdout 'wrote 3 rows × 3 cols to People!A1:C3'
+
+stdin more.tsv
+exec sheets write book.xlsx People --append
+stdout 'wrote 1 row × 3 cols to People!A4:C4'
+
+exec sheets find book.xlsx ada
+cmp stdout find.out
+
+exec sheets find book.xlsx '^b' --regex --sheet People
+stdout 'People!A3 +\[Name\] +Bob'
+
+exec sheets find book.xlsx nobody
+stdout 'no matches'
+
+exec sheets read book.xlsx --format tsv
+cmp stdout all.tsv
+
+-- people.json --
+[{"Name": "Ada", "Email": "ada@example.com", "Joined": "2026-01-15"},
+ {"Name": "Bob", "Joined": "2026-02-01", "Email": "bob@example.com"}]
+-- more.tsv --
+Joined	Name	Email
+2026-03-01	Adam	adam@example.com
+-- find.out --
+People!A2  [Name]   Ada
+People!B2  [Email]  ada@example.com
+People!A4  [Name]   Adam
+People!B4  [Email]  adam@example.com
+4 matches
+-- all.tsv --
+Name	Email	Joined
+Ada	ada@example.com	2026-01-15
+Bob	bob@example.com	2026-02-01
+Adam	adam@example.com	2026-03-01

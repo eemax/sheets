@@ -1,0 +1,7 @@
+exec sheets skill
+stdout '^name: sheets$'
+stdout 'guide for agents'
+
+exec sheets skill --install --dir skills
+stdout 'installed skills/sheets/SKILL.md'
+exists skills/sheets/SKILL.md
