@@ -68,6 +68,9 @@ columns in different units on one axis.`,
 		Short: "Add a chart of a table",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := xlsxOnly(args[0], "it cannot hold charts; convert it first: sheets convert "+args[0]+" book.xlsx"); err != nil {
+				return err
+			}
 			ed, err := book.Edit(args[0], false)
 			if err != nil {
 				return err

@@ -100,7 +100,34 @@ func (c *calc) analyse() {
 		}
 	}
 	ty := newTyper(c.wb, nil, nil, false, c.at, pending, rs)
-	c.j = newJudge(c.f, g, rs, ty, pending, plan.frozen, func(f *formulaAt) (grid.Cell, bool) {
+	// Aggregates of references from the cells' values, as Excel computes
+	// them (see Editor.calcFile).
+	used := func(sheet string) grid.Range {
+		if s := c.wb.Sheet(sheet); s != nil {
+			return s.Used()
+		}
+		return grid.Range{R1: 1, C1: 1}
+	}
+	plan.native = nativeAggregates(used, func(j *judge, sheet string, r, col int) (grid.Cell, bool) {
+		if f := c.at[keyOf(sheet, r, col)]; f != nil {
+			res := j.result(f)
+			if res.err != nil {
+				return grid.Cell{}, false
+			}
+			v := res.v
+			if v.Kind != grid.Error {
+				if typed, ok := formula.Typed(res.raw, j.ty.kindsOf(f)); ok {
+					v = typed
+				}
+			}
+			return v, true
+		}
+		if s := c.wb.Sheet(sheet); s != nil {
+			return s.Get(r, col), true
+		}
+		return grid.Cell{}, true
+	})
+	c.j = newJudge(c.f, g, rs, ty, pending, plan, func(f *formulaAt) (grid.Cell, bool) {
 		return f.stored, f.stored.Kind != grid.Empty && !f.pending
 	}, time.Now().Add(24*time.Hour))
 }

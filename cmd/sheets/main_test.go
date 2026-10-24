@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 
 	"github.com/rogpeppe/go-internal/testscript"
@@ -18,6 +19,11 @@ func TestScripts(t *testing.T) {
 		UpdateScripts: *update,
 		Setup: func(env *testscript.Env) error {
 			env.Setenv("SHEETS_CACHE_DIR", env.WorkDir+"/.cache")
+			// SHEETS_STREAM=always runs every script through the streaming
+			// editor, as large files are edited.
+			if v := os.Getenv("SHEETS_STREAM"); v != "" {
+				env.Setenv("SHEETS_STREAM", v)
+			}
 			return nil
 		},
 	})

@@ -9,13 +9,15 @@ import (
 
 const skillFront = `---
 name: sheets
-description: Read, write and format Excel spreadsheets (.xlsx, .xlsm) with the sheets CLI. Use whenever a task involves a spreadsheet file - seeing what a workbook holds, reading or searching cells, writing data or formulas, inserting or deleting rows, columns or sheets, making a sheet look professional, or styling it as asked (fills, number formats, highlights, dropdowns, frozen panes). Prefer it over writing openpyxl or pandas code; its output is sized for your context.
+description: Read, write and format Excel spreadsheets (.xlsx, .xlsm) and CSV files with the sheets CLI. Use whenever a task involves a spreadsheet or CSV file - seeing what it holds, reading or searching cells, writing data or formulas, sorting, copying, moving or replacing cells, inserting or deleting rows, columns or sheets, notes and links, making a sheet look professional, or styling it as asked (fills, number formats, highlights, dropdowns, frozen panes), or converting between CSV and Excel. Prefer it over writing openpyxl or pandas code; its output is sized for your context.
 ---
 
 `
 
-// skill returns the Claude Code skill: the agent guide with frontmatter.
-func skill() string { return skillFront + agentDocs }
+// skill returns the Claude Code skill: the guide's index with frontmatter.
+// The index is short, and points at the guide's topics (sheets agent-docs
+// TOPIC), so a task loads only the parts it needs.
+func skill() string { return skillFront + agentIndex }
 
 func (a *app) skillCmd() *cobra.Command {
 	var install, project bool

@@ -454,3 +454,26 @@ func TestArrayArithmeticNotStored(t *testing.T) {
 		t.Errorf("F1 stores %q, want 36", got)
 	}
 }
+
+// Renaming a table column by its header renames it in formulas when saved;
+// the results computed before that must use the new name too.
+func TestResultsAfterColumnRename(t *testing.T) {
+	path := writeBook(t, [][]string{
+		{"Region", "Units", "Price"},
+		{"East", "5", "30"},
+		{"West", "2", "40"},
+	})
+	change(t, path, func(e *Editor) {
+		must(t, e.f.AddTable("Data", &excelize.Table{Range: "A1:C3", Name: "Sales"}))
+		must(t, e.Set("Data", 5, 1, input.Parse("=SUM(Sales[Units])", false)))
+	})
+	change(t, path, func(e *Editor) {
+		must(t, e.Set("Data", 1, 2, input.Parse("Qty", false)))
+	})
+	wb, err := Read(path)
+	must(t, err)
+	s := wb.Sheet("Data")
+	if c := s.At(5, 1); c.Formula != "SUM(Sales[Qty])" || c.Pending || c.Num != 7 {
+		t.Errorf("A5 = %+v, want =SUM(Sales[Qty]) stored as 7", c)
+	}
+}

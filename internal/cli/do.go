@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/eemax/sheets/internal/book"
 	"io"
 	"os"
 	"path/filepath"
@@ -45,6 +46,7 @@ type doEntry struct {
 var notInBatch = map[string]string{
 	"do": "a batch cannot run another", "undo": "run it after the batch",
 	"diff": "it compares two files", "render": "run it after the batch",
+	"convert":    "it writes another file; run it after the batch",
 	"agent-docs": "it is not about the file", "skill": "it is not about the file",
 	"help": "it is not about the file", "completion": "it is not about the file",
 }
@@ -236,11 +238,8 @@ func subNames(c *cobra.Command) string {
 }
 
 func isWorkbookPath(s string) bool {
-	switch strings.ToLower(filepath.Ext(s)) {
-	case ".xlsx", ".xlsm", ".xltx", ".xltm":
-		return true
-	}
-	return false
+	_, err := book.FormatOf(s)
+	return err == nil
 }
 
 func sameFile(a, b string) bool {

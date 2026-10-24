@@ -295,7 +295,7 @@ func (e *Editor) nameColumns(t tableNow, data []byte) ([]byte, error) {
 			}
 			was := text
 			text = "Column" + strconv.Itoa(n)
-			if err := e.f.SetCellStr(t.sheet, cell, text); err != nil {
+			if err := setText(e.f, t.sheet, cell, text); err != nil {
 				return nil, err
 			}
 			e.touch(t.sheet, t.ref.R1, t.ref.C1+i)
@@ -306,7 +306,7 @@ func (e *Editor) nameColumns(t tableNow, data []byte) ([]byte, error) {
 			e.warnings = append(e.warnings, fmt.Sprintf("header %s of Excel table %q %s; it is now %q, as Excel would name it", cell, t.name, why, text))
 		case typ != excelize.CellTypeSharedString && typ != excelize.CellTypeInlineString:
 			// A number or date as a header: Excel keeps header cells as text.
-			if err := e.f.SetCellStr(t.sheet, cell, text); err != nil {
+			if err := setText(e.f, t.sheet, cell, text); err != nil {
 				return nil, err
 			}
 			e.touch(t.sheet, t.ref.R1, t.ref.C1+i)

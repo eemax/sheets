@@ -84,6 +84,11 @@ func computableDepth(text string, rs *resolver, sheet string, depth int) (bool, 
 	}
 	for _, n := range d.Names {
 		if def := rs.lookup(n, sheet); def != nil {
+			// A name whose cells were deleted points at #REF!, which
+			// the calculator reads as nothing.
+			if errs := formula.ErrorLiterals(def.text); len(errs) > 0 {
+				return false, "it uses the name " + n + ", which points at " + errs[0]
+			}
 			if ok, why := computableDepth(def.text, rs, sheet, depth+1); !ok {
 				return false, "it uses the name " + n + ": " + why
 			}

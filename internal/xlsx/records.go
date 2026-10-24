@@ -29,13 +29,25 @@ const maxRecordText = 255
 
 // A Record is one entry of the record.
 type Record struct {
-	Seq   int        `json:"seq"`
-	Kind  string     `json:"kind"` // style, cond, view
-	Sheet string     `json:"sheet"`
-	Range grid.Range `json:"-"`
-	Ref   string     `json:"range"`
-	Args  []string   `json:"args"`
+	Seq   int    `json:"seq"`
+	Kind  string `json:"kind"` // style, cond, view
+	Sheet string `json:"sheet"`
+	// Areas are the cells it applies to: one range, or for styling that
+	// moved or was cleared in part, several (Excel keeps a name over
+	// several areas, Sales!$A$1:$F$1,Sales!$A$3:$F$3).
+	Areas []grid.Range `json:"-"`
+	Ref   string       `json:"range"`
+	Args  []string     `json:"args"`
 	name  string
+}
+
+// Range is the first of the record's areas, the only one of a cond or view
+// entry.
+func (r Record) Range() grid.Range {
+	if len(r.Areas) == 0 {
+		return grid.Range{}
+	}
+	return r.Areas[0]
 }
 
 // Text is the record as a command line: kind and arguments.
@@ -58,6 +70,16 @@ func absRef(sheet string, r grid.Range) string {
 	return q + a + ":$" + grid.ColName(r.C2) + "$" + strconv.Itoa(r.R2)
 }
 
+// areasRef writes several areas of a sheet as one reference, joined by
+// commas as Excel writes a union.
+func areasRef(sheet string, areas []grid.Range) string {
+	parts := make([]string, len(areas))
+	for i, a := range areas {
+		parts[i] = absRef(sheet, a)
+	}
+	return strings.Join(parts, ",")
+}
+
 // parseAbsRef reads what absRef writes; ok is false for a reference that
 // lost its range (#REF!).
 func parseAbsRef(s string) (string, grid.Range, bool) {
@@ -75,6 +97,58 @@ func parseAbsRef(s string) (string, grid.Range, bool) {
 		return "", grid.Range{}, false
 	}
 	return sheet, r, true
+}
+
+// parseAreas reads what areasRef writes. Areas that lost their range
+// (#REF!, after Excel deleted their rows) are left out; ok is false when
+// none is left, or the areas name different sheets.
+func parseAreas(s string) (string, []grid.Range, bool) {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "=")
+	sheet := ""
+	var areas []grid.Range
+	for _, part := range splitUnion(s) {
+		sh, r, ok := parseAbsRef(part)
+		if !ok {
+			continue
+		}
+		if sheet != "" && !strings.EqualFold(sh, sheet) {
+			return "", nil, false
+		}
+		sheet = sh
+		areas = append(areas, r)
+	}
+	return sheet, areas, len(areas) > 0
+}
+
+// splitUnion splits a reference at the commas between its areas, outside
+// quoted sheet names.
+func splitUnion(s string) []string {
+	var out []string
+	quoted, from := false, 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\'':
+			quoted = !quoted // '' inside a name toggles twice
+		case ',':
+			if !quoted {
+				out = append(out, s[from:i])
+				from = i + 1
+			}
+		}
+	}
+	return append(out, s[from:])
+}
+
+// refText shows a record's areas: Sales!A1:F1, or Sales!A1:F1,A3:F3.
+func refText(sheet string, areas []grid.Range) string {
+	if len(areas) == 0 {
+		return ""
+	}
+	t := grid.FormatRef(sheet, areas[0])
+	for _, a := range areas[1:] {
+		t += "," + a.String()
+	}
+	return t
 }
 
 // readRecords returns the record in order, and the names of entries whose
@@ -127,12 +201,12 @@ func recordsOf(defs []excelize.DefinedName, exists func(sheet string) bool) (rec
 		}
 		seq, err := strconv.Atoi(strings.TrimPrefix(d.Name, recordPrefix))
 		ws, err2 := words.Texts(d.Comment)
-		sheet, r, ok := parseAbsRef(d.RefersTo)
-		if err != nil || err2 != nil || len(ws) == 0 || !ok || !exists(sheet) {
+		sheet, areas, ok := parseAreas(d.RefersTo)
+		if err != nil || err2 != nil || len(ws) == 0 || !ok || !exists(sheet) || ws[0] != "style" && len(areas) > 1 {
 			gone = append(gone, d.Name)
 			continue
 		}
-		recs = append(recs, Record{Seq: seq, Kind: ws[0], Sheet: sheet, Range: r, Ref: grid.FormatRef(sheet, r), Args: ws[1:], name: d.Name})
+		recs = append(recs, Record{Seq: seq, Kind: ws[0], Sheet: sheet, Areas: areas, Ref: refText(sheet, areas), Args: ws[1:], name: d.Name})
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].Seq < recs[j].Seq })
 	return recs, gone
@@ -172,8 +246,43 @@ func addRecord(f *excelize.File, rec Record) (bool, error) {
 	return true, f.SetDefinedName(&excelize.DefinedName{
 		Name:     fmt.Sprintf("%s%06d", recordPrefix, seq+1),
 		Comment:  text,
-		RefersTo: absRef(rec.Sheet, rec.Range),
+		RefersTo: areasRef(rec.Sheet, rec.Areas),
 	})
+}
+
+// setAreas points an entry at other areas of its sheet, keeping its place
+// in the record; with none left, the entry goes.
+func setAreas(f *excelize.File, rec Record, areas []grid.Range) error {
+	if err := dropRecords(f, rec.name); err != nil {
+		return err
+	}
+	if len(areas) == 0 {
+		return nil
+	}
+	return f.SetDefinedName(&excelize.DefinedName{Name: rec.name, Comment: rec.Text(), RefersTo: areasRef(rec.Sheet, areas)})
+}
+
+// subtract returns the parts of r outside c, as up to four ranges: the
+// rows above c, the rows below, and to the left and right of c beside it.
+func subtract(r, c grid.Range) []grid.Range {
+	x := r.Intersect(c)
+	if x.Empty() {
+		return []grid.Range{r}
+	}
+	var out []grid.Range
+	if r.R1 < x.R1 {
+		out = append(out, grid.Range{R1: r.R1, C1: r.C1, R2: x.R1 - 1, C2: r.C2})
+	}
+	if x.R2 < r.R2 {
+		out = append(out, grid.Range{R1: x.R2 + 1, C1: r.C1, R2: r.R2, C2: r.C2})
+	}
+	if r.C1 < x.C1 {
+		out = append(out, grid.Range{R1: x.R1, C1: r.C1, R2: x.R2, C2: x.C1 - 1})
+	}
+	if x.C2 < r.C2 {
+		out = append(out, grid.Range{R1: x.R1, C1: x.C2 + 1, R2: x.R2, C2: r.C2})
+	}
+	return out
 }
 
 // supersedes tells whether a new entry makes an old one pointless: the same
@@ -187,8 +296,14 @@ func supersedes(rec, old Record) bool {
 	case "view":
 		return len(rec.Args) > 0 && len(old.Args) > 0 && viewKey(rec.Args[0]) == viewKey(old.Args[0])
 	case "style":
-		if !rec.Range.Contains(old.Range.R1, old.Range.C1) || !rec.Range.Contains(old.Range.R2, old.Range.C2) {
-			return false
+		for _, oa := range old.Areas {
+			covered := false
+			for _, na := range rec.Areas {
+				covered = covered || na.Contains(oa.R1, oa.C1) && na.Contains(oa.R2, oa.C2)
+			}
+			if !covered {
+				return false
+			}
 		}
 		nl, err1 := ParseLook(rec.Args)
 		ol, err2 := ParseLook(old.Args)
@@ -228,10 +343,11 @@ func clip(r, used grid.Range) grid.Range {
 	return r
 }
 
-var recordName = regexp.MustCompile(`<definedName\b[^>]*\bname="` + regexp.QuoteMeta(recordPrefix) + `[^"]*"[^>]*>`)
+var recordName = regexp.MustCompile(`<definedName\b[^>]*\bname="(?:` + regexp.QuoteMeta(recordPrefix) + `[^"]*|_xlnm\._FilterDatabase)"[^>]*>`)
 
 // hideRecords marks the record's names hidden, which excelize cannot set:
-// Excel then leaves them out of the Name Manager and the name box.
+// Excel then leaves them out of the Name Manager and the name box. A
+// filter's name, which relines puts back, is hidden as Excel keeps it.
 func hideRecords(wb []byte) []byte {
 	return recordName.ReplaceAllFunc(wb, func(tag []byte) []byte {
 		if strings.Contains(string(tag), ` hidden="`) {
@@ -239,4 +355,49 @@ func hideRecords(wb []byte) []byte {
 		}
 		return []byte(strings.Replace(string(tag), "<definedName ", `<definedName hidden="1" `, 1))
 	})
+}
+
+// condFormulas rewrites the formulas in a cond entry's words: a whole rule
+// (=$C2="Late"), or values (> =$B$1).
+func condFormulas(args []string, fn func(string) string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		t := strings.TrimSpace(a)
+		switch {
+		case strings.HasPrefix(t, "=") && !strings.HasPrefix(t, "==") && !strings.HasPrefix(t, "= "):
+			out[i] = "=" + fn(t[1:])
+		case strings.Contains(a, " ="):
+			fs := strings.Fields(a)
+			for j, f := range fs {
+				if strings.HasPrefix(f, "=") && len(f) > 1 && f[1] != '=' {
+					fs[j] = "=" + fn(f[1:])
+				}
+			}
+			out[i] = strings.Join(fs, " ")
+		default:
+			out[i] = a
+		}
+	}
+	return out
+}
+
+// rewriteCondRecords keeps the formulas of recorded conditional formats in
+// step with their rules, which fn rewrites (for moved cells or renamed
+// sheets); home is the entry's sheet. A rule elsewhere re-made from its
+// entry (copied, or moved to another sheet) then reads the right cells.
+func (e *Editor) rewriteCondRecords(fn func(f, home string) string) error {
+	for _, rec := range e.Records() {
+		if rec.Kind != "cond" {
+			continue
+		}
+		args := condFormulas(rec.Args, func(f string) string { return fn(f, rec.Sheet) })
+		if words.Join(args) == words.Join(rec.Args) {
+			continue
+		}
+		rec.Args = args
+		if err := setAreas(e.f, rec, rec.Areas); err != nil {
+			return err
+		}
+	}
+	return nil
 }

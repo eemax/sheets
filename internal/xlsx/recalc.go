@@ -46,6 +46,22 @@ type formulaAt struct {
 	calc string
 }
 
+// noteFresh notes, before a cell is first written in this session,
+// whether it is empty.
+func (e *Editor) noteFresh(sheet string, row, col int) {
+	k := keyOf(sheet, row, col)
+	if _, seen := e.changed[k]; seen {
+		return
+	}
+	if e.wasEmpty == nil {
+		e.wasEmpty = map[cellKey]bool{}
+	}
+	cell := grid.CellName(row, col)
+	v, _ := e.f.GetCellValue(sheet, cell, excelize.Options{RawCellValue: true})
+	f, _ := e.f.GetCellFormula(sheet, cell)
+	e.wasEmpty[k] = v == "" && f == ""
+}
+
 // touch records that a cell's content changed in this session.
 func (e *Editor) touch(sheet string, row, col int) {
 	if e.changed == nil {
@@ -156,6 +172,9 @@ func (x *depIndex) readers(k cellKey, fn func(id int)) {
 type resolver struct {
 	names  map[string][]nameDef // lower-cased name → definitions
 	tables []tableNow
+	// renames gives a formula the names of table columns renamed after
+	// their headers this session, which it takes when saved (nil: none).
+	renames func(text, sheet string, row, col int) string
 }
 
 type nameDef struct {
@@ -183,6 +202,13 @@ func (e *Editor) resolver() *resolver {
 				tn.columns = columnNames(x)
 			}
 			rs.tables = append(rs.tables, tn)
+		}
+	}
+	if len(e.patches.columnRenames) > 0 {
+		rs.renames = func(text, sheet string, row, col int) string {
+			return e.patches.renameColumns(text, func(cr *columnRename) bool {
+				return strings.EqualFold(cr.sheet, sheet) && cr.ref.Contains(row, col)
+			})
 		}
 	}
 	return rs
@@ -280,16 +306,145 @@ func (rs *resolver) tableRanges(f *formulaAt, d formula.Deps) ([]formula.Ref, bo
 	return out, true
 }
 
+// calcState is what working out results needs from an editing session.
+type calcState struct {
+	formulas  map[cellKey]*formulaAt // the workbook's formulas as they stand
+	rs        *resolver
+	changed   map[cellKey]string // cells written, by sheet name
+	recompute map[cellKey]bool   // formulas an edit of rows, columns or sheets reached
+	edited    bool               // rows, columns or sheets changed
+	// restore stores again the results of formulas not recomputed: an
+	// edit of rows took them off with their formulas (see relines).
+	restore bool
+	order   func(sheet string) int
+	// calcFile is the workbook to compute in, set up by the plan for the
+	// formulas being computed (see calcplan.go), and what releases it.
+	calcFile func(list []*formulaAt, rs *resolver, computing map[*formulaAt]bool) (*excelize.File, calcPlan, func(), error)
+	typer    func(all map[cellKey]*formulaAt, computing map[*formulaAt]bool, rs *resolver) *typer
+}
+
+// calcResult is what working out results gives.
+type calcResult struct {
+	results  map[string]map[string]grid.Cell // by lower-cased sheet and cell; Empty removes a result
+	dropped  map[cellKey]string              // why a formula has no stored result, or what its error means
+	warnings []string
+	touched  map[string][][2]int // cells whose values changed, by lower-cased sheet
+}
+
 // recalc works out the results to store: every formula a change in this
 // session can have reached, and the ones whose results were missing or
 // stale when the file was opened, as far as time allows.
 func (e *Editor) recalc() error {
-	e.patches.results = map[string]map[string]grid.Cell{}
 	all, err := e.formulasNow()
 	if err != nil {
 		return err
 	}
-	rs := e.resolver()
+	st := calcState{formulas: all, rs: e.resolver(), changed: e.changed, recompute: e.recompute,
+		edited: e.structural || e.sheetsChanged, restore: e.lines != nil, order: e.sheetIndex, calcFile: e.calcFile,
+		typer: func(all map[cellKey]*formulaAt, computing map[*formulaAt]bool, rs *resolver) *typer {
+			return e.newTyper(all, computing, rs)
+		}}
+	res, err := computeResults(st)
+	if err != nil {
+		return err
+	}
+	e.patches.results, e.dropped, e.patches.touched = res.results, res.dropped, res.touched
+	e.warnings = append(e.warnings, res.warnings...)
+	return nil
+}
+
+// calcFile is the workbook the calculator works in: the one being edited,
+// or a copy when the plan changes formulas for it, or when sheets were
+// renamed or deleted: formulas follow those only as the file is written,
+// and the copy is made from it.
+func (e *Editor) calcFile(list []*formulaAt, rs *resolver, computing map[*formulaAt]bool) (*excelize.File, calcPlan, func(), error) {
+	f, plan, release, err := e.calcIn(list, rs, computing)
+	if err != nil {
+		return nil, plan, nil, err
+	}
+	// Aggregates of references are computed from the cells' values, as
+	// Excel does: the calculator's SUM, say, skips errors where Excel
+	// gives the error.
+	at := map[cellKey]*formulaAt{}
+	for _, x := range list {
+		at[keyOf(x.sheet, x.row, x.col)] = x
+	}
+	plan.native = nativeAggregates(e.used, func(j *judge, sheet string, r, c int) (grid.Cell, bool) {
+		if g := at[keyOf(sheet, r, c)]; g != nil {
+			res := j.result(g)
+			if res.err != nil {
+				return grid.Cell{}, false
+			}
+			v := res.v
+			if v.Kind != grid.Error {
+				if typed, ok := formula.Typed(res.raw, j.ty.kindsOf(g)); ok {
+					v = typed
+				}
+			}
+			return v, true
+		}
+		return fileValue(f, sheet, r, c), true
+	})
+	return f, plan, release, nil
+}
+
+// fileValue reads a value cell as excelize holds it.
+func fileValue(f *excelize.File, sheet string, row, col int) grid.Cell {
+	cell := grid.CellName(row, col)
+	v, err := f.GetCellValue(sheet, cell, excelize.Options{RawCellValue: true})
+	if err != nil || v == "" {
+		return grid.Cell{}
+	}
+	switch typ, _ := f.GetCellType(sheet, cell); typ {
+	case excelize.CellTypeBool:
+		return grid.Cell{Kind: grid.Bool, Bool: v == "1" || strings.EqualFold(v, "TRUE")}
+	case excelize.CellTypeError:
+		return grid.Cell{Kind: grid.Error, Text: v}
+	case excelize.CellTypeNumber, excelize.CellTypeUnset, excelize.CellTypeDate:
+		if n, err := strconv.ParseFloat(v, 64); err == nil {
+			return grid.Cell{Kind: grid.Number, Num: n}
+		}
+	}
+	return grid.Cell{Kind: grid.Text, Text: v}
+}
+
+// calcIn is the workbook the calculator works in (see calcFile).
+func (e *Editor) calcIn(list []*formulaAt, rs *resolver, computing map[*formulaAt]bool) (*excelize.File, calcPlan, func(), error) {
+	plan := newPlan(list, rs, computing)
+	if !plan.needed() && len(e.patches.sheetEdits) == 0 {
+		return e.f, plan, func() {}, nil
+	}
+	var data []byte
+	if len(e.patches.sheetEdits) > 0 {
+		pt := *e.patches
+		pt.stamp, pt.results, pt.touched = false, nil, nil
+		b, err := serialize(e.f, &pt)
+		if err != nil {
+			return nil, plan, nil, err
+		}
+		data = b
+	} else {
+		b, err := e.f.WriteToBuffer()
+		if err != nil {
+			return nil, plan, nil, err
+		}
+		data = b.Bytes()
+	}
+	f, err := excelize.OpenReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, plan, nil, err
+	}
+	if err := plan.apply(f, list); err != nil {
+		f.Close()
+		return nil, plan, nil, err
+	}
+	return f, plan, func() { f.Close() }, nil
+}
+
+// computeResults works out the results to store for a session's state.
+func computeResults(st calcState) (calcResult, error) {
+	out := calcResult{results: map[string]map[string]grid.Cell{}, dropped: map[cellKey]string{}}
+	all, rs := st.formulas, st.rs
 
 	// The formulas to recompute: those written or moved by an edit, and
 	// everything that reads what changed, transitively.
@@ -312,7 +467,7 @@ func (e *Editor) recalc() error {
 		return d.refs, d.ok
 	}
 	must := map[*formulaAt]bool{}
-	if len(e.changed) > 0 || len(e.recompute) > 0 || e.structural || e.sheetsChanged {
+	if len(st.changed) > 0 || len(st.recompute) > 0 || st.edited {
 		x := &depIndex{cells: map[cellKey][]int{}, columns: map[cellKey]map[grid.Range][]int{}, wide: map[string]map[grid.Range][]int{}}
 		for _, f := range all {
 			id := len(x.ids)
@@ -338,14 +493,14 @@ func (e *Editor) recalc() error {
 				queue = append(queue, keyOf(f.sheet, f.row, f.col))
 			}
 		}
-		for k := range e.changed {
+		for k := range st.changed {
 			if f := all[k]; f != nil {
 				reach(f)
 			} else {
 				queue = append(queue, k)
 			}
 		}
-		for k := range e.recompute {
+		for k := range st.recompute {
 			if f := all[k]; f != nil {
 				reach(f)
 			}
@@ -375,7 +530,7 @@ func (e *Editor) recalc() error {
 		sort.Slice(fs, func(i, j int) bool {
 			a, b := fs[i], fs[j]
 			if a.sheet != b.sheet {
-				return e.sheetIndex(a.sheet) < e.sheetIndex(b.sheet)
+				return st.order(a.sheet) < st.order(b.sheet)
 			}
 			if a.row != b.row {
 				return a.row < b.row
@@ -399,41 +554,14 @@ func (e *Editor) recalc() error {
 	for _, f := range all {
 		list = append(list, f)
 	}
-	// The calculator works in a copy of the workbook when the plan
-	// changes formulas for it, or when sheets were renamed or deleted:
-	// formulas follow those only as the file is written, and the copy is
-	// made from it.
-	plan := newPlan(list, rs, computing)
-	calcIn := e.f
-	if plan.needed() || len(e.patches.sheetEdits) > 0 {
-		var data []byte
-		if len(e.patches.sheetEdits) > 0 {
-			pt := *e.patches
-			pt.stamp, pt.results, pt.touched = false, nil, nil
-			b, err := serialize(e.f, &pt)
-			if err != nil {
-				return err
-			}
-			data = b
-		} else {
-			b, err := e.f.WriteToBuffer()
-			if err != nil {
-				return err
-			}
-			data = b.Bytes()
-		}
-		var err error
-		if calcIn, err = excelize.OpenReader(bytes.NewReader(data)); err != nil {
-			return err
-		}
-		defer calcIn.Close()
-		if err := plan.apply(calcIn, list); err != nil {
-			return err
-		}
+	calcIn, plan, release, err := st.calcFile(list, rs, computing)
+	if err != nil {
+		return out, err
 	}
-	ty := e.newTyper(all, computing, rs)
+	defer release()
+	ty := st.typer(all, computing, rs)
 	deadline := time.Now().Add(recalcBudget)
-	j := newJudge(calcIn, newCycleGraph(list, deps), rs, ty, computing, plan.frozen, func(f *formulaAt) (grid.Cell, bool) {
+	j := newJudge(calcIn, newCycleGraph(list, deps), rs, ty, computing, plan, func(f *formulaAt) (grid.Cell, bool) {
 		return f.stored, f.stored.Kind != grid.Empty && !f.pending
 	}, deadline)
 
@@ -441,12 +569,11 @@ func (e *Editor) recalc() error {
 	left := 0
 	store := func(f *formulaAt, v grid.Cell) {
 		s := strings.ToLower(f.sheet)
-		if e.patches.results[s] == nil {
-			e.patches.results[s] = map[string]grid.Cell{}
+		if out.results[s] == nil {
+			out.results[s] = map[string]grid.Cell{}
 		}
-		e.patches.results[s][grid.CellName(f.row, f.col)] = v
+		out.results[s][grid.CellName(f.row, f.col)] = v
 	}
-	e.dropped = map[cellKey]string{}
 	var linked []string
 	for i, f := range append(first, then...) {
 		ref := grid.FormatRef(f.sheet, grid.Range{R1: f.row, C1: f.col, R2: f.row, C2: f.col})
@@ -459,14 +586,14 @@ func (e *Editor) recalc() error {
 			continue
 		}
 		key := keyOf(f.sheet, f.row, f.col)
-		_, written := e.changed[key]
+		_, written := st.changed[key]
 		ok, why := j.holds(f)
 		var v grid.Cell
 		if ok {
 			r := j.result(f)
 			v = r.v
 			if r.note != "" {
-				e.dropped[key] = r.note
+				out.dropped[key] = r.note
 			}
 			if v.Kind != grid.Error {
 				if v, ok = formula.Typed(r.raw, ty.kindsOf(f)); !ok {
@@ -477,7 +604,7 @@ func (e *Editor) recalc() error {
 		if !ok {
 			// No stored result rather than a wrong or stale one.
 			store(f, grid.Cell{})
-			e.dropped[key] = why
+			out.dropped[key] = why
 			switch {
 			case i >= len(first) || written:
 			case strings.HasPrefix(why, "not computed in the time"):
@@ -498,21 +625,33 @@ func (e *Editor) recalc() error {
 			list = append(list, fmt.Sprintf("and %d more", len(cycle)-8))
 		}
 		if len(cycle) == 1 {
-			e.warnings = append(e.warnings, fmt.Sprintf("circular reference: %s refers to itself, so Excel cannot compute it; it has no stored result", list[0]))
+			out.warnings = append(out.warnings, fmt.Sprintf("circular reference: %s refers to itself, so Excel cannot compute it; it has no stored result", list[0]))
 		} else {
-			e.warnings = append(e.warnings, fmt.Sprintf("circular reference: %d formulas refer to each other, so Excel cannot compute them; they have no stored result: %s",
+			out.warnings = append(out.warnings, fmt.Sprintf("circular reference: %d formulas refer to each other, so Excel cannot compute them; they have no stored result: %s",
 				len(cycle), strings.Join(list, ", ")))
 		}
 	}
-	// Cells whose values changed, for charts drawing them.
-	e.patches.touched = map[string][][2]int{}
-	for k := range e.changed {
-		e.patches.touched[k.sheet] = append(e.patches.touched[k.sheet], [2]int{k.row, k.col})
+	if st.restore {
+		for _, f := range all {
+			if computing[f] || f.pending || f.stored.Kind == grid.Empty {
+				continue
+			}
+			if s := strings.ToLower(f.sheet); out.results[s] == nil || out.results[s][grid.CellName(f.row, f.col)].Kind == grid.Empty {
+				if _, done := out.results[s][grid.CellName(f.row, f.col)]; !done {
+					store(f, f.stored)
+				}
+			}
+		}
 	}
-	for sheet, cells := range e.patches.results {
+	// Cells whose values changed, for charts drawing them.
+	out.touched = map[string][][2]int{}
+	for k := range st.changed {
+		out.touched[k.sheet] = append(out.touched[k.sheet], [2]int{k.row, k.col})
+	}
+	for sheet, cells := range out.results {
 		for cell := range cells {
 			r, c, _ := grid.ParseCell(cell)
-			e.patches.touched[sheet] = append(e.patches.touched[sheet], [2]int{r, c})
+			out.touched[sheet] = append(out.touched[sheet], [2]int{r, c})
 		}
 	}
 	if len(unsupported) > 0 {
@@ -520,21 +659,21 @@ func (e *Editor) recalc() error {
 		if len(list) > 5 {
 			list = append(list[:5:5], fmt.Sprintf("and %d more", len(unsupported)-5))
 		}
-		e.warnings = append(e.warnings, fmt.Sprintf("%s that this change reaches %s no stored result now; Excel computes %s on open: %s",
+		out.warnings = append(out.warnings, fmt.Sprintf("%s that this change reaches %s no stored result now; Excel computes %s on open: %s",
 			countOf(len(unsupported), "formula"), map[bool]string{true: "has", false: "have"}[len(unsupported) == 1],
 			map[bool]string{true: "it", false: "them"}[len(unsupported) == 1], strings.Join(list, "; ")))
 	}
 	if len(linked) > 0 {
-		e.warnings = append(e.warnings, fmt.Sprintf("%s that this change reaches %s to another workbook; %s stored %s may be out of date until Excel updates the links: %s",
+		out.warnings = append(out.warnings, fmt.Sprintf("%s that this change reaches %s to another workbook; %s stored %s may be out of date until Excel updates the links: %s",
 			countOf(len(linked), "formula"), map[bool]string{true: "links", false: "link"}[len(linked) == 1],
 			map[bool]string{true: "its", false: "their"}[len(linked) == 1], map[bool]string{true: "result", false: "results"}[len(linked) == 1],
 			strings.Join(linked[:min(len(linked), 5)], ", ")))
 	}
 	if left > 0 {
-		e.warnings = append(e.warnings, fmt.Sprintf("stopped computing formula results after %s; %s that this change reaches %s no stored result until Excel computes them",
+		out.warnings = append(out.warnings, fmt.Sprintf("stopped computing formula results after %s; %s that this change reaches %s no stored result until Excel computes them",
 			recalcBudget, countOf(left, "formula"), map[bool]string{true: "has", false: "have"}[left == 1]))
 	}
-	return nil
+	return out, nil
 }
 
 // valueOf is the stored result of a formula cell as read (Empty if none).

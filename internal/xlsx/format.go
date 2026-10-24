@@ -203,7 +203,7 @@ func formatBytes(data []byte, opts FormatOptions) (*formatter, *FormatResult, er
 	for _, rec := range keep {
 		// A conditional format deleted since (in Excel, say) leaves its
 		// entry behind.
-		if rec.Kind == "cond" && formatted(rec.Sheet) && !hasRange(found[rec.Sheet], rec.Range) {
+		if rec.Kind == "cond" && formatted(rec.Sheet) && !hasRange(found[rec.Sheet], rec.Range()) {
 			drop = append(drop, rec.name)
 			continue
 		}
@@ -538,6 +538,12 @@ func (fm *formatter) sheet(s *grid.Sheet) (FormattedSheet, error) {
 	if err := f.SetSheetView(name, 0, &excelize.ViewOptions{ShowGridLines: &show}); err != nil {
 		return out, err
 	}
+	// Hyperlinks look like links, under recorded styling.
+	for _, l := range s.Links {
+		if err := lookLikeLink(fm.st, name, l.Row, l.Col); err != nil {
+			return out, err
+		}
+	}
 	n, err := fm.replay(name, used)
 	if n > 0 {
 		out.Notes = append(out.Notes, fmt.Sprintf("kept the recorded styling (%s; sheets style --list)", map[bool]string{true: "1 entry", false: fmt.Sprintf("%d entries", n)}[n == 1]))
@@ -563,8 +569,10 @@ func (fm *formatter) replay(sheet string, used grid.Range) (int, error) {
 			if err != nil {
 				continue // written by a later sheets; leave it be
 			}
-			if err := fm.st.apply(sheet, clip(rec.Range, used), &l, nil); err != nil {
-				return n, fmt.Errorf("recorded styling %s %s: %w", rec.Ref, rec.Text(), err)
+			for _, a := range rec.Areas {
+				if err := fm.st.apply(sheet, clip(a, used), &l, nil); err != nil {
+					return n, fmt.Errorf("recorded styling %s %s: %w", rec.Ref, rec.Text(), err)
+				}
 			}
 		case "view":
 			if len(rec.Args) == 0 {
@@ -573,7 +581,7 @@ func (fm *formatter) replay(sheet string, used grid.Range) (int, error) {
 			var err error
 			switch rec.Args[0] {
 			case "freeze":
-				err = freeze(f, sheet, rec.Range)
+				err = freeze(f, sheet, rec.Range())
 			case "nofreeze":
 				err = freeze(f, sheet, grid.Range{R1: 1, C1: 1, R2: 1, C2: 1})
 			case "gridlines=on", "gridlines=off":
@@ -583,7 +591,7 @@ func (fm *formatter) replay(sheet string, used grid.Range) (int, error) {
 				delete(fm.patches.noFilter, sheet)
 				var props excelize.SheetPropsOptions
 				if props, err = f.GetSheetProps(sheet); err == nil {
-					if err = f.AutoFilter(sheet, rec.Range.String(), nil); err == nil {
+					if err = f.AutoFilter(sheet, rec.Range().String(), nil); err == nil {
 						err = f.SetSheetProps(sheet, &props)
 					}
 				}

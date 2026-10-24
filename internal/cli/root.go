@@ -90,14 +90,16 @@ for an agent's context window: start with an overview and drill down.
   sheets write book.xlsx Sales!A1 < data.tsv
   sheets fmt book.xlsx             apply the house style
 
-Run 'sheets agent-docs' for a guide written for AI agents.`,
+Run 'sheets agent-docs' for a guide written for AI agents (an index of
+topics; 'sheets agent-docs all' prints all of it).`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version(),
 	}
 	root.PersistentFlags().BoolVar(&a.json, "json", false, "print JSON instead of text")
 	root.PersistentFlags().BoolVar(&a.dryRun, "dry-run", false, "show what a change would do without saving it")
-	root.AddCommand(a.infoCmd(), a.peekCmd(), a.readCmd(), a.findCmd(), a.queryCmd(), a.lintCmd(), a.diffCmd(), a.chartCmd(), a.renderCmd(), a.writeCmd(), a.setCmd(), a.fmtCmd(), a.styleCmd(), a.condCmd(), a.validateCmd(), a.viewCmd(), a.doCmd(),
+	root.AddCommand(a.infoCmd(), a.peekCmd(), a.readCmd(), a.findCmd(), a.queryCmd(), a.lintCmd(), a.diffCmd(), a.chartCmd(), a.renderCmd(), a.writeCmd(), a.setCmd(), a.fmtCmd(), a.styleCmd(), a.condCmd(), a.validateCmd(), a.viewCmd(),
+		a.clearCmd(), a.copyCmd(), a.moveCmd(), a.sortCmd(), a.replaceCmd(), a.noteCmd(), a.linkCmd(), a.convertCmd(), a.doCmd(),
 		a.linesCmd(false), a.linesCmd(true), a.sheetCmd(), a.undoCmd(), a.docsCmd(), a.skillCmd())
 	root.CompletionOptions.HiddenDefaultCmd = true
 	return root
@@ -139,6 +141,14 @@ func (a *app) hint(format string, args ...any) {
 
 // shellQuote quotes an argument for a suggested command line.
 func shellQuote(s string) string { return words.Quote(s) }
+
+// xlsxOnly refuses a CSV file for what needs a workbook, saying why.
+func xlsxOnly(path, why string) error {
+	if kind, err := book.FormatOf(path); err == nil && kind == "csv" {
+		return fmt.Errorf("%s is a CSV file: %s", path, why)
+	}
+	return nil
+}
 
 // open reads a workbook.
 func open(path string) (*grid.Workbook, error) {

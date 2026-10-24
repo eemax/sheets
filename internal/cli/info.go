@@ -27,6 +27,8 @@ type sheetInfo struct {
 	Used     string `json:"used"`
 	Formulas int    `json:"formulas"`
 	Merged   int    `json:"merged_ranges,omitempty"`
+	Notes    int    `json:"notes,omitempty"`
+	Links    int    `json:"links,omitempty"`
 	// Hidden rows and columns within the used range, as "5:9" and "C:D".
 	HiddenRows []string     `json:"hidden_rows,omitempty"`
 	HiddenCols []string     `json:"hidden_cols,omitempty"`
@@ -84,7 +86,7 @@ func (a *app) infoCmd() *cobra.Command {
 }
 
 func describeSheet(wb *grid.Workbook, s *grid.Sheet) sheetInfo {
-	si := sheetInfo{Name: s.Name, Hidden: s.Hidden}
+	si := sheetInfo{Name: s.Name, Hidden: s.Hidden, Notes: len(s.Notes), Links: len(s.Links)}
 	used := s.Used()
 	if used.Empty() {
 		return si
@@ -171,6 +173,12 @@ func (a *app) printInfo(res infoResult) {
 		if len(s.Charts) > 0 {
 			meta = append(meta, plural(len(s.Charts), "chart"))
 		}
+		if s.Notes > 0 {
+			meta = append(meta, plural(s.Notes, "note"))
+		}
+		if s.Links > 0 {
+			meta = append(meta, plural(s.Links, "link"))
+		}
 		if len(s.HiddenRows) > 0 {
 			meta = append(meta, "hidden rows "+listRuns(s.HiddenRows))
 		}
@@ -207,6 +215,16 @@ func (a *app) printInfo(res infoResult) {
 	}
 	if res.Styled > 0 {
 		a.printf("styling: %s recorded, which fmt keeps (sheets style --list)\n", plural(res.Styled, "entry"))
+	}
+	notes, links := 0, 0
+	for _, s := range res.Sheets {
+		notes, links = notes+s.Notes, links+s.Links
+	}
+	if notes > 0 {
+		a.printf("notes: %s on cells (sheets note %s --list)\n", plural(notes, "note"), shellQuote(res.File))
+	}
+	if links > 0 {
+		a.printf("links: %s on cells (sheets link %s --list)\n", plural(links, "hyperlink"), shellQuote(res.File))
 	}
 	if best != "" {
 		a.hint("sheets peek %s %s", shellQuote(res.File), shellQuote(best))

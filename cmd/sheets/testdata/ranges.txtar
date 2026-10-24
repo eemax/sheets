@@ -1,0 +1,109 @@
+# clear, copy, move, sort, replace, note and link.
+stdin sales.tsv
+exec sheets write book.xlsx Sales!A1
+exec sheets set book.xlsx Summary!A1 '=Sales!D2' Summary!A2 '=SUM(Sales!D2:D5)'
+
+# sort: data rows of the table, by header names; the total row stays.
+exec sheets sort book.xlsx Sales Revenue:desc
+stdout '^sorted Sales!A2:D5 by Revenue descending \(4 rows; 2 rows moved\)$'
+stdout '^note: 1 formula reads single cells of the sorted rows and now reads whatever row is there: Summary!A1 \(=Sales!D2\)$'
+exec sheets read book.xlsx Sales --formulas
+cmp stdout sorted.out
+exec sheets sort book.xlsx Sales Region Units:desc
+stdout 'by Region, Units descending'
+! exec sheets sort book.xlsx Sales Nope
+stderr 'no column "Nope"; the columns are Region, Units, Price, Revenue'
+! exec sheets sort book.xlsx Sales Units:up
+stderr 'the direction after : is asc or desc'
+
+# A formula reading another row by position is not sorted blindly.
+exec sheets set book.xlsx Sales!E3 '=D2-D3'
+! exec sheets sort book.xlsx Sales!A2:E5 Units
+stderr 'reads D2, another row, by its position'
+exec sheets clear book.xlsx Sales!E3
+stdout '^cleared contents of Sales!E3 \(1 cell\)$'
+
+# copy: formulas shift; a range target is filled evenly.
+exec sheets copy book.xlsx Sales!D2 Sales!F2:F5
+stdout '^copied Sales!D2 to Sales!F2:F5$'
+exec sheets read book.xlsx Sales!F2:F5 --formulas
+stdout '^3	=D3\*E3$'
+exec sheets copy book.xlsx Sales!A1:D6 Archive!A1 --values
+stdout 'copied Sales!A1:D6 to Archive!A1:D6 \(values\) \(new sheet\)'
+exec sheets read book.xlsx Archive!D2:D6 --formulas
+! stdout '='
+
+# move: references follow, and pasted-over cells break as in Excel.
+exec sheets move book.xlsx Sales!F2:F5 Sales!H10
+stdout '^moved Sales!F2:F5 to Sales!H10:H13$'
+exec sheets set book.xlsx Summary!A3 '=Sales!H20'
+exec sheets move book.xlsx Sales!H10:H13 Sales!H18
+stdout 'warning: 1 formula now contains #REF!: it read the cells the move pasted over, as in Excel: Summary!A3'
+exec sheets read book.xlsx Summary!A1:A3 --formulas
+cmp stdout summary.out
+
+# replace: values as typed input; formulas only with --formulas.
+exec sheets replace book.xlsx east EAST --exact
+stdout '^replaced in 2 cells:$'
+exec sheets replace book.xlsx 'Sales!' 'Archive!' Summary --formulas
+stdout 'Summary!A1	=Sales!D2 → =Archive!D2'
+exec sheets replace book.xlsx '(\w+)th$' '$1TH' Sales!A1:A6 --regex
+stdout 'North → NorTH'
+exec sheets replace book.xlsx zzz yyy
+stdout '^no cells matched$'
+
+# notes and links.
+exec sheets note book.xlsx Sales!B2 'Checked against the invoice'
+stdout '^note on Sales!B2: Checked against the invoice$'
+exec sheets link book.xlsx Sales!A1 https://example.com/q3 --text 'Q3 sales' --tip 'The source'
+stdout '^link on Sales!A1 to https://example.com/q3$'
+exec sheets link book.xlsx Summary!B1 Sales!A1
+exec sheets rows insert book.xlsx Sales!1
+exec sheets note book.xlsx --list
+stdout '^Sales!B3	\[sheets\] Checked against the invoice$'
+exec sheets link book.xlsx --list
+cmp stdout links.out
+exec sheets info book.xlsx
+stdout 'notes: 1 note on cells \(sheets note book.xlsx --list\)'
+stdout 'links: 2 hyperlinks on cells \(sheets link book.xlsx --list\)'
+exec sheets fmt book.xlsx
+exec sheets style book.xlsx Sales!A2 --show
+stdout 'underline'
+exec sheets note book.xlsx Sales!B3 ''
+stdout '^removed the note on Sales!B3$'
+exec sheets note book.xlsx --list
+stdout '^no notes$'
+! exec sheets link book.xlsx Sales!A2 'not a place'
+stderr 'give a web address'
+
+# clear --all takes formats, notes and links too.
+exec sheets clear book.xlsx Sales!A2 --all
+stdout '^cleared contents, formats, notes, links of Sales!A2 \(1 cell\)$'
+exec sheets link book.xlsx Sales --list
+stdout '^no links$'
+
+-- sales.tsv --
+Region	Units	Price	Revenue
+East	5	30	=B{r}*C{r}
+West	2	40	=B{r}*C{r}
+North	9	10	=B{r}*C{r}
+South	1	100	=B{r}*C{r}
+Total	=SUM(B2:B5)		=SUM(D2:D5)
+-- sorted.out --
+Sales!A1:D6
+	A	B	C	D
+1	Region	Units	Price	Revenue
+2	East	5	30	=B2*C2
+3	South	1	100	=B3*C3
+4	North	9	10	=B4*C4
+5	West	2	40	=B5*C5
+6	Total	=SUM(B2:B5)		=SUM(D2:D5)
+-- summary.out --
+Summary!A1:A3
+	A
+1	=Sales!D2
+2	=SUM(Sales!D2:D5)
+3	=Sales!#REF!
+-- links.out --
+Sales!A2	Q3 sales → https://example.com/q3 (The source)
+Summary!B1	Sales!A1 → #Sales!A1

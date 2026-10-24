@@ -387,11 +387,18 @@ func DeleteLines(f, home, target string, cols bool, from, to int) string {
 	}
 	for i := 0; i < len(ps); i++ {
 		p := &ps[i]
-		if !p.isRef || !strings.EqualFold(sheetOf(*p), target) {
+		if !p.isRef {
+			continue
+		}
+		isRange := i+2 < len(ps) && !ps[i+1].isRef && ps[i+1].text == ":" && ps[i+2].isRef
+		if !strings.EqualFold(sheetOf(*p), target) {
+			if isRange {
+				i += 2 // its second half is on the first half's sheet
+			}
 			continue
 		}
 		// A range: ref ':' ref.
-		if i+2 < len(ps) && !ps[i+1].isRef && ps[i+1].text == ":" && ps[i+2].isRef {
+		if isRange {
 			q := &ps[i+2]
 			a, aok := line(*p)
 			b, bok := line(*q)

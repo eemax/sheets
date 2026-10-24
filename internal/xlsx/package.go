@@ -46,17 +46,21 @@ type patches struct {
 	// newCharts are chart parts sheets created, which get the house style
 	// excelize cannot set.
 	newCharts map[string]chartFix
-	// ruleRewrites are the session's row and column edits, for the
-	// formulas of conditional formats (see rewriteRuleFormulas).
-	ruleRewrites []func(f, home string) string
-	// grow extends conditional formats and data validations over rows
-	// appended to a table (see growRecords).
-	grow []growth
 	// noTabColor are sheets whose tab colour is removed.
 	noTabColor map[string]bool
-	// dropConds are conditional formats removed, by sheet and range (see
-	// dropCondBlocks).
-	dropConds map[string]map[string]bool
+	// threadMoves are moves of cells, in order, that comment threads
+	// follow (see moveThreads).
+	threadMoves []threadMove
+	// notesChanged are sheets whose notes were added, moved or removed:
+	// their drawings get one note shape per note (see fitNoteShapes).
+	notesChanged map[string]bool
+	// conds are the sheets' conditional formats, which excelize never
+	// holds (see linefix.go).
+	conds map[string]*condSection
+	// errorCells are cells holding an error value as a constant (#N/A
+	// typed in or pasted as a value), by sheet, which excelize cannot
+	// write: it writes them as text, and they are retyped here.
+	errorCells map[string]map[string]bool
 }
 
 // chartFix is what a new chart needs beyond what excelize writes.
@@ -68,7 +72,7 @@ type chartFix struct {
 type sheetEdit struct{ from, to string }
 
 func newPatches() *patches {
-	return &patches{plainCols: map[string]bool{}, noFilter: map[string]bool{}, dynamic: map[string]map[string]bool{}, plain: map[string]map[string]bool{}, newCharts: map[string]chartFix{}, noTabColor: map[string]bool{}, dropConds: map[string]map[string]bool{}}
+	return &patches{plainCols: map[string]bool{}, noFilter: map[string]bool{}, dynamic: map[string]map[string]bool{}, plain: map[string]map[string]bool{}, newCharts: map[string]chartFix{}, noTabColor: map[string]bool{}, errorCells: map[string]map[string]bool{}, notesChanged: map[string]bool{}, conds: map[string]*condSection{}}
 }
 
 // markCell records whether a cell holds a dynamic array formula.
@@ -85,9 +89,22 @@ func (p *patches) markCell(sheet, cell string, dynamic bool) {
 }
 
 func (p *patches) rename(from, to string) {
-	if v, ok := p.dropConds[from]; ok {
-		p.dropConds[to] = v
-		delete(p.dropConds, from)
+	if v, ok := p.conds[from]; ok {
+		p.conds[to] = v
+		delete(p.conds, from)
+	}
+	if p.notesChanged[from] {
+		p.notesChanged[to] = true
+		delete(p.notesChanged, from)
+	}
+	for i := range p.threadMoves {
+		if strings.EqualFold(p.threadMoves[i].sheet, from) {
+			p.threadMoves[i].sheet = to
+		}
+	}
+	if v, ok := p.errorCells[from]; ok {
+		p.errorCells[to] = v
+		delete(p.errorCells, from)
 	}
 	for _, m := range []map[string]bool{p.plainCols, p.noFilter, p.noTabColor} {
 		if v, ok := m[from]; ok {
@@ -213,6 +230,58 @@ func serialize(f *excelize.File, pt *patches) ([]byte, error) {
 		}
 	}
 
+	for name, part := range sheets {
+		if !pt.notesChanged[name] {
+			continue
+		}
+		dir := path.Dir(part)
+		rels, err := p.rels(path.Join(dir, "_rels", path.Base(part)+".rels"), dir)
+		if err != nil {
+			continue
+		}
+		sheetXML := list[byName[part]].data
+		legacy := ""
+		if m := legacyDrawing.FindSubmatch(sheetXML); m != nil {
+			legacy = string(m[1])
+		}
+		comments, vml := -1, -1
+		for _, r := range rels {
+			i, ok := byName[r.Target]
+			switch {
+			case !ok:
+			case strings.HasSuffix(r.Type, "/comments"):
+				comments = i
+			case strings.HasSuffix(r.Type, "/vmlDrawing") && r.ID == legacy:
+				vml = i
+			}
+		}
+		if comments >= 0 && vml >= 0 {
+			list[vml].data = fitNoteShapes(list[vml].data, list[comments].data)
+		}
+	}
+	if len(pt.threadMoves) > 0 {
+		for name, part := range sheets {
+			var moves []threadMove
+			for _, m := range pt.threadMoves {
+				if strings.EqualFold(m.sheet, name) {
+					moves = append(moves, m)
+				}
+			}
+			if len(moves) == 0 {
+				continue
+			}
+			dir := path.Dir(part)
+			rels, err := p.rels(path.Join(dir, "_rels", path.Base(part)+".rels"), dir)
+			if err != nil {
+				continue
+			}
+			for _, r := range rels {
+				if i, ok := byName[r.Target]; ok && strings.HasSuffix(r.Type, "/threadedComment") {
+					list[i].data = moveThreads(list[i].data, moves)
+				}
+			}
+		}
+	}
 	for i, zp := range list {
 		if b, ok := pt.tableXML[strings.ToLower(zp.name)]; ok {
 			list[i].data = b
@@ -247,20 +316,8 @@ func serialize(f *excelize.File, pt *patches) ([]byte, error) {
 		if pt.noTabColor[sheet] {
 			b = tabColor.ReplaceAll(b, nil)
 		}
-		if drop := pt.dropConds[sheet]; len(drop) > 0 {
-			b, _ = dropCondBlocks(b, func(sq string, _ bool) bool { return drop[sq] })
-		}
-		if len(pt.ruleRewrites) > 0 {
-			b = rewriteRuleFormulas(b, sheet, pt.ruleRewrites)
-		}
-		var gs []growth
-		for _, g := range pt.grow {
-			if strings.EqualFold(g.sheet, sheet) {
-				gs = append(gs, g)
-			}
-		}
-		if len(gs) > 0 {
-			b = growSqrefs(b, gs)
+		if sec := pt.conds[sheet]; sec != nil && !sec.empty() {
+			b = writeConds(b, sec)
 		}
 		b = orderRules(b)
 		if dyn, plain := pt.dynamic[sheet], pt.plain[sheet]; len(dyn)+len(plain) > 0 {
@@ -271,6 +328,9 @@ func serialize(f *excelize.File, pt *patches) ([]byte, error) {
 		}
 		if res := pt.results[strings.ToLower(sheet)]; len(res) > 0 {
 			b = storeResults(b, res)
+		}
+		if errs := pt.errorCells[sheet]; len(errs) > 0 {
+			b = retypeErrors(b, errs)
 		}
 		list[i].data = b
 	}

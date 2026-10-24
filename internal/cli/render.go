@@ -46,6 +46,9 @@ formats other than banding and Excel table styles are not drawn (the
 output says so).`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := xlsxOnly(args[0], "render draws workbooks with their formatting, which a CSV file does not have; read it with sheets read, or convert it"); err != nil {
+				return err
+			}
 			wb, err := open(args[0])
 			if err != nil {
 				return err

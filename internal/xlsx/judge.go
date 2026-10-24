@@ -36,6 +36,8 @@ type judge struct {
 	ty       *typer
 	fresh    map[*formulaAt]bool // results being recomputed: none to check against
 	frozen   map[*formulaAt]bool // taken at their stored results (see calcPlan)
+	veto     map[*formulaAt]string
+	native   func(j *judge, f *formulaAt) (grid.Cell, bool)
 	stored   func(f *formulaAt) (grid.Cell, bool)
 	deadline time.Time
 
@@ -52,10 +54,10 @@ type judged struct {
 	err  error
 }
 
-func newJudge(f *excelize.File, g *cycleGraph, rs *resolver, ty *typer, fresh, frozen map[*formulaAt]bool,
+func newJudge(f *excelize.File, g *cycleGraph, rs *resolver, ty *typer, fresh map[*formulaAt]bool, plan calcPlan,
 	stored func(*formulaAt) (grid.Cell, bool), deadline time.Time) *judge {
 	cycle, members := g.cycles()
-	return &judge{f: f, names: definedNames(f), g: g, cycle: cycle, members: members, rs: rs, ty: ty, fresh: fresh, frozen: frozen, stored: stored,
+	return &judge{f: f, names: definedNames(f), g: g, cycle: cycle, members: members, rs: rs, ty: ty, fresh: fresh, frozen: plan.frozen, veto: plan.veto, native: plan.native, stored: stored,
 		deadline: deadline, evals: map[*formulaAt]*judged{}, state: make([]int8, len(g.edges)), why: make([]string, len(g.edges))}
 }
 
@@ -68,6 +70,13 @@ func (j *judge) result(f *formulaAt) *judged {
 		r := &judged{v: f.stored, raw: rawOf(f.stored)}
 		j.evals[f] = r
 		return r
+	}
+	if j.native != nil {
+		if v, ok := j.native(j, f); ok {
+			r := &judged{v: v, raw: rawOf(v)}
+			j.evals[f] = r
+			return r
+		}
 	}
 	v, raw, note, err := evaluateWith(j.f, j.names, f.sheet, grid.CellName(f.row, f.col))
 	if errors.Is(err, errUncertain) || err == nil && v.Kind == grid.Error && v.Text == "#VALUE!" {
@@ -145,6 +154,9 @@ func (j *judge) static(v int) string {
 	f := j.g.fs[v]
 	if j.cycle[f] {
 		return "circular reference: Excel cannot compute it"
+	}
+	if why := j.veto[f]; why != "" {
+		return why
 	}
 	if ok, why := computable(calcOf(f), j.rs, f.sheet); !ok {
 		return why

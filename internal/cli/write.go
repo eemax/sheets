@@ -450,7 +450,10 @@ func (a *app) printWrite(res *writeResult) {
 	}
 	a.printFormulaReport(res.Formulas)
 	a.printWarnings(res.Warnings)
-	if res.Formulas == nil || len(res.Formulas.Errors) == 0 {
+	switch kind, _ := book.FormatOf(res.File); {
+	case kind == "csv":
+		a.hint("sheets peek %s", shellQuote(res.File))
+	case res.Formulas == nil || len(res.Formulas.Errors) == 0:
 		a.hint("sheets fmt %s", shellQuote(res.File))
 	}
 }

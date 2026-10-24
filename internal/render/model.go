@@ -46,6 +46,8 @@ type border struct {
 
 type look struct {
 	bold, italic bool
+	underline    bool // single or double: drawn single
+	strike       bool
 	size         float64 // points
 	ink          color.RGBA
 	fill         *color.RGBA
@@ -247,7 +249,7 @@ func load(path string, opts Options) (*sheet, error) {
 	}
 
 	// Banding and other conditional fills of the form sheets writes.
-	sh.banding(f)
+	sh.banding(f, data)
 	for _, t := range gs.Tables {
 		if !t.Range.Intersect(sh.rg).Empty() {
 			sh.missing = append(sh.missing, fmt.Sprintf("the table style of Excel table %q", t.Name))
@@ -343,48 +345,49 @@ var bandRule = regexp.MustCompile(`^MOD\(ROW\(\)(?:-(\d+))?,2\)=([01])$`)
 
 // banding applies conditional fills that alternate rows, which is how
 // sheets bands tables. Other conditional formats are listed as not drawn.
-func (sh *sheet) banding(f *excelize.File) {
-	cfs, err := f.GetConditionalFormats(sh.name)
+func (sh *sheet) banding(f *excelize.File, data []byte) {
+	rules, err := xlsx.CondRules(data, sh.name)
 	if err != nil {
 		return
 	}
 	other := false
-	for ref, rules := range cfs {
-		for _, rule := range rules {
-			m := bandRule.FindStringSubmatch(strings.ReplaceAll(rule.Criteria, " ", ""))
-			if rule.Type != "formula" || m == nil || rule.Format == nil {
-				other = true
+	for _, rule := range rules {
+		var m []string
+		if rule.Type == "expression" && len(rule.Formulas) == 1 {
+			m = bandRule.FindStringSubmatch(strings.ReplaceAll(rule.Formulas[0], " ", ""))
+		}
+		if m == nil || rule.Dxf < 0 {
+			other = true
+			continue
+		}
+		st, err := f.GetConditionalStyle(rule.Dxf)
+		if err != nil || len(st.Fill.Color) == 0 {
+			continue
+		}
+		fill, ok := hexColor(st.Fill.Color[0])
+		if !ok {
+			continue
+		}
+		k, _ := strconv.Atoi(m[1])
+		want, _ := strconv.Atoi(m[2])
+		for _, part := range strings.Fields(rule.Range) {
+			rg, err := grid.ParseRange(part)
+			if err != nil {
 				continue
 			}
-			st, err := f.GetConditionalStyle(*rule.Format)
-			if err != nil || len(st.Fill.Color) == 0 {
-				continue
-			}
-			fill, ok := hexColor(st.Fill.Color[0])
-			if !ok {
-				continue
-			}
-			k, _ := strconv.Atoi(m[1])
-			want, _ := strconv.Atoi(m[2])
-			for _, part := range strings.Fields(ref) {
-				rg, err := grid.ParseRange(part)
-				if err != nil {
+			for r := max(rg.R1, sh.rg.R1); r <= min(rg.R2, sh.rg.R2); r++ {
+				if ((r-k)%2+2)%2 != want {
 					continue
 				}
-				for r := max(rg.R1, sh.rg.R1); r <= min(rg.R2, sh.rg.R2); r++ {
-					if ((r-k)%2+2)%2 != want {
-						continue
+				for c := max(rg.C1, sh.rg.C1); c <= min(rg.C2, sh.rg.C2); c++ {
+					ce := sh.cell(r, c)
+					lk := *defaultLook
+					if ce.look != nil {
+						lk = *ce.look
 					}
-					for c := max(rg.C1, sh.rg.C1); c <= min(rg.C2, sh.rg.C2); c++ {
-						ce := sh.cell(r, c)
-						lk := *defaultLook
-						if ce.look != nil {
-							lk = *ce.look
-						}
-						fc := fill
-						lk.fill = &fc
-						ce.look = &lk
-					}
+					fc := fill
+					lk.fill = &fc
+					ce.look = &lk
 				}
 			}
 		}
@@ -406,6 +409,7 @@ func lookOf(f *excelize.File, id int) *look {
 	lk := &look{size: 11, ink: color.RGBA{0, 0, 0, 255}}
 	if st.Font != nil {
 		lk.bold, lk.italic = st.Font.Bold, st.Font.Italic
+		lk.underline, lk.strike = st.Font.Underline != "" && st.Font.Underline != "none", st.Font.Strike
 		if st.Font.Size > 0 {
 			lk.size = st.Font.Size
 		}

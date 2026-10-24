@@ -92,6 +92,13 @@ func Workbooks(a, b *grid.Workbook, opts Options) Result {
 			usedB[sb] = true
 		}
 	}
+	// A CSV file's one sheet is named after the file: two files' sheets
+	// are the same sheet whatever their names.
+	oneSheet := len(a.Sheets) == 1 && len(b.Sheets) == 1 && (a.Format == "csv" || b.Format == "csv")
+	if oneSheet && len(matchA) == 0 {
+		matchA[a.Sheets[0]] = b.Sheets[0]
+		usedB[b.Sheets[0]] = true
+	}
 	// Renamed sheets: an unmatched old sheet whose rows mostly reappear in
 	// an unmatched new one.
 	for _, sa := range a.Sheets {
@@ -127,7 +134,7 @@ func Workbooks(a, b *grid.Workbook, opts Options) Result {
 			continue
 		}
 		d := sheet(a, sa, b, sb, opts)
-		if sa.Name != sb.Name {
+		if sa.Name != sb.Name && !oneSheet {
 			d.RenamedFrom = sa.Name
 		}
 		if sa.Hidden != sb.Hidden {

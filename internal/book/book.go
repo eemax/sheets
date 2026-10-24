@@ -60,6 +60,19 @@ type Editor interface {
 	// Looks describes cell styles in blocks, as style properties.
 	Looks(sheet string, r grid.Range) ([]LookRun, error)
 
+	// Range operations, on a workbook as opened.
+	ClearRange(sheet string, r grid.Range, w ClearWhat) (RangeResult, error)
+	CopyRange(from string, src grid.Range, to string, at grid.Range, o CopyOptions) (RangeResult, error)
+	MoveRange(from string, src grid.Range, to string, at grid.Range) (RangeResult, error)
+	SortRange(sheet string, r grid.Range, keys []SortKey) (SortResult, error)
+	// Replace runs fn over cell values (and formulas, when set); sheet ""
+	// means every sheet.
+	Replace(sheet string, r *grid.Range, fn func(string) (string, bool), formulas bool) ([]Replacement, error)
+	// SetNote puts a note on a cell; empty text removes it.
+	SetNote(sheet string, row, col int, text, author string) error
+	// SetLink puts a hyperlink on a cell; nil removes it.
+	SetLink(sheet string, row, col int, l *grid.Link, text string) error
+
 	// Save writes the file; with dryRun it only works out the outcome.
 	Save(dryRun bool) error
 	Close() error
@@ -83,6 +96,13 @@ type (
 	ViewOptions    = xlsx.ViewOptions
 	ViewState      = xlsx.ViewState
 	LookRun        = xlsx.LookRun
+
+	ClearWhat   = xlsx.ClearWhat
+	CopyOptions = xlsx.CopyOptions
+	RangeResult = xlsx.RangeResult
+	SortKey     = xlsx.SortKey
+	SortResult  = xlsx.SortResult
+	Replacement = xlsx.Replacement
 )
 
 // ParseLook reads style properties (see xlsx.ParseLook).
@@ -94,26 +114,43 @@ func ParseColor(s string) (string, error) { return xlsx.ParseColor(s) }
 // ColorNames lists the colour names ParseColor knows.
 func ColorNames() []string { return xlsx.ColorNames() }
 
-func format(path string) (string, error) {
+// FormatOf names the format of a file by its extension: xlsx or csv.
+func FormatOf(path string) (string, error) {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".xlsx", ".xlsm", ".xltx", ".xltm":
 		return "xlsx", nil
+	case ".csv", ".tsv":
+		return "csv", nil
 	}
-	return "", fmt.Errorf("%s: unsupported file type %q (supported: .xlsx, .xlsm)", path, filepath.Ext(path))
+	return "", fmt.Errorf("%s: unsupported file type %q (supported: .xlsx, .xlsm, .csv, .tsv)", path, filepath.Ext(path))
 }
+
+func format(path string) (string, error) { return FormatOf(path) }
 
 // Open reads a workbook.
 func Open(path string) (*grid.Workbook, error) {
-	if _, err := format(path); err != nil {
+	kind, err := format(path)
+	if err != nil {
 		return nil, err
+	}
+	if kind == "csv" {
+		data, err := xlsx.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		return openCSV(path, data)
 	}
 	return xlsx.Read(path)
 }
 
 // OpenBytes reads a workbook held in memory; name gives its format.
 func OpenBytes(name string, data []byte) (*grid.Workbook, error) {
-	if _, err := format(name); err != nil {
+	kind, err := format(name)
+	if err != nil {
 		return nil, err
+	}
+	if kind == "csv" {
+		return openCSV(name, data)
 	}
 	wb, err := xlsx.ReadBytes(data)
 	if err != nil {
@@ -127,24 +164,42 @@ func OpenBytes(name string, data []byte) (*grid.Workbook, error) {
 // Edit opens a workbook for changes, creating it when missing and create is
 // set.
 func Edit(path string, create bool) (Editor, error) {
-	if _, err := format(path); err != nil {
+	kind, err := format(path)
+	if err != nil {
 		return nil, err
+	}
+	if kind == "csv" {
+		return editCSV(path, create)
+	}
+	// A workbook streams its edits (see xlsx.Auto).
+	if from := xlsx.StreamFrom(); from >= 0 {
+		if data, err := xlsx.ReadFile(path); err == nil && int64(len(data)) >= from {
+			return xlsx.OpenAuto(path, data)
+		}
 	}
 	return xlsx.OpenEditor(path, create)
 }
 
 // Format applies the house style in place.
 func Format(path string, opts FormatOptions) (*FormatResult, error) {
-	if _, err := format(path); err != nil {
+	kind, err := format(path)
+	if err != nil {
 		return nil, err
+	}
+	if kind == "csv" {
+		return nil, errCSV(path, "formatting")
 	}
 	return xlsx.Format(path, opts)
 }
 
 // Check reports whether Format would leave the file unchanged.
 func Check(path string, opts FormatOptions) (bool, *FormatResult, error) {
-	if _, err := format(path); err != nil {
+	kind, err := format(path)
+	if err != nil {
 		return false, nil, err
+	}
+	if kind == "csv" {
+		return false, nil, errCSV(path, "formatting")
 	}
 	return xlsx.Check(path, opts)
 }

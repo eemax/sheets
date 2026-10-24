@@ -40,10 +40,19 @@ type Editor struct {
 	// What this session changed, for recomputing stored results (see
 	// recalc.go): cells written, formulas an edit of rows, columns or
 	// sheets may have changed, and, after such an edit of rows or
-	// columns, every formula where it now stands.
-	changed       map[cellKey]string
-	recompute     map[cellKey]bool
-	lines         []formulaAt
+	// columns, every formula where it now stands (nil before one; empty
+	// when none is left).
+	changed   map[cellKey]string
+	recompute map[cellKey]bool
+	lines     []formulaAt
+	// wasEmpty are the cells written this session that were empty before
+	// it (where they are now), which recorded styling reaches (see
+	// restyleWritten).
+	wasEmpty map[cellKey]bool
+	// merges are sheets' merged cells (by lower-cased name), read when
+	// first needed; whatever merges, unmerges or moves cells drops them.
+	merges map[string][]grid.Range
+
 	sheetsChanged bool
 	// dropped notes, after saving, why a formula got no stored result,
 	// or what its error means.
@@ -56,13 +65,17 @@ type Editor struct {
 func OpenEditor(path string, create bool) (*Editor, error) {
 	e := &Editor{path: path, styles: map[string]int{}, unshare: map[string]bool{}, extent: map[string]grid.Range{}, patches: newPatches(), hasDrawings: map[string]bool{}}
 	data, err := readFile(path)
+	if err == nil {
+		// Notes parts named as excelize expects them (see notes_parts.go).
+		data, err = normalizeNotes(data)
+	}
 	switch {
 	case err == nil:
 		e.data = data
-		if e.f, err = excelize.OpenReader(bytes.NewReader(data)); err != nil {
+		if e.wb, e.layouts, _, err = parse(data); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
-		if e.wb, e.layouts, _, err = parse(data); err != nil {
+		if e.f, err = e.openExcelize(data); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 		for name, l := range e.layouts {
@@ -80,6 +93,68 @@ func OpenEditor(path string, create bool) (*Editor, error) {
 	}
 	return e, nil
 }
+
+// openExcelize opens a package with excelize, its conditional formats
+// held aside (see linefix.go).
+func (e *Editor) openExcelize(data []byte) (*excelize.File, error) {
+	which := map[string]bool{}
+	for name, l := range e.layouts {
+		if l.conds {
+			which[name] = true
+		}
+	}
+	stripped, held, err := holdConds(data, which)
+	if err != nil {
+		return nil, err
+	}
+	e.patches.conds = held
+	return excelize.OpenReader(bytes.NewReader(stripped))
+}
+
+// mergedAt finds the merged cells a cell lies hidden in: inside, not their
+// top-left cell.
+func (e *Editor) mergedAt(sheet string, row, col int) (grid.Range, bool, error) {
+	key := strings.ToLower(sheet)
+	ms, ok := e.merges[key]
+	if !ok {
+		list, err := e.f.GetMergeCells(sheet, true)
+		if err != nil {
+			return grid.Range{}, false, err
+		}
+		for _, m := range list {
+			if r, err := grid.ParseRange(m.GetStartAxis() + ":" + m.GetEndAxis()); err == nil {
+				ms = append(ms, r)
+			}
+		}
+		if e.merges == nil {
+			e.merges = map[string][]grid.Range{}
+		}
+		e.merges[key] = ms
+	}
+	return hiddenIn(ms, row, col)
+}
+
+// hiddenIn finds the merged cells, of ms, a cell lies hidden in.
+func hiddenIn(ms []grid.Range, row, col int) (grid.Range, bool, error) {
+	for _, m := range ms {
+		if m.Contains(row, col) && (row != m.R1 || col != m.C1) {
+			return m, true, nil
+		}
+	}
+	return grid.Range{}, false, nil
+}
+
+// hiddenByMerge refuses a value for a cell merged cells hide, which Excel
+// cannot show (and excelize would write into their first cell).
+func hiddenByMerge(sheet string, row, col int, m grid.Range) error {
+	return fmt.Errorf("%s lies inside merged cells %s, which show only %s: write to %s, or unmerge them first (sheets style %s unmerge)",
+		grid.FormatRef(sheet, grid.Range{R1: row, C1: col, R2: row, C2: col}), m, grid.CellName(m.R1, m.C1), grid.CellName(m.R1, m.C1),
+		cliRange(sheet, m))
+}
+
+// dropMerges forgets the merged cells read, after cells merged, unmerged
+// or moved.
+func (e *Editor) dropMerges() { e.merges = nil }
 
 // Created reports whether the editor started a new file.
 func (e *Editor) Created() bool { return e.created }
@@ -113,10 +188,19 @@ func (e *Editor) Set(sheet string, row, col int, v input.Value) error {
 			return fmt.Errorf("%s: =%s is not a valid formula: %v", grid.FormatRef(sheet, grid.Range{R1: row, C1: col, R2: row, C2: col}), strings.TrimPrefix(v.Formula, "="), err)
 		}
 	}
+	if m, ok, err := e.mergedAt(sheet, row, col); err != nil {
+		return err
+	} else if ok {
+		if v.IsEmpty() {
+			return nil // as it is: merged cells show only their first
+		}
+		return hiddenByMerge(sheet, row, col, m)
+	}
 	if err := e.unshareFormulas(sheet, row, col); err != nil {
 		return err
 	}
 	cell := grid.CellName(row, col)
+	e.noteFresh(sheet, row, col)
 	if e.wb.Date1904 && (v.Fmt.Kind == grid.Date || v.Fmt.Kind == grid.DateTime) {
 		v.Num -= 1462 // days between the 1900 and 1904 epochs
 	}
@@ -131,7 +215,7 @@ func (e *Editor) Set(sheet string, row, col int, v input.Value) error {
 	case v.Kind == grid.Empty:
 		err = e.f.SetCellDefault(sheet, cell, "")
 	case v.Kind == grid.Text:
-		err = e.f.SetCellStr(sheet, cell, v.Text)
+		err = setText(e.f, sheet, cell, v.Text)
 	case v.Kind == grid.Bool:
 		err = e.f.SetCellBool(sheet, cell, v.Bool)
 	case v.Kind == grid.Number:
@@ -342,6 +426,7 @@ func (e *Editor) Clear(sheet string) error {
 			return err
 		}
 	}
+	e.dropMerges()
 	e.extent[sheet] = grid.Range{R1: 1, C1: 1}
 	if lay := e.layouts[sheet]; lay != nil {
 		for anchor := range lay.spills {
@@ -375,9 +460,19 @@ func (e *Editor) Evaluate(sheet string, row, col int) (v grid.Cell, note string,
 // would change (warnings included). Excel and LibreOffice are told to
 // recalculate on open, since cached formula results may now be stale.
 func (e *Editor) Save(dryRun bool) error {
+	buf, err := e.Render()
+	if err != nil || dryRun {
+		return err
+	}
+	return writeAtomic(e.path, buf)
+}
+
+// Render works out the file as Save would write it, results stored and
+// warnings noted.
+func (e *Editor) Render() ([]byte, error) {
 	on := true
 	if err := e.f.SetCalcProps(&excelize.CalcPropsOptions{FullCalcOnLoad: &on}); err != nil {
-		return err
+		return nil, err
 	}
 	// excelize does not maintain <dimension>; some readers trust it.
 	for sheet, ext := range e.extent {
@@ -385,22 +480,22 @@ func (e *Editor) Save(dryRun bool) error {
 			ext = grid.Range{R1: 1, C1: 1, R2: 1, C2: 1}
 		}
 		if err := e.f.SetSheetDimension(sheet, ext.String()); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := e.restyleWritten(); err != nil {
-		return err
+		return nil, err
 	}
 	if err := e.fixTables(); err != nil {
-		return err
+		return nil, err
 	}
 	if err := e.recalc(); err != nil {
-		return err
+		return nil, err
 	}
 	e.patches.stamp = true
 	buf, err := serialize(e.f, e.patches)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	e.warnings = append(e.warnings, e.patches.renameNotes()...)
 	if e.structural && e.data != nil {
@@ -413,10 +508,7 @@ func (e *Editor) Save(dryRun bool) error {
 			}
 		}
 	}
-	if dryRun {
-		return nil
-	}
-	return writeAtomic(e.path, buf)
+	return buf, nil
 }
 
 func countOf(n int, word string) string {

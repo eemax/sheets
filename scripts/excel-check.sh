@@ -209,6 +209,76 @@ s rows insert 14-moved.xlsx Scores!1 -n 2
 s cols insert 14-moved.xlsx Scores!A
 s set 14-moved.xlsx Scores!A1 'Two rows and a column were inserted'
 
+# 15. Sorting: a report with a running total, a note and a link; and an
+#     Excel table (made by openpyxl) sorted within its data rows.
+"$bin" do 15-sorted.xlsx >/dev/null <<'EOF'
+write Sales!A1 <<END
+Region	Units	Price	Revenue	Running
+East	5	30	=B{r}*C{r}	=SUM($D$2:D{r})
+West	2	40	=B{r}*C{r}	=SUM($D$2:D{r})
+North	9	10	=B{r}*C{r}	=SUM($D$2:D{r})
+South	1	100	=B{r}*C{r}	=SUM($D$2:D{r})
+Total	=SUM(B2:B5)		=SUM(D2:D5)
+END
+fmt
+note Sales!A3 'West: two only'
+link Sales!A4 https://example.com/north
+sort Sales Revenue:desc
+EOF
+cp "$root/internal/xlsx/testdata/tables.xlsx" 15b-sorted-table.xlsx
+s sort 15b-sorted-table.xlsx Sales Units:desc
+
+# 16. Copy and move: a styled block with a highlight rule, a dropdown, a
+#     note and a link moved down, then copied to another sheet; formulas
+#     elsewhere follow the move, and one pointing where it lands breaks.
+"$bin" do 16-copy-move.xlsx >/dev/null <<'EOF'
+write Data!A1 <<END
+Name	Score	Status
+Ada	92	Late
+Bob	47	On time
+Cy	75	Late
+END
+fmt
+style 'Data[#Headers]' fill=lightblue
+cond Data!A2:C4 '=$C2="Late"' fill=lightyellow
+validate Data!C2:C4 list 'Late,On time'
+note Data!A2 'Team lead'
+link Data!A3 https://example.com/bob
+set Summary!A1 'Best score' Summary!B1 '=MAX(Data!B2:B4)' Summary!A2 'Ada' Summary!B2 '=Data!B2' Summary!A3 'Breaks' Summary!B3 '=Data!B10'
+EOF
+s move 16-copy-move.xlsx Data!A1:C4 Data!A8
+s copy 16-copy-move.xlsx Data!A8:C11 Copy!A2
+s fmt 16-copy-move.xlsx
+
+# 17. Notes moving with rows in files from other programs: openpyxl's
+#     notes, and an Excel 365 comment thread.
+cp "$root/internal/xlsx/testdata/rich.xlsx" 17-notes.xlsx
+s rows insert 17-notes.xlsx Data!1 -n 2
+s note 17-notes.xlsx Data!A1 'Added by sheets'
+cp "$root/internal/xlsx/testdata/threads.xlsx" 17b-thread.xlsx
+s rows insert 17b-thread.xlsx Data!2
+s sort 17b-thread.xlsx Data!A3:B5 B
+s note 17b-thread.xlsx Data!C3 'A note next to the thread'
+
+# 18. A CSV with typed values, converted and formatted.
+printf '%s\r\n' 'Order,Date,Customer,Amount,Discount,Code,Comment' \
+  '1001,2026-03-01,"Acme, Inc.","1,250.00",5%,00042,"said ""rush"""' \
+  '1002,2026-03-02,Zoë Café,$99.50,0%,00107,' \
+  '1003,2026-03-03,Bob,"12,000",12.5%,01234,"two' 'lines"' > 18-orders.csv
+s convert 18-orders.csv 18-from-csv.xlsx
+s fmt 18-from-csv.xlsx
+
+# 19. Conditional formats and validations from another program (data bars
+#     with Excel 2010's extension, icons, a highlight reading its own row,
+#     rules reading another sheet) through row and column edits, one of
+#     them streamed.
+cp "$root/internal/xlsx/testdata/rules.xlsx" 19-rules.xlsx
+s rows delete 19-rules.xlsx Data!3:3
+s cols insert 19-rules.xlsx Data!A
+s cond 19-rules.xlsx Data!D3:D6 bars
+s rows insert 19-rules.xlsx Data!5
+s set 19-rules.xlsx Data!B5 Added Data!C5 4 Data!D5 50 Data!E5 1
+
 cat > CHECKLIST.md <<'MD'
 # Excel check
 
@@ -334,5 +404,57 @@ If it asks to repair, note which file and what the repair log says.
   moved with the data, formulas included.
 - Frozen at C4: rows 1-3 and columns A-B stay put, as the header row and
   the Name column did before.
+
+## 15-sorted.xlsx
+- Sales sorted by Revenue, highest first: East 150, South 100, North 90,
+  West 80; the Total row stays last (17 and 420).
+- Running is a running total in the new order: 150, 250, 340, 420.
+- The note "West: two only" is on West's name (A5); hovering North's name
+  (A4) shows the link to example.com/north, blue and underlined.
+
+## 15b-sorted-table.xlsx
+- The Excel table's rows sorted by Units, largest first; its totals row
+  stays at the bottom and still adds up; the table style and filter
+  buttons are intact.
+
+## 16-copy-move.xlsx
+- Data: the block now starts at A8 (header row 8, light blue). Ada and Cy
+  (Late) light yellow; C9:C11 have a dropdown (Late, On time); the note
+  "Team lead" is on A9, the link on A10.
+- Summary: B1 92, B2 92 (=Data!B9: followed the move), B3 #REF! (it read
+  B10, where the move pasted).
+- Copy: the same block at A2:C5, with the highlight (Ada and Cy), the
+  dropdown, the note and the link.
+
+## 17-notes.xlsx
+- Data: the note "checked" is on B4 (it was on B2 before two rows were
+  inserted), and "Added by sheets" on A1. Hovering shows each, and no
+  empty note boxes appear anywhere.
+
+## 17b-thread.xlsx
+- Data: the comment thread ("Is 47 right?" with Bob's reply) is on Bob's
+  score, wherever the sort put him (B3), and opens as a thread in Excel
+  365. The note "Names as entered" stays on A1; a new note on C3.
+
+## 18-from-csv.xlsx
+- One sheet "18-orders": Amount as numbers (1,250.00, 99.50, 12,000) in
+  the house style, Date as dates, Discount as %, Code keeping its leading
+  zeros (00042), "Acme, Inc." and the quoted text intact, and the
+  two-line comment wrapping in its cell.
+
+## 19-rules.xlsx
+- Data: the title "Orders by region" merged across B1:E1; rows West,
+  North, Added, South, East (B3:B7). North, Added and East are light red
+  (Flag 1), West and South are not.
+- Units (C3:C7) have solid green data bars; Price (D3:D7) blue data bars
+  and traffic-light icons. Home › Conditional Formatting › Manage Rules
+  shows each rule over rows 3-7, the highlight as `=$E3=1`, and "Cell
+  Value > #REF!" (it compared with $C$3, in the deleted row, as Excel's
+  would).
+- Data › Data Validation on D3: custom, `=D3>$C3`; typing 1 in D4 is
+  refused. C3:C7 take whole numbers 0 to 100.
+- Other: A1:A3 light red (`=Data!$C$3>1`); B1 has a dropdown listing West,
+  North, Added, South, East.
+- No repair prompt on opening.
 MD
 echo "wrote $(ls "$out" | grep -c xlsx) workbooks to $out; see CHECKLIST.md"

@@ -158,3 +158,48 @@ func TestGeometry(t *testing.T) {
 		t.Errorf("title runs on to column %d, want 2", last)
 	}
 }
+
+// Banding is drawn when another rule shares its range (excelize's
+// GetConditionalFormats keeps one rule per range).
+func TestBandingSharingItsRange(t *testing.T) {
+	f := excelize.NewFile()
+	for r := 1; r <= 6; r++ {
+		f.SetCellValue("Sheet1", grid.CellName(r, 1), "x")
+		f.SetCellValue("Sheet1", grid.CellName(r, 2), r)
+	}
+	band, err := f.NewConditionalStyle(&excelize.Style{Fill: excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"F2F2F2"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hi, err := f.NewConditionalStyle(&excelize.Style{Font: &excelize.Font{Bold: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two formats over one range, as fmt's banding and a cond make.
+	for _, o := range []excelize.ConditionalFormatOptions{
+		{Type: "formula", Criteria: "MOD(ROW()-2,2)=1", Format: &band},
+		{Type: "formula", Criteria: "$B2>4", Format: &hi},
+	} {
+		if err := f.SetConditionalFormat("Sheet1", "A2:B6", []excelize.ConditionalFormatOptions{o}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "band.xlsx")
+	if err := f.SaveAs(path); err != nil {
+		t.Fatal(err)
+	}
+	sh, err := load(path, Options{Sheet: "Sheet1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for r := 2; r <= 6; r++ {
+		ce := sh.cell(r, 1)
+		banded := ce.look != nil && ce.look.fill != nil
+		if banded != (r%2 == 1) {
+			t.Errorf("row %d banded = %v", r, banded)
+		}
+	}
+	if !strings.Contains(strings.Join(sh.missing, ";"), "other than banding") {
+		t.Errorf("the other rule is not reported: %v", sh.missing)
+	}
+}

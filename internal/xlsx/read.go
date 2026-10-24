@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -78,6 +79,8 @@ type layout struct {
 	// spilling formulas) to the range its result currently fills.
 	spills map[[2]int]grid.Range
 	tables []tablePart
+	links  []rawLink // while reading
+	conds  bool      // the sheet has conditional formats
 }
 
 // tablePart is an Excel table (Insert › Table) as stored: its part, its
@@ -166,6 +169,7 @@ func parse(data []byte) (wb *grid.Workbook, layouts map[string]*layout, stamped 
 
 	pending := false
 	layouts = map[string]*layout{}
+	var people map[string]string // who wrote comment threads, read when needed
 	for _, s := range wbx.Sheets {
 		rel, ok := relByID[s.relID()]
 		if !ok || !strings.HasSuffix(rel.Type, "/worksheet") {
@@ -179,15 +183,30 @@ func parse(data []byte) (wb *grid.Workbook, layouts map[string]*layout, stamped 
 		if err != nil {
 			return nil, nil, false, fmt.Errorf("reading sheet %q: %w", s.Name, err)
 		}
-		tables, drawing := p.sheetRels(rel.Target)
-		for _, t := range tables {
+		parts := p.sheetParts(rel.Target)
+		for _, t := range parts.tables {
 			sh.Tables = append(sh.Tables, grid.NamedTable{Name: t.name, Range: t.ref, Totals: t.totals, Filter: t.filter && t.headers > 0, Columns: columnNames(t.xml)})
 		}
-		lay.tables = tables
-		if drawing != "" {
+		lay.tables = parts.tables
+		if parts.drawing != "" {
 			lay.drawing = true
-			sh.Charts = p.charts(drawing)
+			sh.Charts = p.charts(parts.drawing)
 		}
+		if parts.comments != "" || parts.threads != "" {
+			if people == nil {
+				people = p.people(rels)
+			}
+			sh.Notes = p.notesOf(parts, people)
+		}
+		sh.Links = linksOf(lay.links, parts.links)
+		lay.links = nil
+		for _, sp := range lay.spills {
+			sh.Spills = append(sh.Spills, sp)
+		}
+		sort.Slice(sh.Spills, func(i, j int) bool {
+			a, b := sh.Spills[i], sh.Spills[j]
+			return a.R1 < b.R1 || a.R1 == b.R1 && a.C1 < b.C1
+		})
 		pending = pending || hasPending
 		wb.Sheets = append(wb.Sheets, sh)
 	}
@@ -383,51 +402,35 @@ func (p *pkg) styles(name string, wb *grid.Workbook) ([]uint16, error) {
 	return out, nil
 }
 
-// sheetRels lists the table objects attached to a worksheet and its drawing
-// part (charts, pictures), if any. Parts that cannot be read are skipped:
-// this only refines formatting and warnings.
-func (p *pkg) sheetRels(sheetPart string) (out []tablePart, drawing string) {
-	dir := path.Dir(sheetPart)
-	rels, err := p.rels(path.Join(dir, "_rels", path.Base(sheetPart)+".rels"), dir)
+// table reads an Excel table part.
+func (p *pkg) table(part string) (tablePart, bool) {
+	data, err := p.read(part)
 	if err != nil {
-		return nil, ""
+		return tablePart{}, false
 	}
-	for _, r := range rels {
-		if strings.HasSuffix(r.Type, "/drawing") {
-			drawing = r.Target
-		}
-		if !strings.HasSuffix(r.Type, "/table") {
-			continue
-		}
-		data, err := p.read(r.Target)
-		if err != nil {
-			continue
-		}
-		var t struct {
-			Name        string `xml:"name,attr"`
-			DisplayName string `xml:"displayName,attr"`
-			Ref         string `xml:"ref,attr"`
-			Headers     *int   `xml:"headerRowCount,attr"`
-			Totals      int    `xml:"totalsRowCount,attr"`
-		}
-		if err := xml.Unmarshal(data, &t); err != nil {
-			continue
-		}
-		rg, err := grid.ParseRange(t.Ref)
-		if err != nil {
-			continue
-		}
-		tp := tablePart{part: r.Target, name: t.DisplayName, ref: rg, headers: 1, totals: t.Totals, xml: data,
-			filter: bytes.Contains(data, []byte("<autoFilter"))}
-		if tp.name == "" {
-			tp.name = t.Name
-		}
-		if t.Headers != nil {
-			tp.headers = *t.Headers
-		}
-		out = append(out, tp)
+	var t struct {
+		Name        string `xml:"name,attr"`
+		DisplayName string `xml:"displayName,attr"`
+		Ref         string `xml:"ref,attr"`
+		Headers     *int   `xml:"headerRowCount,attr"`
+		Totals      int    `xml:"totalsRowCount,attr"`
 	}
-	return out, drawing
+	if err := xml.Unmarshal(data, &t); err != nil {
+		return tablePart{}, false
+	}
+	rg, err := grid.ParseRange(t.Ref)
+	if err != nil {
+		return tablePart{}, false
+	}
+	tp := tablePart{part: part, name: t.DisplayName, ref: rg, headers: 1, totals: t.Totals, xml: data,
+		filter: bytes.Contains(data, []byte("<autoFilter"))}
+	if tp.name == "" {
+		tp.name = t.Name
+	}
+	if t.Headers != nil {
+		tp.headers = *t.Headers
+	}
+	return tp, true
 }
 
 // read returns a part's bytes.
@@ -552,6 +555,10 @@ func (p *pkg) worksheet(name string, sh *grid.Sheet, lay *layout, sst []string, 
 			if rg, err := grid.ParseRange(attr(se, "ref")); err == nil {
 				sh.Merges = append(sh.Merges, rg)
 			}
+		case "hyperlink":
+			lay.links = append(lay.links, hyperlink(se))
+		case "conditionalFormatting":
+			lay.conds = true
 		}
 	}
 }

@@ -126,6 +126,29 @@ summary.write_formula("A4", "=ROWS(Data!B2:B4)", None, 3)
 summary.write_formula("A5", "=_xlfn.XMATCH(5,Data!B2:B4)", None, 1)  # a function the calculator lacks
 xw.close()
 
+# rules.xlsx: conditional formats and validations as Excel writes them,
+# with the Excel 2010 extension (data bars, written by XlsxWriter as Excel
+# does), rules whose formulas read their own row or another sheet, and
+# merged cells.
+xw = xlsxwriter.Workbook(f"{out}/rules.xlsx")
+data = xw.add_worksheet("Data")
+data.merge_range("A1:D1", "Orders by region", None)
+data.write_row(1, 0, ["Region", "Units", "Price", "Flag"])
+for i, row in enumerate([("East", 5, 30, 1), ("West", 2, 40, 0), ("North", 9, 10, 1), ("South", 1, 100, 0), ("East", 7, 20, 1)], 2):
+    data.write_row(i, 0, row)
+red = xw.add_format({"bg_color": "#FFC7CE"})
+data.conditional_format("B3:B7", {"type": "data_bar", "bar_color": "#63BE7B", "data_bar_2010": True})
+data.conditional_format("C3:C7", {"type": "icon_set", "icon_style": "3_traffic_lights"})
+data.conditional_format("A3:D7", {"type": "formula", "criteria": "=$D3=1", "format": red})
+data.conditional_format("C3:C7", {"type": "cell", "criteria": ">", "value": "$C$3", "format": red})
+data.data_validation("B3:B7", {"validate": "integer", "criteria": "between", "minimum": 0, "maximum": 100})
+data.data_validation("C3:C7", {"validate": "custom", "value": "=C3>$B3"})
+other = xw.add_worksheet("Other")
+other.write_column(0, 0, [1, 2, 3])
+other.conditional_format("A1:A3", {"type": "formula", "criteria": "=Data!$B$4>1", "format": red})
+other.data_validation("B1:B3", {"validate": "list", "source": "=Data!$A$3:$A$7"})
+xw.close()
+
 # Excel drops the recalculation flag XlsxWriter sets when it saves.
 import zipfile
 
@@ -137,3 +160,60 @@ with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         if info.filename == "xl/workbook.xml":
             data = data.replace(b' fullCalcOnLoad="1"', b"")
         z.writestr(info, data)
+
+# threads.xlsx: an Excel 365 comment thread (with its stand-in note for
+# older Excel) on Data!B3, a plain note on A1, and the sheet's rows.
+wb = Workbook()
+ws = wb.active
+ws.title = "Data"
+for row in [("Name", "Score"), ("Ada", 92), ("Bob", 47), ("Cy", 75)]:
+    ws.append(row)
+ws["A1"].comment = Comment("Names as entered", "Ann")
+thread = "{AAAAAAAA-0000-4000-8000-000000000001}"
+ws["B3"].comment = Comment(
+    "[Threaded comment]\n\nYour version of Excel allows you to read this threaded comment.\n\n"
+    "Comment:\n    Is 47 right?\nReply:\n    Yes, checked.",
+    "tc=" + thread,
+)
+path = f"{out}/threads.xlsx"
+wb.save(path)
+
+ns = "http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments"
+ann, bob = "{11111111-1111-4111-8111-111111111111}", "{22222222-2222-4222-8222-222222222222}"
+threads = (
+    f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+    f'<ThreadedComments xmlns="{ns}" xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    f'<threadedComment ref="B3" dT="2026-10-01T10:00:00.00" personId="{ann}" id="{thread}"><text>Is 47 right?</text></threadedComment>'
+    f'<threadedComment ref="B3" dT="2026-10-01T11:00:00.00" personId="{bob}" id="{{AAAAAAAA-0000-4000-8000-000000000002}}" parentId="{thread}"><text>Yes, checked.</text></threadedComment>'
+    f"</ThreadedComments>"
+)
+persons = (
+    f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+    f'<personList xmlns="{ns}" xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    f'<person displayName="Ann" id="{ann}" userId="ann@example.com" providerId="None"/>'
+    f'<person displayName="Bob" id="{bob}" userId="bob@example.com" providerId="None"/>'
+    f"</personList>"
+)
+with zipfile.ZipFile(path) as z:
+    items = [(i, z.read(i.filename)) for i in z.infolist()]
+with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+    for info, data in items:
+        if info.filename == "[Content_Types].xml":
+            data = data.replace(
+                b"</Types>",
+                b'<Override PartName="/xl/threadedComments/threadedComment1.xml" ContentType="application/vnd.ms-excel.threadedcomments+xml"/>'
+                b'<Override PartName="/xl/persons/person.xml" ContentType="application/vnd.ms-excel.person+xml"/></Types>',
+            )
+        elif info.filename == "xl/_rels/workbook.xml.rels":
+            data = data.replace(
+                b"</Relationships>",
+                b'<Relationship Id="rIdPersons" Type="http://schemas.microsoft.com/office/2017/10/relationships/person" Target="persons/person.xml"/></Relationships>',
+            )
+        elif info.filename == "xl/worksheets/_rels/sheet1.xml.rels":
+            data = data.replace(
+                b"</Relationships>",
+                b'<Relationship Id="rIdThreads" Type="http://schemas.microsoft.com/office/2017/10/relationships/threadedComment" Target="../threadedComments/threadedComment1.xml"/></Relationships>',
+            )
+        z.writestr(info, data)
+    z.writestr("xl/threadedComments/threadedComment1.xml", threads)
+    z.writestr("xl/persons/person.xml", persons)

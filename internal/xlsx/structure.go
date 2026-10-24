@@ -63,6 +63,8 @@ func (e *Editor) DeleteRows(sheet string, from, to int) error {
 			r.R1 -= n
 			r.R2 -= n
 		case r.R2 >= from:
+			// What follows the deleted rows moves up into them.
+			r.R1 = min(r.R1, from)
 			r.R2 = max(from-1, r.R2-n)
 		}
 		return r
@@ -121,6 +123,7 @@ func (e *Editor) DeleteCols(sheet string, from, to int) error {
 			r.C1 -= n
 			r.C2 -= n
 		case r.C2 >= from:
+			r.C1 = min(r.C1, from)
 			r.C2 = max(from-1, r.C2-n)
 		}
 		return r
@@ -226,7 +229,9 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 		}
 		return a.col > b.col
 	})
-	var keep []formulaAt
+	// Not nil, even with no formula left: lines set means the formulas
+	// opened with have moved (see formulasNow).
+	keep := []formulaAt{}
 	recompute := map[cellKey]bool{}
 	for _, f := range all {
 		if err := e.f.SetCellFormula(f.sheet, grid.CellName(f.row, f.col), ""); err != nil {
@@ -246,7 +251,9 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 	}
 	// Cells written earlier in the session move with their rows too.
 	changed := map[cellKey]string{}
+	fresh := map[cellKey]bool{}
 	for k, sheet := range e.changed {
+		was := e.wasEmpty[k]
 		if k.sheet == strings.ToLower(target) {
 			r, c, ok := move(k.row, k.col)
 			if !ok {
@@ -255,30 +262,115 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 			k.row, k.col = r, c
 		}
 		changed[k] = sheet
+		if was {
+			fresh[k] = true
+		}
 	}
 	// Names: excelize shifts them, but cannot parse LET names either; and
-	// it would point names into deleted lines at their neighbours. Built-in
-	// names (_xlnm.: filter, print area) are plain ranges excelize adjusts
-	// with what they belong to, and must keep their hidden flag, which the
-	// API cannot express; they stay.
+	// it would point names into deleted lines at their neighbours, or at
+	// row 0, which it then refuses (a filter's name, when the rows deleted
+	// begin at its header). So all names are taken off and put back
+	// moved. A filter goes with its header row (excelize drops it), and so
+	// does its name; serialize hides the name again (see hideRecords).
 	var names []excelize.DefinedName
 	for _, n := range e.f.GetDefinedName() {
-		if strings.HasPrefix(n.Name, "_xlnm.") {
-			continue
-		}
 		names = append(names, n)
 		if err := e.f.DeleteDefinedName(&excelize.DefinedName{Name: n.Name, Scope: n.Scope}); err != nil {
 			return err
 		}
 	}
+	// Validations and conditional formats move as Excel moves them, not
+	// as excelize does (see linefix.go): every sheet's, whose formulas can
+	// read the target.
+	held := map[string]heldValidations{}
+	for _, name := range e.f.GetSheetList() {
+		h, err := e.holdValidations(name)
+		if err != nil {
+			if e.wb.Sheet(name) == nil {
+				continue // a chart sheet
+			}
+			return err
+		}
+		if len(h) > 0 {
+			held[name] = h
+		}
+	}
 	if err := op(); err != nil {
+		return err
+	}
+	e.dropMerges()
+	edit := func(home string) lineEdit {
+		if !strings.EqualFold(home, target) {
+			return stay(func(f string) string { return rewrite(f, home) })
+		}
+		return lineEdit{
+			place: func(r grid.Range) (grid.Range, bool) {
+				text := rewrite(r.String(), target)
+				if strings.Contains(text, "#REF!") {
+					return grid.Range{}, false
+				}
+				m, err := grid.ParseRange(strings.ReplaceAll(text, "$", ""))
+				return m, err == nil
+			},
+			first: func(r grid.Range) (int, int) {
+				for row, col := r.R1, r.C1; row <= r.R2 && col <= r.C2; {
+					if _, _, ok := move(row, col); ok {
+						return row, col
+					}
+					if cols {
+						col++
+					} else {
+						row++
+					}
+				}
+				return r.R1, r.C1
+			},
+			rewrite: func(f string) string { return rewrite(f, target) },
+		}
+	}
+	for name, h := range held {
+		// Their formulas name sheets as excelize holds them, renamed when
+		// saving (see namesNow).
+		for _, dv := range h {
+			for _, f := range []*string{&dv.Formula1, &dv.Formula2} {
+				if *f != "" {
+					*f = escapeXML(e.namesNow(unescapeXML(*f)))
+				}
+			}
+		}
+		if err := h.putBack(e, name, edit(name)); err != nil {
+			return err
+		}
+	}
+	for home, sec := range e.patches.conds {
+		sec.each(edit(home).moveRule)
+	}
+	if err := e.moveNotes(target, move); err != nil {
 		return err
 	}
 	// Chart ranges are always sheet-qualified.
 	e.patches.rangeRewrites = append(e.patches.rangeRewrites, func(f string) string { return rewrite(f, "") })
-	e.patches.ruleRewrites = append(e.patches.ruleRewrites, rewrite)
 	for _, n := range names {
+		if strings.HasPrefix(n.Name, "_xlnm.") {
+			if n.Name == "_xlnm._FilterDatabase" && headerGone(n.RefersTo, target, hit, cols) {
+				continue
+			}
+			if moved := rewrite(n.RefersTo, ""); !strings.Contains(moved, "#REF!") {
+				n.RefersTo = moved
+				if err := e.f.SetDefinedName(&n); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		n.RefersTo = rewrite(n.RefersTo, "")
+		if strings.HasPrefix(n.Name, recordPrefix) {
+			// The formulas of a recorded rule follow as the rule's do.
+			if recs, _ := recordsOf([]excelize.DefinedName{n}, func(string) bool { return true }); len(recs) == 1 && recs[0].Kind == "cond" {
+				rec := recs[0]
+				n.Comment = Record{Kind: rec.Kind, Args: condFormulas(rec.Args, func(f string) string { return rewrite(f, rec.Sheet) })}.Text()
+			}
+		}
 		if err := e.f.SetDefinedName(&n); err != nil {
 			return err
 		}
@@ -288,7 +380,7 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 			return err
 		}
 	}
-	e.lines, e.recompute, e.changed = keep, recompute, changed
+	e.lines, e.recompute, e.changed, e.wasEmpty = keep, recompute, changed, fresh
 	e.structural = true
 	e.forgetPositions()
 	return nil
@@ -300,8 +392,9 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 // cells written.
 func (e *Editor) sheetEdit(from, to string, copy bool, rewrite func(string) string) {
 	e.sheetsChanged = true
+	e.dropMerges()
 	if e.lines != nil {
-		var lines []formulaAt
+		lines := []formulaAt{}
 		for _, l := range e.lines {
 			mine := strings.EqualFold(l.sheet, from)
 			if copy && mine {
@@ -325,6 +418,15 @@ func (e *Editor) sheetEdit(from, to string, copy bool, rewrite func(string) stri
 	if copy {
 		return
 	}
+	// Conditional formats, which excelize does not hold, follow now.
+	if to == "" {
+		delete(e.patches.conds, from)
+	}
+	if rewrite != nil {
+		for _, sec := range e.patches.conds {
+			sec.formulas(rewrite)
+		}
+	}
 	move := func(k cellKey) (cellKey, bool) {
 		if k.sheet != strings.ToLower(from) {
 			return k, true
@@ -333,14 +435,17 @@ func (e *Editor) sheetEdit(from, to string, copy bool, rewrite func(string) stri
 		return k, to != ""
 	}
 	changed := map[cellKey]string{}
+	wasEmpty := map[cellKey]bool{}
 	for k, sheet := range e.changed {
 		if k2, ok := move(k); ok {
 			if k2 != k {
 				sheet = to
 			}
 			changed[k2] = sheet
+			wasEmpty[k2] = e.wasEmpty[k]
 		}
 	}
+	e.wasEmpty = wasEmpty
 	recompute := map[cellKey]bool{}
 	for k := range e.recompute {
 		if k2, ok := move(k); ok {
@@ -495,6 +600,9 @@ func (e *Editor) RenameSheet(from, to string) error {
 		return fmt.Errorf("sheet name %q: %w", to, err)
 	}
 	e.patches.rename(from, to)
+	if err := e.rewriteCondRecords(func(f, _ string) string { return formula.RenameSheet(f, from, to) }); err != nil {
+		return err
+	}
 	e.patches.sheetEdits = append(e.patches.sheetEdits, sheetEdit{from: from, to: to})
 	e.patches.rangeRewrites = append(e.patches.rangeRewrites, func(f string) string { return formula.RenameSheet(f, from, to) })
 	e.renameState(from, to)
@@ -642,6 +750,10 @@ func (e *Editor) CopySheet(from, to string) ([]string, error) {
 	if err := e.place(to, "", from); err != nil {
 		return nil, err
 	}
+	// Its conditional formats, held aside (see linefix.go), go with it.
+	if sec := e.patches.conds[from]; sec != nil {
+		e.patches.conds[to] = sec.copy()
+	}
 	// The copy's styling is kept by fmt as the original's is.
 	for _, rec := range e.Records() {
 		if strings.EqualFold(rec.Sheet, from) {
@@ -718,4 +830,21 @@ func (e *Editor) SheetList() []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// headerGone tells whether lines deleted take a filter's header row (or
+// first column, for columns) with them, which excelize answers by dropping
+// the filter: its name goes too. hit tells whether a range on target takes
+// in deleted lines (for one line, whether it is one of them; nothing does
+// when lines are inserted).
+func headerGone(ref, target string, hit func(grid.Range) bool, cols bool) bool {
+	sheet, r, ok := parseAbsRef(ref)
+	if !ok || !strings.EqualFold(sheet, target) {
+		return false
+	}
+	head := grid.Range{R1: r.R1, C1: r.C1, R2: r.R1, C2: r.C2}
+	if cols {
+		head = grid.Range{R1: r.R1, C1: r.C1, R2: r.R2, C2: r.C1}
+	}
+	return hit(head)
 }

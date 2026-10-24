@@ -23,6 +23,9 @@ func sampleWorkbook() *Workbook {
 	s.HiddenRows = []Run{{From: 4, To: 4}}
 	s.HiddenCols = []Run{{From: 7, To: 9}}
 	s.Filter = Range{R1: 2, C1: 1, R2: 5, C2: 3}
+	s.Notes = []Note{{Row: 3, Col: 2, Author: "Ann", Text: "Checked"}, {Row: 4, Col: 1, Text: "Why?\nBob: because", Thread: true}}
+	s.Links = []Link{{Row: 1, Col: 1, URL: "https://example.com", Tooltip: "Site"}, {Row: 3, Col: 1, Location: "Data!A1"}}
+	s.Spills = []Range{{R1: 2, C1: 5, R2: 9, C2: 5}}
 	s.Set(1, 1, Cell{Kind: Text, Text: "Title"})
 	s.Set(3, 1, Cell{Kind: Text, Text: "North"})
 	s.Set(3, 2, Cell{Kind: Number, Num: 1.5, Fmt: 1})
@@ -65,7 +68,8 @@ func TestEncodeRoundTrip(t *testing.T) {
 		g := got.Sheets[i]
 		if g.Name != s.Name || g.Hidden != s.Hidden || g.maxCol != s.maxCol || len(g.rows) != len(s.rows) ||
 			!reflect.DeepEqual(g.Merges, s.Merges) || !reflect.DeepEqual(g.Tables, s.Tables) || !reflect.DeepEqual(g.Charts, s.Charts) ||
-			!reflect.DeepEqual(g.HiddenRows, s.HiddenRows) || !reflect.DeepEqual(g.HiddenCols, s.HiddenCols) || g.Filter != s.Filter {
+			!reflect.DeepEqual(g.HiddenRows, s.HiddenRows) || !reflect.DeepEqual(g.HiddenCols, s.HiddenCols) || g.Filter != s.Filter ||
+			!reflect.DeepEqual(g.Notes, s.Notes) || !reflect.DeepEqual(g.Links, s.Links) || !reflect.DeepEqual(g.Spills, s.Spills) {
 			t.Errorf("sheet %s differs:\n got %+v\nwant %+v", s.Name, g, s)
 			continue
 		}

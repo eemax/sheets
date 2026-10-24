@@ -55,10 +55,16 @@ sheets skill --install    # teach Claude Code to use it (~/.claude/skills/sheets
 | `cond <file> <target> <condition>` | Conditional formats: comparisons, top/bottom, averages, duplicates, text, formulas, colour scales, data bars, icons; `--list`, `--clear` |
 | `validate <file> <target> <rule>` | Data validation: dropdown lists, number, date and length limits, formulas; `--prompt`, `--error`, `--warn`, `--list`, `--clear` |
 | `view <file> [sheet]` | Freeze panes, tab colour, gridlines, zoom, hidden rows and columns, filter buttons, active sheet |
+| `sort <file> <target> <col>[:desc]...` | Sorts a table's rows as Excel does; refuses a sort that would change what a formula means |
+| `copy <file> <from> <to>`, `move` | Copy (formulas shift; `--values`, `--format`) or cut and paste (references follow) |
+| `clear <file> <target>` | Clears contents; `--format`, `--notes`, `--links`, `--all` |
+| `replace <file> <find> <with> [target]` | Find and replace in values, or `--formulas`; `--exact`, `--regex` |
+| `note`, `link` | Notes and hyperlinks on cells; `--list` |
+| `convert <from> <to>` | Between .xlsx and .csv/.tsv |
 | `do <file>` | Runs a script of commands against one file: one save, one undo step, nothing saved on an error |
 | `undo <file>` | Restores the file to before the last change sheets made; `--list` |
-| `agent-docs` | Prints the guide for agents (also in [internal/cli/agent-docs.md](internal/cli/agent-docs.md)) |
-| `skill` | Prints or installs (`--install`) the Claude Code skill |
+| `agent-docs` | Prints the guide for agents: a short index ([agent-index.md](internal/cli/agent-index.md)), a topic (`agent-docs style`), or `all` ([agent-docs.md](internal/cli/agent-docs.md)) |
+| `skill` | Prints or installs (`--install`) the Claude Code skill: the index, about 700 tokens, which points agents at the topics they need |
 
 Every command takes `--json`, and every command that changes a file takes
 `--dry-run`.
@@ -141,6 +147,20 @@ commands on the same file skip the parse: `info` on an 11 MB,
 the cache. It holds at most 32 files and 2 GB, dropping the least
 recently used.
 
+Edits stream. Writing values, inserting and deleting rows and appending
+to a table rewrite only the sheets that change, row by row, and copy every
+other part of the file as it is. On the 200,000-row file a one-cell edit
+takes 1.2 s with the parse cached, 3 s on a first read (10 s through
+excelize), and deleting 1,000 rows 3.1 s (4.6 s); on a 20,000-row file
+deleting 1,000 rows takes 0.8 s instead of 19 s. The
+first edit that streaming does not cover (styling, columns, sheets,
+copy/move/sort, notes; also listing styling) hands the session to the
+full editor: what was done so far is rendered in memory and the editor
+opens that.
+`SHEETS_STREAM=never` turns streaming off, or gives a file size in bytes
+from which to stream. A randomized test makes the same edits both ways on
+a set of workbooks and checks that a reader sees the same files.
+
 ## The house style
 
 `sheets fmt` throws away existing cell formatting and rebuilds it from the
@@ -200,8 +220,10 @@ differences stay plain numbers.
 
 - `internal/grid` is a model of a workbook that doesn't depend on any file
   format. Analysis and output only see this model. `internal/book` picks the
-  implementation for a file's extension, so adding CSV or ODS means adding
-  a reader and editor there.
+  implementation for a file's extension. CSV (`internal/delim`) is read
+  straight into the model, and edited through an .xlsx workbook in memory
+  that is written back in the file's own dialect: rows whose values no edit
+  changed are written as they were, byte for byte.
 - `internal/xlsx` reads .xlsx with its own streaming XML parser. It is fast
   (`peek` on 20k rows with 20k formulas takes about half a second) and
   sees shared formulas and cached values as stored. Editing and styling go
@@ -226,6 +248,22 @@ differences stay plain numbers.
     Excel does) instead of pointing them at the neighbouring cells
   - moving rows keeps the namespace declarations of chart drawings, which
     excelize drops
+  - notes move with their cells (excelize leaves them behind), comment
+    threads from Excel 365 too; notes parts named otherwise than excelize
+    expects (openpyxl's) are renamed first, and each drawing keeps one note
+    shape per note
+  - error values typed into cells (`#N/A`) stay error values when copied,
+    moved or sorted
+  - conditional formats are never handed to excelize, which moves them
+    wrongly when rows go (a range losing its first row slides onto the
+    header) and has no fast way to remove one. They are taken out of the
+    sheets when a file is opened, kept with the ones the session adds, and
+    written back when saving; data validations are taken off around each
+    row or column edit. Both move as in Excel: a range keeps its cells, and
+    its formulas, written for its first cell, are rewritten for the cell
+    that becomes first. Excel 2010 data bars keep their extension.
+  - a value written into a cell that merged cells hide is refused, where
+    excelize would write it over the merge's first cell
   - dynamic arrays get the cell metadata Excel 365 expects
 - Formula results: a file `sheets` saves never stores a stale result.
   When saving, it follows the dependencies from every changed cell, and
@@ -260,7 +298,9 @@ differences stay plain numbers.
 
 ## Limitations
 
-- .xlsx and .xlsm only, for now.
+- .xlsx, .xlsm, .csv and .tsv. Legacy .xls and .ods are not read.
+- A CSV file is edited through a workbook in memory, so a large one takes
+  as long to edit as an .xlsx of the same size.
 - `fmt` leaves merged cells alone. Excel tables (Insert › Table) keep their
   own style; `fmt` only sets their number formats and widths.
 - Custom row heights from other tools are kept.
@@ -273,9 +313,9 @@ differences stay plain numbers.
 - `do` re-reads and re-writes the workbook in memory for each command: fine
   for ordinary files, slow for a batch of many commands on a file with
   hundreds of thousands of rows.
-- Deleting rows goes through excelize one row at a time. A few rows take
-  about a second, but a thousand rows from a 20,000-row sheet take about 15
-  seconds.
+- Styling, column edits, sheet edits and range operations load the whole
+  workbook into excelize: several seconds and about 2.5 GB for a
+  200,000-row sheet. Value and row edits stream (see Large files).
 
 ## Development
 

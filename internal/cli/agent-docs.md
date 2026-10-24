@@ -1,7 +1,7 @@
 # sheets: guide for agents
 
-`sheets` reads, writes and formats .xlsx files. Its output is compact and
-sized for your context. Start with an overview and drill down; never dump
+`sheets` reads, writes and formats .xlsx files, and reads and edits CSV.
+Its output is compact and sized for your context. Start with an overview and drill down; never dump
 a whole sheet. Every output ends with a `next:` line suggesting a follow-up
 command.
 
@@ -120,6 +120,9 @@ need no column letters: `Sales[Revenue]` (the column's data rows),
   SEQUENCE, ...) are stored as dynamic arrays and spill in Excel; keep the
   cells below and to the right free. Writing into the spill area of an
   existing dynamic array gives a warning (Excel would show #SPILL!).
+- A cell hidden inside merged cells (B1 of a merged A1:D1) takes no value:
+  Excel shows only the first cell. Writing one is refused with the merge
+  named; empty values there are skipped.
 - Write data first, then `fmt`, then the styling asked for (`style`,
   `cond`, `validate`, `view`).
 
@@ -158,6 +161,9 @@ need no column letters: `Sales[Revenue]` (the column's data rows),
   cells, conditional formats, validations, filters and tables. A formula
   that pointed into deleted rows or columns becomes #REF!, as in Excel, and
   the output lists those formulas.
+- A conditional format's or validation's formula is written for the first
+  cell of its range (`=$D2=1` over A2:F50). Deleting that first row keeps
+  the formula reading each cell's own row, as Excel does.
 - Chart data ranges and Excel tables (Insert › Table) move with their
   cells too. Deleting an Excel table's header row or all of its data rows,
   and inserting or deleting columns inside it, are refused with the
@@ -171,6 +177,58 @@ need no column letters: `Sales[Revenue]` (the column's data rows),
   are rewritten to the new name, as Excel does.
 - `write --clear` and `query --into` refuse a sheet holding an Excel
   table.
+
+## Moving data: clear, copy, move, sort, replace
+
+    sheets sort book.xlsx Sales Revenue:desc         # a table's data rows, by header names
+    sheets sort book.xlsx Sales Region Units:desc    # several keys
+    sheets copy book.xlsx Sales!E2 Sales!E3:E200     # fill a formula down
+    sheets copy book.xlsx Model!B2:B20 Model!H2 --values
+    sheets move book.xlsx Sales!H1:J20 Sales!A30     # cut and paste
+    sheets clear book.xlsx Sales!A2:D100             # contents; --format, --notes, --links, --all
+    sheets replace book.xlsx 'Acme Inc.' 'Acme Corp' # every sheet, or give a target
+    sheets replace book.xlsx 'N/A' '' Sales --exact  # empties those cells
+
+- These behave as in Excel. `copy` shifts relative references (A2 becomes
+  A12 ten rows down); `--values` pastes results with their number formats.
+  `move` keeps moved formulas reading the same cells, and formulas, names
+  and charts anywhere follow the moved cells; references to the cells it
+  pastes over become #REF! and are listed.
+- `sort` moves whole rows of the target with their formats and notes;
+  blanks always sort last. It refuses a sort that would silently change a
+  formula's meaning (one reading another row by position, or a column left
+  out of the sort) and says how to fix it. Running totals and other
+  columns of alike formulas are fine.
+- `replace` reads a changed value as typed input ("1,200" becomes a
+  number); `--formulas` replaces in formula text instead; `--regex` takes
+  groups as $1.
+
+## Notes and links
+
+    sheets note book.xlsx Sales!D7 'Includes the March refund'   # '' removes it
+    sheets note book.xlsx --list
+    sheets link book.xlsx Sales!A1 https://example.com/q3 --text 'Q3 report'
+    sheets link book.xlsx Summary!B2 Sales!A1                    # a place in the workbook
+    sheets link book.xlsx --list
+
+`info` counts a sheet's notes and links. Notes and links move with their
+cells. Excel 365 comment threads are listed but cannot be changed.
+
+## CSV files
+
+    sheets peek data.csv
+    sheets sort data.csv data Amount:desc
+    sheets convert data.csv data.xlsx      # then: sheets fmt data.xlsx
+    sheets convert book.xlsx sales.csv --sheet Sales
+
+- A .csv or .tsv file is one sheet named after the file. Reading commands,
+  `write`, `set`, `sort`, `replace`, `clear`, `copy`, `move` and rows work
+  on it directly. Its delimiter (also `;` with decimal commas), encoding
+  and line breaks are kept, and rows no edit touched stay byte for byte.
+- A CSV file holds values only: formulas are saved as their results, and
+  formatting, charts or more sheets need `convert` to .xlsx first.
+- `convert` to CSV writes plain values (1200, 2026-03-01, 12%); `--bom`
+  helps Excel read accented letters.
 
 ## Checking: lint and diff
 
@@ -329,6 +387,13 @@ Reading a large workbook (over 1 MB) the first time keeps a parsed copy in
 the user cache, so later commands on the same file start in a fraction of
 the time. The copy is used only for exactly the same file contents.
 `SHEETS_CACHE=off` turns this off; `SHEETS_CACHE_DIR` moves the cache.
+
+Writing values, inserting and deleting rows, and appending to a table
+rewrite only the sheets they change, so they stay quick on large files:
+about a second for one cell of a 200,000-row sheet. Other edits (styling,
+columns, sheets, copy, move, sort), and listing styling (`cond --list`,
+`style --show`, `view`), load the whole workbook, which takes several
+seconds at that size. Put a large file's styling into one `do` batch.
 
 Formula results missing from a file (written by a tool that does not
 calculate, such as openpyxl) are computed on demand. On a large sheet the

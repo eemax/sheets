@@ -1,0 +1,91 @@
+# CSV files: read, edited in place in their own dialect, and converted.
+exec sheets info sales.csv
+stdout '^sales.csv · csv · 1\d\d B · 1 sheet$'
+exec sheets peek sales.csv
+stdout 'B    Units   integer'
+stdout 'C    Price   currency \$'
+stdout 'E    Code    text'
+exec sheets query sales.csv 'select Region from sales where Units > 10'
+stdout '^East$'
+exec sheets lint sales.csv
+stdout 'no problems found'
+
+# An edit changes what it changes: the rest stays byte for byte.
+cp sales.csv before.csv
+exec sheets set sales.csv B3 31
+cmp sales.csv edited.csv
+exec sheets undo sales.csv
+cmp sales.csv before.csv
+
+# Sorting, replacing and appending keep the file's look.
+exec sheets sort sales.csv sales Units:desc
+exec sheets replace sales.csv 00456 00999
+stdin more.tsv
+exec sheets write sales.csv --append
+cmp sales.csv changed.csv
+
+# A semicolon file with decimal commas stays one.
+exec sheets set eu.csv B4 2.5 A4 Dan
+cmp eu.csv eu.out
+
+# Formulas are saved as their results.
+exec sheets set sales.csv F1 Value F2 '=B2*C2'
+stdout 'warning: sales.csv is a CSV file, which holds values: F2 saved as its result, not as a formula'
+exec sheets read sales.csv F2
+stdout '^2	6600$'
+
+# What a CSV file cannot hold.
+! exec sheets fmt sales.csv
+stderr 'sales.csv is a CSV file, which holds values only, not formatting; convert it first: sheets convert sales.csv sales.xlsx'
+! exec sheets style sales.csv A1 bold
+stderr 'not styling'
+! exec sheets set sales.csv Other!A1 x
+stderr 'holds one sheet, sales'
+! exec sheets render sales.csv
+stderr 'a CSV file'
+
+# convert both ways; to CSV, values are plain.
+exec sheets convert before.csv book.xlsx
+stdout '^converted before.csv → book.xlsx \(before, 4 rows × 6 cols\)$'
+exec sheets fmt book.xlsx
+exec sheets convert book.xlsx plain.csv
+cmp plain.csv plain.out
+exec sheets convert book.xlsx out.tsv --sheet before
+exec sheets read out.tsv
+stdout '^2	East	1200	5.5	2026-03-01	00123	said "hi"$'
+exec sheets diff before.csv plain.csv
+stdout '^plain: 2 number format changes$'
+! stdout 'changed|added|removed'
+
+-- sales.csv --
+Region,Units,Price,Date,Code,Note
+East,"1,200",$5.50,2026-03-01,00123,"said ""hi"""
+West,30,$12.00,2026-03-02,00456,
+North,7,$1.25,2026-03-03,00789,
+-- edited.csv --
+Region,Units,Price,Date,Code,Note
+East,"1,200",$5.50,2026-03-01,00123,"said ""hi"""
+West,31,$12.00,2026-03-02,00456,
+North,7,$1.25,2026-03-03,00789,
+-- more.tsv --
+South	3	$2.00	2026-03-04	00111
+-- changed.csv --
+Region,Units,Price,Date,Code,Note
+East,"1,200",$5.50,2026-03-01,00123,"said ""hi"""
+West,30,$12.00,2026-03-02,00999,
+North,7,$1.25,2026-03-03,00789,
+South,3,$2.00,2026-03-04,00111,
+-- eu.csv --
+Name;Amount;Rate
+Anna;1.234,50;3,5%
+Bo;12,00;10%
+-- eu.out --
+Name;Amount;Rate
+Anna;1.234,50;3,5%
+Bo;12,00;10%
+Dan;2,5;
+-- plain.out --
+Region,Units,Price,Date,Code,Note
+East,1200,5.5,2026-03-01,00123,"said ""hi"""
+West,30,12,2026-03-02,00456,
+North,7,1.25,2026-03-03,00789,

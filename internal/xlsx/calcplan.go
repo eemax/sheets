@@ -21,6 +21,12 @@ import (
 type calcPlan struct {
 	translated []*formulaAt
 	frozen     map[*formulaAt]bool
+	// veto are formulas the calculator is not to be trusted with here,
+	// and why.
+	veto map[*formulaAt]string
+	// native computes a formula without the calculator, where it can
+	// (see StreamEditor.native).
+	native func(j *judge, f *formulaAt) (grid.Cell, bool)
 }
 
 // calcText is the text the calculator is to compute for f.
@@ -32,6 +38,9 @@ func (rs *resolver) calcText(f *formulaAt) string {
 		}
 	}
 	if rs.usesTables(text) {
+		if rs.renames != nil {
+			text = rs.renames(text, f.sheet, f.row, f.col)
+		}
 		tables := make([]formula.Table, len(rs.tables))
 		for i, t := range rs.tables {
 			tables[i] = t.formulaTable()
@@ -45,6 +54,20 @@ func (rs *resolver) calcText(f *formulaAt) string {
 
 // usesTables tells whether a formula names an Excel table.
 func (rs *resolver) usesTables(text string) bool {
+	if len(rs.tables) == 0 {
+		return false
+	}
+	if !strings.Contains(text, "[") {
+		// A table named alone (=SUM(Sales)): its name must be in the text.
+		named := false
+		upper := strings.ToUpper(text)
+		for _, t := range rs.tables {
+			named = named || strings.Contains(upper, strings.ToUpper(t.name))
+		}
+		if !named {
+			return false
+		}
+	}
 	d := formula.DepsOf(text)
 	if len(d.Tables) > 0 {
 		return true
@@ -140,7 +163,7 @@ func (p calcPlan) apply(f *excelize.File, fs []*formulaAt) error {
 			case grid.Number:
 				err = f.SetCellFloat(x.sheet, cell, v.Num, -1, 64)
 			case grid.Text:
-				err = f.SetCellStr(x.sheet, cell, v.Text)
+				err = setText(f, x.sheet, cell, v.Text)
 			case grid.Bool:
 				err = f.SetCellBool(x.sheet, cell, v.Bool)
 			case grid.Error:

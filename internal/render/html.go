@@ -108,6 +108,14 @@ td.fb::after{content:"";position:absolute;right:0;bottom:0;width:14px;height:14p
 				if lk.italic {
 					style = append(style, "font-style:italic")
 				}
+				switch {
+				case lk.underline && lk.strike:
+					style = append(style, "text-decoration:underline line-through")
+				case lk.underline:
+					style = append(style, "text-decoration:underline")
+				case lk.strike:
+					style = append(style, "text-decoration:line-through")
+				}
 				if lk.size != 11 {
 					style = append(style, fmt.Sprintf("font-size:%gpt", lk.size))
 				}

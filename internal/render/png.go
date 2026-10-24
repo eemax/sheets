@@ -286,6 +286,20 @@ func (p *painter) text(ce *cell, lk *look, x0, y0, x1, y1, clipR int, align stri
 		}
 		base := top + float64(i)*lh + asc + (lh-float64(f.Metrics().Height.Ceil())/p.scale)/2
 		drawString(d, line, (x+float64(p.ox))*p.scale, (base+float64(p.oy))*p.scale)
+		// Underline just below the baseline; strike through the middle of
+		// lower-case letters.
+		for _, at := range []struct {
+			on bool
+			y  float64
+		}{{lk.underline, base + 1.5}, {lk.strike, base - asc*0.3}} {
+			if !at.on || w <= 0 {
+				continue
+			}
+			px0, px1 := p.px(int(x)+p.ox), p.px(int(x+w)+p.ox)
+			py := int((at.y + float64(p.oy)) * p.scale)
+			r := image.Rect(px0, py, px1, py+max(1, int(p.scale))).Intersect(clip)
+			draw.Draw(p.img, r, image.NewUniform(lk.ink), image.Point{}, draw.Src)
+		}
 	}
 }
 

@@ -1,10 +1,7 @@
 package xlsx
 
 import (
-	"archive/zip"
-	"bytes"
 	"fmt"
-	"io"
 	"regexp"
 	"sort"
 	"strconv"
@@ -54,7 +51,9 @@ func (e *Editor) Style(sheet string, r grid.Range, l *Look) (StyleResult, error)
 	at := clip(r, e.used(sheet))
 	st := e.styler()
 	before := len(st.Notes())
-	if err := st.apply(sheet, at, l, nil); err != nil {
+	err = st.apply(sheet, at, l, nil)
+	e.dropMerges()
+	if err != nil {
 		return StyleResult{}, err
 	}
 	res := StyleResult{Range: grid.FormatRef(sheet, at), Notes: st.Notes()[before:]}
@@ -68,7 +67,7 @@ func (e *Editor) Style(sheet string, r grid.Range, l *Look) (StyleResult, error)
 	if len(kept) == 0 {
 		return res, nil
 	}
-	res.Recorded, err = addRecord(e.f, Record{Kind: "style", Sheet: sheet, Range: r, Args: kept})
+	res.Recorded, err = addRecord(e.f, Record{Kind: "style", Sheet: sheet, Areas: []grid.Range{r}, Args: kept})
 	if err == nil && !res.Recorded {
 		res.Notes = append(res.Notes, "too long to record: fmt will not keep it")
 	}
@@ -116,61 +115,30 @@ func (e *Editor) Cond(sheet string, r grid.Range, ws []string) (string, error) {
 	}
 	text := Record{Kind: "cond", Args: ws}.Text()
 	for _, rec := range e.Records() {
-		if rec.Kind == "cond" && strings.EqualFold(rec.Sheet, sheet) && rec.Range == at && rec.Text() == text {
+		if rec.Kind == "cond" && strings.EqualFold(rec.Sheet, sheet) && rec.Range() == at && rec.Text() == text {
 			return grid.FormatRef(sheet, at), nil // there already
 		}
 	}
-	if err := addRule(e.f, sheet, at, ru); err != nil {
+	if err := e.addRule(sheet, at, ru); err != nil {
 		return "", err
 	}
-	if ok, err := addRecord(e.f, Record{Kind: "cond", Sheet: sheet, Range: at, Args: ws}); err != nil || !ok {
+	if ok, err := addRecord(e.f, Record{Kind: "cond", Sheet: sheet, Areas: []grid.Range{at}, Args: ws}); err != nil || !ok {
 		return grid.FormatRef(sheet, at), err
 	}
 	return grid.FormatRef(sheet, at), nil
 }
 
-// CondFormats lists the conditional formats of a sheet as the file holds
-// them (as opened).
+// CondFormats lists the conditional formats of a sheet.
 func (e *Editor) CondFormats(sheet string) ([]CondFormat, error) {
 	sheet, err := e.sheetName(sheet)
 	if err != nil {
 		return nil, err
 	}
-	x, err := e.sheetPart(sheet)
-	if err != nil {
-		return nil, err
-	}
-	return condFormats(x, sheet, e.Records())
-}
-
-// sheetPart returns a sheet's part as the file held it when opened.
-func (e *Editor) sheetPart(sheet string) ([]byte, error) {
-	if e.data == nil {
+	sec := e.patches.conds[sheet]
+	if sec == nil {
 		return nil, nil
 	}
-	zr, err := zip.NewReader(bytes.NewReader(e.data), int64(len(e.data)))
-	if err != nil {
-		return nil, err
-	}
-	p := &pkg{files: map[string]*zip.File{}}
-	for _, zf := range zr.File {
-		p.files[strings.ToLower(zf.Name)] = zf
-	}
-	_, _, sheets, err := p.workbookParts()
-	if err != nil {
-		return nil, err
-	}
-	for name, part := range sheets {
-		if strings.EqualFold(name, sheet) {
-			r, err := p.open(part)
-			if err != nil {
-				return nil, err
-			}
-			defer r.Close()
-			return io.ReadAll(r)
-		}
-	}
-	return nil, nil
+	return condFormats(sec.xml(), sheet, e.Records())
 }
 
 // ClearCond removes the conditional formats that lie within r (all of the
@@ -190,14 +158,11 @@ func (e *Editor) ClearCond(sheet string, r *grid.Range) (int, error) {
 	for _, cf := range cfs {
 		if hit(cf.Range) {
 			n++
-			if e.patches.dropConds[sheet] == nil {
-				e.patches.dropConds[sheet] = map[string]bool{}
-			}
-			e.patches.dropConds[sheet][cf.Range] = true
 		}
 	}
+	e.dropConds(sheet, hit)
 	for _, rec := range e.Records() {
-		if rec.Kind == "cond" && strings.EqualFold(rec.Sheet, sheet) && hit(rec.Range.String()) {
+		if rec.Kind == "cond" && strings.EqualFold(rec.Sheet, sheet) && hit(rec.Range().String()) {
 			if err := dropRecords(e.f, rec.name); err != nil {
 				return n, err
 			}
@@ -313,7 +278,7 @@ func (e *Editor) View(sheet string, o ViewOptions) error {
 		if o.Freeze.R1 == 1 && o.Freeze.C1 == 1 {
 			arg = "nofreeze"
 		}
-		if _, err := addRecord(f, Record{Kind: "view", Sheet: sheet, Range: *o.Freeze, Args: []string{arg}}); err != nil {
+		if _, err := addRecord(f, Record{Kind: "view", Sheet: sheet, Areas: []grid.Range{*o.Freeze}, Args: []string{arg}}); err != nil {
 			return err
 		}
 	}
@@ -333,7 +298,7 @@ func (e *Editor) View(sheet string, o ViewOptions) error {
 			return err
 		}
 		arg := map[bool]string{true: "gridlines=on", false: "gridlines=off"}[*o.Gridlines]
-		if _, err := addRecord(f, Record{Kind: "view", Sheet: sheet, Range: grid.Range{R1: 1, C1: 1, R2: 1, C2: 1}, Args: []string{arg}}); err != nil {
+		if _, err := addRecord(f, Record{Kind: "view", Sheet: sheet, Areas: []grid.Range{{R1: 1, C1: 1, R2: 1, C2: 1}}, Args: []string{arg}}); err != nil {
 			return err
 		}
 	}
@@ -354,9 +319,9 @@ func (e *Editor) View(sheet string, o ViewOptions) error {
 		}
 	}
 	if o.Filter != nil || o.NoFilter {
-		rec := Record{Kind: "view", Sheet: sheet, Range: grid.Range{R1: 1, C1: 1, R2: 1, C2: 1}, Args: []string{"nofilter"}}
+		rec := Record{Kind: "view", Sheet: sheet, Areas: []grid.Range{{R1: 1, C1: 1, R2: 1, C2: 1}}, Args: []string{"nofilter"}}
 		if o.Filter != nil {
-			rec.Range, rec.Args = *o.Filter, []string{"filter"}
+			rec.Areas, rec.Args = []grid.Range{*o.Filter}, []string{"filter"}
 		}
 		if err := e.filter(sheet, o.Filter); err != nil {
 			return err
@@ -497,10 +462,8 @@ func (e *Editor) restyleWritten() error {
 	fresh := map[cellKey]bool{}
 	box := map[string]grid.Range{}
 	for k := range e.changed {
-		if s := e.wb.Sheet(k.sheet); s != nil {
-			if c := s.At(k.row, k.col); c != nil && !c.IsEmpty() {
-				continue
-			}
+		if !e.wasEmpty[k] {
+			continue
 		}
 		fresh[k] = true
 		box[k.sheet] = box[k.sheet].Union(grid.Range{R1: k.row, C1: k.col, R2: k.row, C2: k.col})
@@ -514,14 +477,16 @@ func (e *Editor) restyleWritten() error {
 		if err != nil || !l.CellStyle() {
 			continue
 		}
-		r := clip(rec.Range, e.used(rec.Sheet))
-		if r.Intersect(b).Empty() {
-			continue
-		}
 		sheet := rec.Sheet
-		err = e.styler().apply(sheet, r, &l, func(row, col int) bool { return fresh[keyOf(sheet, row, col)] })
-		if err != nil {
-			return err
+		for _, a := range rec.Areas {
+			r := clip(a, e.used(sheet))
+			if r.Intersect(b).Empty() {
+				continue
+			}
+			err = e.styler().apply(sheet, r, &l, func(row, col int) bool { return fresh[keyOf(sheet, row, col)] })
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -532,66 +497,48 @@ func (e *Editor) restyleWritten() error {
 // below it.
 func (e *Editor) growRecords(sheet string, body grid.Range, n int) error {
 	for _, rec := range e.Records() {
-		r := rec.Range
-		if !strings.EqualFold(rec.Sheet, sheet) || r.R2 != body.R2 || r.C1 < body.C1 || r.C2 > body.C2 {
+		if !strings.EqualFold(rec.Sheet, sheet) {
 			continue
 		}
-		r.R2 += n
-		if err := dropRecords(e.f, rec.name); err != nil {
-			return err
+		areas, grew := append([]grid.Range{}, rec.Areas...), false
+		for i, r := range areas {
+			if r.R2 == body.R2 && r.C1 >= body.C1 && r.C2 <= body.C2 {
+				areas[i].R2 += n
+				grew = true
+			}
 		}
-		if err := e.f.SetDefinedName(&excelize.DefinedName{Name: rec.name, Comment: rec.Text(), RefersTo: absRef(rec.Sheet, r)}); err != nil {
-			return err
+		if grew {
+			if err := setAreas(e.f, rec, areas); err != nil {
+				return err
+			}
 		}
 	}
-	e.patches.grow = append(e.patches.grow, growth{sheet: sheet, from: body.R2, to: body.R2 + n, c1: body.C1, c2: body.C2})
-	return nil
-}
-
-// growth extends ranges ending at row from to row to, within columns
-// c1..c2 (see growRecords).
-type growth struct {
-	sheet    string
-	from, to int
-	c1, c2   int
+	// Conditional formats and validations over the table's last row
+	// reach the new ones; their formulas stay.
+	grow := lineEdit{
+		place: func(r grid.Range) (grid.Range, bool) {
+			if r.R2 == body.R2 && r.C1 >= body.C1 && r.C2 <= body.C2 {
+				r.R2 += n
+			}
+			return r, true
+		},
+		first:   func(r grid.Range) (int, int) { return r.R1, r.C1 },
+		rewrite: func(f string) string { return f },
+	}
+	if sec := e.patches.conds[sheet]; sec != nil {
+		sec.each(grow.moveRule)
+	}
+	held, err := e.holdValidations(sheet)
+	if err != nil {
+		return err
+	}
+	return held.putBack(e, sheet, grow)
 }
 
 var (
-	sqrefAttr = regexp.MustCompile(`(<(?:conditionalFormatting|dataValidation)\b[^>]*?\bsqref=")([^"]*)(")`)
-	xmSqref   = regexp.MustCompile(`(<xm:sqref>)([^<]*)(</xm:sqref>)`)
-)
-
-// growSqrefs applies growths to the conditional formats and data
-// validations of a sheet part.
-func growSqrefs(b []byte, gs []growth) []byte {
-	fix := func(m []byte, re *regexp.Regexp) []byte {
-		p := re.FindSubmatch(m)
-		var out []string
-		for _, part := range strings.Fields(string(p[2])) {
-			r, err := grid.ParseRange(strings.ReplaceAll(part, "$", ""))
-			if err != nil {
-				out = append(out, part)
-				continue
-			}
-			for _, g := range gs {
-				if r.R2 == g.from && r.C1 >= g.c1 && r.C2 <= g.c2 {
-					r.R2 = g.to
-				}
-			}
-			out = append(out, r.String())
-		}
-		return append(append(append([]byte{}, p[1]...), strings.Join(out, " ")...), p[3]...)
-	}
-	b = sqrefAttr.ReplaceAllFunc(b, func(m []byte) []byte { return fix(m, sqrefAttr) })
-	return xmSqref.ReplaceAllFunc(b, func(m []byte) []byte { return fix(m, xmSqref) })
-}
-
-var (
-	cfRuleTag   = regexp.MustCompile(`<(?:x14:)?cfRule\b[^>]*>`)
-	priorityAt  = regexp.MustCompile(` priority="(\d+)"`)
-	cfFormula   = regexp.MustCompile(`(?s)(<cfRule\b[^>]*>)(.*?)(</cfRule>)`)
-	ruleFormula = regexp.MustCompile(`(<formula>)([^<]*)(</formula>)`)
-	bandRule    = regexp.MustCompile(`<formula>MOD\(ROW\(\)-\d+,2\)=1</formula>`)
+	cfRuleTag  = regexp.MustCompile(`<(?:x14:)?cfRule\b[^>]*>`)
+	priorityAt = regexp.MustCompile(` priority="(\d+)"`)
+	bandRule   = regexp.MustCompile(`<formula>MOD\(ROW\(\)-\d+,2\)=1</formula>`)
 )
 
 // orderRules gives a sheet's conditional formats distinct priorities, with
@@ -665,24 +612,6 @@ func orderRules(b []byte) []byte {
 		last = t.end
 	}
 	return append(out, b[last:]...)
-}
-
-// rewriteRuleFormulas applies the row and column edits of a session to
-// the formulas of a sheet's conditional formats, which excelize leaves as
-// they were.
-func rewriteRuleFormulas(b []byte, sheet string, rewrites []func(f, home string) string) []byte {
-	return cfFormula.ReplaceAllFunc(b, func(m []byte) []byte {
-		p := cfFormula.FindSubmatch(m)
-		body := ruleFormula.ReplaceAllFunc(p[2], func(fm []byte) []byte {
-			q := ruleFormula.FindSubmatch(fm)
-			f := unescapeXML(string(q[2]))
-			for _, rw := range rewrites {
-				f = rw(f, sheet)
-			}
-			return append(append(append([]byte{}, q[1]...), xmlEscape(f)...), q[3]...)
-		})
-		return append(append(append([]byte{}, p[1]...), body...), p[3]...)
-	})
 }
 
 var tabColor = regexp.MustCompile(`<tabColor\b[^>]*/>|<tabColor\b[^>]*>\s*</tabColor>`)

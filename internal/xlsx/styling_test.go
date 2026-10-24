@@ -135,7 +135,7 @@ func cellLook(t *testing.T, path, sheet, cell string) *excelize.Style {
 	return s
 }
 
-func fillOf(s *excelize.Style) string {
+func styleFill(s *excelize.Style) string {
 	if len(s.Fill.Color) == 0 {
 		return ""
 	}
@@ -166,8 +166,8 @@ func TestStyleKeptByFmt(t *testing.T) {
 	})
 	check := func(when string) {
 		h := cellLook(t, path, "Data", "B1")
-		if fillOf(h) != "DDEBF7" || h.Font == nil || !h.Font.Bold || !strings.HasSuffix(strings.ToUpper(h.Font.Color), "000000") {
-			t.Errorf("%s: header style = fill %s font %+v", when, fillOf(h), h.Font)
+		if styleFill(h) != "DDEBF7" || h.Font == nil || !h.Font.Bold || !strings.HasSuffix(strings.ToUpper(h.Font.Color), "000000") {
+			t.Errorf("%s: header style = fill %s font %+v", when, styleFill(h), h.Font)
 		}
 		for _, c := range []string{"B2", "C4", "D3"} {
 			if s := cellLook(t, path, "Data", c); s.CustomNumFmt == nil || *s.CustomNumFmt != `"$"#,##0_);("$"#,##0)` {
@@ -189,8 +189,8 @@ func TestStyleKeptByFmt(t *testing.T) {
 	if _, err := Format(path, FormatOptions{Preset: style.Default, Reset: true}); err != nil {
 		t.Fatal(err)
 	}
-	if h := cellLook(t, path, "Data", "B1"); fillOf(h) != style.Default.HeaderFill {
-		t.Errorf("after fmt --reset the header fill is %s", fillOf(h))
+	if h := cellLook(t, path, "Data", "B1"); styleFill(h) != style.Default.HeaderFill {
+		t.Errorf("after fmt --reset the header fill is %s", styleFill(h))
 	}
 	e, err := OpenEditor(path, false)
 	must(t, err)
@@ -234,7 +234,7 @@ func TestSupersede(t *testing.T) {
 		}
 		var got []string
 		for _, r := range e.Records() {
-			got = append(got, r.Range.String()+" "+r.Text())
+			got = append(got, r.Range().String()+" "+r.Text())
 		}
 		want := []string{"B2:B4 style width=12", "A1:D9 style reset", "A1:D1 style color=red"}
 		if strings.Join(got, "|") != strings.Join(want, "|") {
@@ -379,7 +379,7 @@ func TestCondFollowsRows(t *testing.T) {
 	must(t, err)
 	defer e.Close()
 	recs := e.Records()
-	if len(recs) != 2 || recs[0].Range.String() != "A4:D6" || recs[1].Range.String() != "A3:D3" {
+	if len(recs) != 2 || recs[0].Range().String() != "A4:D6" || recs[1].Range().String() != "A3:D3" {
 		t.Errorf("records after inserting rows: %+v", recs)
 	}
 	cfs, _ := e.CondFormats("Data")

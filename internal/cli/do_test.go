@@ -94,3 +94,19 @@ func TestNegatives(t *testing.T) {
 		}
 	}
 }
+
+func TestNumberedGroups(t *testing.T) {
+	for in, want := range map[string]string{
+		"$1TH":     "${1}TH",
+		"$2 $1":    "${2} ${1}",
+		"$$1":      "$$1",
+		"${name}x": "${name}x",
+		"cost: $":  "cost: $",
+		"$12a":     "${12}a",
+		"a$$$1":    "a$$${1}",
+	} {
+		if got := numberedGroups(in); got != want {
+			t.Errorf("numberedGroups(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

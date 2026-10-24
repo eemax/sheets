@@ -183,54 +183,11 @@ func rewriteCells(b []byte, want func(ref string) bool, fn func(cell []byte, ref
 func storeResults(b []byte, res map[string]grid.Cell) []byte {
 	var arrays []grid.Range
 	b = rewriteCells(b, func(ref string) bool { _, ok := res[ref]; return ok }, func(m []byte, ref string) []byte {
-		head := m[:bytes.IndexByte(m, '>')+1]
-		v := res[ref]
-		body := m[len(head) : len(m)-len("</c>")]
-		f := formulaEl.Find(body)
-		if f == nil {
-			return m // no longer a formula
+		out, array := storeResult(m, res[ref])
+		if array != nil {
+			arrays = append(arrays, *array)
 		}
-		if a := refOfF.FindSubmatch(f); a != nil && arrayType.Match(f) {
-			if rg, err := grid.ParseRange(string(a[1])); err == nil && (rg.Rows() > 1 || rg.Cols() > 1) {
-				arrays = append(arrays, rg)
-			}
-		}
-		rest := valueElem.ReplaceAll(bytes.Replace(body, f, nil, 1), nil)
-		head = typeAttr.ReplaceAll(head, nil)
-		typ, val := "", ""
-		switch v.Kind {
-		case grid.Number:
-			if math.IsNaN(v.Num) || math.IsInf(v.Num, 0) {
-				typ, val = "e", "#NUM!"
-			} else {
-				val = strconv.FormatFloat(v.Num, 'g', -1, 64)
-			}
-		case grid.Text:
-			typ, val = "str", v.Text
-		case grid.Bool:
-			typ, val = "b", "0"
-			if v.Bool {
-				val = "1"
-			}
-		case grid.Error:
-			typ, val = "e", v.Text
-		}
-		var out bytes.Buffer
-		if typ != "" {
-			out.Write(head[:len(head)-1])
-			out.WriteString(` t="` + typ + `">`)
-		} else {
-			out.Write(head)
-		}
-		out.Write(f)
-		if v.Kind != grid.Empty {
-			out.WriteString("<v>")
-			xml.EscapeText(&out, []byte(val))
-			out.WriteString("</v>")
-		}
-		out.Write(rest)
-		out.WriteString("</c>")
-		return out.Bytes()
+		return out
 	})
 	if len(arrays) == 0 {
 		return b
@@ -252,6 +209,64 @@ func storeResults(b []byte, res map[string]grid.Cell) []byte {
 		body := m[len(head) : len(m)-len("</c>")]
 		return append(append(typeAttr.ReplaceAll(head, nil), valueElem.ReplaceAll(body, nil)...), "</c>"...)
 	})
+}
+
+// storeResult stores v as the result of the formula cell m (a whole <c>
+// element); an Empty v removes its result. A multi-cell array formula's
+// range comes back too (nil for others): the stored values of its other
+// cells no longer hold.
+func storeResult(m []byte, v grid.Cell) ([]byte, *grid.Range) {
+	head := m[:bytes.IndexByte(m, '>')+1]
+	if head[len(head)-2] == '/' {
+		return m, nil // no formula in an empty cell
+	}
+	body := m[len(head) : len(m)-len("</c>")]
+	f := formulaEl.Find(body)
+	if f == nil {
+		return m, nil // no longer a formula
+	}
+	var array *grid.Range
+	if a := refOfF.FindSubmatch(f); a != nil && arrayType.Match(f) {
+		if rg, err := grid.ParseRange(string(a[1])); err == nil && (rg.Rows() > 1 || rg.Cols() > 1) {
+			array = &rg
+		}
+	}
+	rest := valueElem.ReplaceAll(bytes.Replace(body, f, nil, 1), nil)
+	head = typeAttr.ReplaceAll(head, nil)
+	typ, val := "", ""
+	switch v.Kind {
+	case grid.Number:
+		if math.IsNaN(v.Num) || math.IsInf(v.Num, 0) {
+			typ, val = "e", "#NUM!"
+		} else {
+			val = strconv.FormatFloat(v.Num, 'g', -1, 64)
+		}
+	case grid.Text:
+		typ, val = "str", v.Text
+	case grid.Bool:
+		typ, val = "b", "0"
+		if v.Bool {
+			val = "1"
+		}
+	case grid.Error:
+		typ, val = "e", v.Text
+	}
+	var out bytes.Buffer
+	if typ != "" {
+		out.Write(head[:len(head)-1])
+		out.WriteString(` t="` + typ + `">`)
+	} else {
+		out.Write(head)
+	}
+	out.Write(f)
+	if v.Kind != grid.Empty {
+		out.WriteString("<v>")
+		xml.EscapeText(&out, []byte(val))
+		out.WriteString("</v>")
+	}
+	out.Write(rest)
+	out.WriteString("</c>")
+	return out.Bytes(), array
 }
 
 var (

@@ -336,16 +336,16 @@ func (l *Look) dxf() *excelize.Style {
 }
 
 // addRule adds a conditional format to a range.
-func addRule(f *excelize.File, sheet string, r grid.Range, ru rule) error {
+func (e *Editor) addRule(sheet string, r grid.Range, ru rule) error {
 	opts := ru.opts
 	if ru.look != nil {
-		id, err := f.NewConditionalStyle(ru.look.dxf())
+		id, err := e.f.NewConditionalStyle(ru.look.dxf())
 		if err != nil {
 			return err
 		}
 		opts.Format = &id
 	}
-	return f.SetConditionalFormat(sheet, r.String(), []excelize.ConditionalFormatOptions{opts})
+	return e.addConds(sheet, r, []excelize.ConditionalFormatOptions{opts})
 }
 
 // A CondFormat is a conditional format as it stands in a sheet.
@@ -371,6 +371,7 @@ type xCond struct {
 		Text         string   `xml:"text,attr"`
 		TimePeriod   string   `xml:"timePeriod,attr"`
 		Formulas     []string `xml:"formula"`
+		Dxf          string   `xml:"dxfId,attr"`
 		ColorScale   *struct {
 			Colors []struct {
 				RGB string `xml:"rgb,attr"`
@@ -385,6 +386,63 @@ type xCond struct {
 			Set string `xml:"iconSet,attr"`
 		} `xml:"iconSet"`
 	} `xml:"cfRule"`
+}
+
+// A CondRule is one rule of a conditional format, as the file holds it.
+type CondRule struct {
+	Range    string   // the cells, as an sqref: "A2:F9 H2:H9"
+	Type     string   // cellIs, expression, colorScale, dataBar, ...
+	Formulas []string // as stored (_xlfn. prefixes and all)
+	Dxf      int      // the differential format it applies; -1 for none
+}
+
+// CondRules lists the rules of a sheet's conditional formats, in the order
+// of the file. (excelize's GetConditionalFormats keeps one of the rules
+// sharing a range.)
+func CondRules(data []byte, sheet string) ([]CondRule, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, err
+	}
+	p := &pkg{files: map[string]*zip.File{}}
+	for _, zf := range zr.File {
+		p.files[strings.ToLower(zf.Name)] = zf
+	}
+	_, _, sheets, err := p.workbookParts()
+	if err != nil {
+		return nil, err
+	}
+	var part string
+	for name, pt := range sheets {
+		if strings.EqualFold(name, sheet) {
+			part = pt
+		}
+	}
+	if part == "" {
+		return nil, fmt.Errorf("sheet %q not found", sheet)
+	}
+	b, err := p.read(part)
+	if err != nil {
+		return nil, err
+	}
+	if i := bytes.LastIndex(b, []byte("</sheetData>")); i >= 0 {
+		b = b[i:]
+	}
+	var out []CondRule
+	for _, m := range condBlock.FindAll(b, -1) {
+		var c xCond
+		if err := xml.Unmarshal(m, &c); err != nil {
+			return nil, err
+		}
+		for _, r := range c.Rules {
+			dxf := -1
+			if n, err := strconv.Atoi(r.Dxf); err == nil {
+				dxf = n
+			}
+			out = append(out, CondRule{Range: c.Sqref, Type: r.Type, Formulas: r.Formulas, Dxf: dxf})
+		}
+	}
+	return out, nil
 }
 
 // condFormats lists the conditional formats of a sheet part, top-left
@@ -519,7 +577,7 @@ func recordedCond(recs []Record, sheet, sqref string) bool {
 		return false
 	}
 	for _, rec := range recs {
-		if rec.Kind == "cond" && strings.EqualFold(rec.Sheet, sheet) && rec.Range == rs[0] {
+		if rec.Kind == "cond" && strings.EqualFold(rec.Sheet, sheet) && rec.Range() == rs[0] {
 			return true
 		}
 	}
@@ -530,7 +588,7 @@ var (
 	condBlock   = regexp.MustCompile(`(?s)<conditionalFormatting\b[^>]*?\bsqref="([^"]*)"[^>]*>.*?</conditionalFormatting>`)
 	x14Block    = regexp.MustCompile(`(?s)<x14:conditionalFormatting\b[^>]*>.*?</x14:conditionalFormatting>`)
 	x14Sqref    = regexp.MustCompile(`<xm:sqref>([^<]*)</xm:sqref>`)
-	x14CondsExt = regexp.MustCompile(`(?s)<ext\b[^>]*\buri="\{78C0D931-6437-407d-A8EE-F0AAD7539E65\}"[^>]*>\s*<x14:conditionalFormattings>\s*</x14:conditionalFormattings>\s*</ext>`)
+	x14CondsExt = regexp.MustCompile(`(?s)<ext\b[^>]*\buri="\{78C0D931-6437-407d-A8EE-F0AAD7539E65\}"[^>]*>\s*<x14:conditionalFormattings\b[^>]*>\s*</x14:conditionalFormattings>\s*</ext>`)
 	emptyExtLst = regexp.MustCompile(`<extLst>\s*</extLst>`)
 )
 

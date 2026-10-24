@@ -63,8 +63,33 @@ type Sheet struct {
 	// Filter is the range of the sheet's filter, whose first row shows
 	// the filter buttons; zero when there is none.
 	Filter Range
+	// Notes and Links are the notes and hyperlinks on cells, by row and
+	// column.
+	Notes []Note
+	Links []Link
+	// Spills are the ranges dynamic array formulas fill, each starting at
+	// its formula's cell.
+	Spills []Range
 	rows   [][]Cell
 	maxCol int
+}
+
+// Note is a note on a cell: an Excel note, or a comment thread (Excel
+// 365's comments), whose replies follow the first comment in Text.
+type Note struct {
+	Row, Col int
+	Author   string
+	Text     string
+	Thread   bool
+}
+
+// Link is a hyperlink on a cell, to a web address or file (URL) or to a
+// place in the workbook (Location: Sheet!A1, or a name).
+type Link struct {
+	Row, Col int
+	URL      string
+	Location string
+	Tooltip  string
 }
 
 // Run is a run of row or column numbers, From to To inclusive.
