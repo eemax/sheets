@@ -1,23 +1,40 @@
+# The skill: SKILL.md, in the Agent Skills format, pointing at its
+# references, one per topic of the guide.
 exec sheets skill
 stdout '^name: sheets$'
-stdout 'guide for agents'
+stdout '^license: MIT$'
+stdout '^## Gotchas$'
+stdout '\[references/ranges.md\]\(references/ranges.md\)'
+! stdout '## Styling on request'
 
 exec sheets skill --install --dir skills
-stdout 'installed skills/sheets/SKILL.md'
+stdout 'installed skills/sheets \(SKILL.md and 17 references\)'
 exists skills/sheets/SKILL.md
+exists skills/sheets/references/style.md
+exists skills/sheets/references/addresses.md
+grep '^# Styling on request: style, cond, validate, view$' skills/sheets/references/style.md
 
-# The skill is the guide's index; topics and the whole guide on demand.
-exec sheets skill
-stdout 'sheets agent-docs TOPIC'
-! stdout '## Styling on request'
+exec sheets --dry-run skill --install --dir other
+stdout 'would install other/sheets'
+! exists other/sheets/SKILL.md
+
+! exec sheets skill --agents
+stderr '--project, --agents and --dir go with --install'
+
+# Without the skill, agent-docs gives the same instructions, with each
+# topic as the command that prints it, and the whole guide on demand.
 exec sheets agent-docs
-stdout 'sheets agent-docs TOPIC'
+stdout '^## Gotchas$'
+stdout '`sheets agent-docs ranges`'
+! stdout 'references/ranges.md'
 exec sheets agent-docs cond sort
 stdout '^## Styling on request: style, cond, validate, view$'
 stdout '^## Moving data: clear, copy, move, sort, replace$'
 ! stdout '^## Reading$'
+exec sheets agent-docs refs
+stdout '^## References$'
 exec sheets agent-docs all
 stdout '^## Reading$'
 stdout '^## Exit status$'
 ! exec sheets agent-docs nope
-stderr 'no topic "nope": give one of reading, query'
+stderr 'no topic "nope": give one of reading, query, addresses'

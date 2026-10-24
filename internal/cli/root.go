@@ -81,8 +81,9 @@ func (a *app) root() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "sheets",
 		Short: "Read, write and format spreadsheets from the command line, built for AI agents",
-		Long: `sheets reads, writes and formats spreadsheets (.xlsx) with output sized
-for an agent's context window: start with an overview and drill down.
+		Long: `sheets reads, writes and formats Excel workbooks (.xlsx) and CSV files, with
+output sized for an agent's context window: start with an overview and
+drill down.
 
   sheets info book.xlsx            what is in the file
   sheets peek book.xlsx Sales      column types and stats for a sheet
@@ -90,8 +91,9 @@ for an agent's context window: start with an overview and drill down.
   sheets write book.xlsx Sales!A1 < data.tsv
   sheets fmt book.xlsx             apply the house style
 
-Run 'sheets agent-docs' for a guide written for AI agents (an index of
-topics; 'sheets agent-docs all' prints all of it).`,
+Run 'sheets agent-docs' for a guide written for AI agents (the instructions
+of the agent skill and its topics; 'sheets agent-docs all' prints all of
+it), and 'sheets skill --install' to install the skill.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version(),

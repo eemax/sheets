@@ -3,7 +3,9 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/eemax/sheets/internal/analyze"
 	"github.com/eemax/sheets/internal/book"
 	"github.com/eemax/sheets/internal/formula"
 	"github.com/eemax/sheets/internal/grid"
@@ -37,6 +39,11 @@ right, shifting relative references:
 
   sheets set book.xlsx 'Data!E2:E100' '=C2*D2'    # E3 gets =C3*D3, ...
   sheets set book.xlsx 'Data!E2:E100' '=C{r}*D{r}' # the same; {r} is the row
+  sheets set book.xlsx 'Data[Margin]' '=C{r}/D{r}' # the Margin column's data rows
+
+A table reference names the cells of a table, as for sheets style: the
+table is a sheet holding one, or an Excel table; its column must have a
+header already.
 
 The file and sheet are created when missing. An empty value clears a cell.`,
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -54,7 +61,15 @@ The file and sheet are created when missing. An empty value clears a cell.`,
 			res := setResult{File: args[0]}
 			var toEval []cellRef
 			for i := 1; i < len(args); i += 2 {
-				sheet, _, rg, err := sheetFor(ed, args[i])
+				var sheet string
+				var rg *grid.Range
+				if strings.Contains(args[i], "[") {
+					// A table reference: the cells it names (Sales[Margin],
+					// that column's data rows).
+					sheet, rg, err = analyze.Resolve(ed.Workbook(), args[i])
+				} else {
+					sheet, _, rg, err = sheetFor(ed, args[i])
+				}
 				if err != nil {
 					return err
 				}

@@ -1,0 +1,22 @@
+[
+  {"query": "I've got ~/Downloads/q3_sales.xlsx, which region had the highest revenue last quarter?", "should_trigger": true},
+  {"query": "add a profit margin column to budget_2026.xlsx and highlight anything under 10% in red", "should_trigger": true},
+  {"query": "can u clean up report_final_v2.xlsx so it looks professional? sending it to my boss in an hour", "should_trigger": true},
+  {"query": "Combine orders.csv and returns.csv from the exports folder into one Excel report with a totals row and a chart", "should_trigger": true},
+  {"query": "My manager says the totals in forecast.xlsx went wrong after I inserted some rows yesterday. Can you check it?", "should_trigger": true},
+  {"query": "Sort the Customers sheet in crm_export.xlsx by signup date, newest first", "should_trigger": true},
+  {"query": "turn data/raw_transactions.csv into a proper xlsx with date and currency columns", "should_trigger": true},
+  {"query": "In leads_template.xlsx, make the Region column a dropdown: North, South, East, West", "should_trigger": true},
+  {"query": "rename the Sheet1 tab in inventory.xlsx to Stock without breaking the formulas that point at it", "should_trigger": true},
+  {"query": "whats in /Users/sam/finance/model_v7.xlsm? just give me the gist", "should_trigger": true},
+  {"query": "Write a Python function that splits a CSV line into fields, respecting quoted commas", "should_trigger": false},
+  {"query": "Set up a Google Sheets API service account so my script can append rows to our team's tracker", "should_trigger": false},
+  {"query": "Convert this markdown table to HTML: | a | b |\n|---|---|\n| 1 | 2 |", "should_trigger": false},
+  {"query": "My Apple Numbers file won't open on the new laptop, how do I export it?", "should_trigger": false},
+  {"query": "What's the difference between VLOOKUP and XLOOKUP?", "should_trigger": false},
+  {"query": "Write a SQL query that sums revenue by region from the orders table in our Postgres database", "should_trigger": false},
+  {"query": "make a bar chart in matplotlib from these numbers: 3, 7, 2, 9", "should_trigger": false},
+  {"query": "Add pagination to the React data table in src/components/OrdersTable.tsx", "should_trigger": false},
+  {"query": "Load events.parquet into pandas and plot the daily event counts", "should_trigger": false},
+  {"query": "Open budget.xls from 2003 and read me the totals", "should_trigger": false}
+]

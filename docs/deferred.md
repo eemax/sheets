@@ -141,7 +141,12 @@ from here when there is time; the reasons still apply unless noted.
 - The plan was about 15 tasks; there are 12. Missing: a messy human-made
   workbook to clean up, a range-operations task (sort, replace, move), and
   a large-file edit.
-- Each phase should be followed by a rerun of both arms.
+- Each phase should be followed by a rerun of both arms. Not rerun since
+  step 4: the agent skill's instructions (what the sheets arm reads) have
+  grown gotchas and a check before finishing since then.
+- The skill's description has not been tested for triggering:
+  `evals/triggers.json` holds the requests, and running them takes about
+  60 agent sessions (each request three times).
 
 ## Waiting on the user
 

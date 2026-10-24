@@ -33,6 +33,39 @@ go install github.com/eemax/sheets/cmd/sheets@latest
 sheets skill --install    # teach Claude Code to use it (~/.claude/skills/sheets)
 ```
 
+### The agent skill
+
+[skills/sheets](skills/sheets) is an [Agent Skill](https://agentskills.io):
+a `SKILL.md` that tells agents when to reach for `sheets` and how to use it
+(the commands used most, a check before finishing, and the gotchas), and
+`references/`, one file per topic of the guide, which the agent reads when
+a task needs it. Only the skill's name and description stay in an agent's
+context; the instructions (about 1,600 tokens) load when a task involves a
+spreadsheet, and a reference (60 to 800 tokens) only when its topic comes
+up.
+
+| | |
+|---|---|
+| `sheets skill --install` | `~/.claude/skills/sheets`, for Claude Code |
+| `sheets skill --install --agents` | `~/.agents/skills/sheets`, for VS Code, Codex and other agents |
+| `sheets skill --install --project` | the current project's `.claude/skills` (with `--agents`, `.agents/skills`) |
+| `sheets skill --install --dir DIR` | `DIR/sheets` |
+
+The skill comes from the binary, so installing it again after updating
+`sheets` keeps the two in step. Its frontmatter uses only the fields of the
+specification, so it also loads where other fields are refused (claude.ai
+uploads). A test checks it against the specification and keeps
+`skills/sheets` the same as what `sheets skill` writes; after changing the
+guide, run `go run ./cmd/sheets skill --install --dir skills`. To check it
+with the specification's own validator:
+
+```bash
+uvx --from "git+https://github.com/agentskills/agentskills#subdirectory=skills-ref" skills-ref validate skills/sheets
+```
+
+Agents without the skill can run `sheets agent-docs` for the same
+instructions, and `sheets agent-docs TOPIC` for a topic.
+
 ## Commands
 
 | Command | What it does |
@@ -47,7 +80,7 @@ sheets skill --install    # teach Claude Code to use it (~/.claude/skills/sheets
 | `chart add\|list\|delete` | Adds charts in the house style, refusing ones that would mislead |
 | `render <file> [sheet\|range]` | Draws a sheet to PNG (or HTML) with its formatting and charts, for agents that can look |
 | `write <file> [sheet!cell]` | Writes TSV/CSV/JSON from stdin with type inference; `--append` (into the last table, above its total row; matches headers), `--clear` |
-| `set <file> <cell> <value>...` | Sets cells or formulas; a range fills down with shifted references |
+| `set <file> <cell> <value>...` | Sets cells or formulas; a range or a table column (`Sales[Margin]`) fills down with shifted references |
 | `rows insert\|delete`, `cols insert\|delete` | Insert or delete rows and columns; references follow, and broken ones become `#REF!` and are reported |
 | `sheet add\|rename\|delete\|copy\|move\|hide\|show` | Manage sheets; renaming updates every reference, deleting refuses while it is referenced |
 | `fmt <file>` | Strips formatting and applies the house style, keeping what style, cond and view set; `--preset finance`, `--as COL=type`, `--check`, `--reset` |
@@ -63,8 +96,8 @@ sheets skill --install    # teach Claude Code to use it (~/.claude/skills/sheets
 | `convert <from> <to>` | Between .xlsx and .csv/.tsv |
 | `do <file>` | Runs a script of commands against one file: one save, one undo step, nothing saved on an error |
 | `undo <file>` | Restores the file to before the last change sheets made; `--list` |
-| `agent-docs` | Prints the guide for agents: a short index ([agent-index.md](internal/cli/agent-index.md)), a topic (`agent-docs style`), or `all` ([agent-docs.md](internal/cli/agent-docs.md)) |
-| `skill` | Prints or installs (`--install`) the Claude Code skill: the index, about 700 tokens, which points agents at the topics they need |
+| `agent-docs` | Prints the guide for agents: the skill's instructions, a topic (`agent-docs style`), or `all` ([agent-docs.md](internal/cli/agent-docs.md)) |
+| `skill` | Prints the agent skill's `SKILL.md`, or installs the skill folder (`--install`; see [The agent skill](#the-agent-skill)) |
 
 Every command takes `--json`, and every command that changes a file takes
 `--dry-run`.
@@ -72,7 +105,9 @@ Every command takes `--json`, and every command that changes a file takes
 `style`, `cond` and `validate` take a range, a sheet, or a table reference
 in Excel's syntax, named by a sheet holding one table or by an Excel table:
 `Sales[Revenue]`, `Sales[[Units]:[Revenue]]`, `Sales[#Headers]`,
-`Sales[#Totals]`, `Sales[[#Totals],[Units]]`.
+`Sales[#Totals]`, `Sales[[#Totals],[Units]]`. `set` takes a table
+reference too, to fill exactly a column's data rows:
+`sheets set book.xlsx 'Sales[Margin]' '=E{r}/D{r}'`.
 
 ```bash
 sheets do report.xlsx <<'EOF'
@@ -152,11 +187,10 @@ to a table rewrite only the sheets that change, row by row, and copy every
 other part of the file as it is. On the 200,000-row file a one-cell edit
 takes 1.2 s with the parse cached, 3 s on a first read (10 s through
 excelize), and deleting 1,000 rows 3.1 s (4.6 s); on a 20,000-row file
-deleting 1,000 rows takes 0.8 s instead of 19 s. The
-first edit that streaming does not cover (styling, columns, sheets,
-copy/move/sort, notes; also listing styling) hands the session to the
-full editor: what was done so far is rendered in memory and the editor
-opens that.
+deleting 1,000 rows takes 0.8 s instead of 19 s. The first edit that
+streaming does not cover (styling, columns, sheets, copy/move/sort, notes;
+also listing styling) hands the session to the full editor: what was done
+so far is rendered in memory and the editor opens that.
 `SHEETS_STREAM=never` turns streaming off, or gives a file size in bytes
 from which to stream. A randomized test makes the same edits both ways on
 a set of workbooks and checks that a reader sees the same files.
@@ -196,10 +230,12 @@ saved in the file, so later runs keep it.
 house style, and record it in the workbook so that `fmt` keeps it: each
 entry is a hidden defined name whose range follows inserted and deleted
 rows and columns (in Excel too), with what was applied as its comment
-(`_sheets.000003` → `Sales!$A$1:$F$1`, "style fill=lightblue bold"). Every
+(`_sheets.000003` → `Sales!$A$1:$F$1`, "style fill=lightblue bold"). A
+recorded freeze moves as its pane does, and settings that are not cells
+(gridlines) stay put. Every
 `fmt` strips formatting as before, then lays the recorded styling over the
-house style; recorded conditional formats stay where they are. `fmt
---reset` drops the record.
+house style; recorded conditional formats stay where they are.
+`fmt --reset` drops the record.
 
 - A fill without a text colour gets black or white text, whichever has the
   contrast to read.
@@ -207,8 +243,7 @@ house style; recorded conditional formats stay where they are. `fmt
   row. Rows added with `write --append` take the look, conditional formats
   and validation of the rows above, as Excel extends a list's formats.
 - Conditional format formulas follow inserted and deleted rows and columns,
-  as in Excel (excelize moves only their ranges), and highlights take
-  priority over the banding.
+  as in Excel, and highlights take priority over the banding.
 - `style --show` describes cells in the same properties `style` takes, so
   an agent can check a result without rendering it.
 
@@ -227,9 +262,8 @@ differences stay plain numbers.
 - `internal/xlsx` reads .xlsx with its own streaming XML parser. It is fast
   (`peek` on 20k rows with 20k formulas takes about half a second) and
   sees shared formulas and cached values as stored. Editing and styling go
-  through
-  [excelize](https://github.com/qax-os/excelize), with workarounds for
-  places where excelize would corrupt or lose data:
+  through [excelize](https://github.com/qax-os/excelize), with workarounds
+  for places where excelize would corrupt or lose data:
   - filled-down formulas are kept when their first cell is overwritten
   - the sheet `dimension` is kept accurate
   - sheet properties are restored after adding a filter
@@ -273,6 +307,10 @@ differences stay plain numbers.
   - Table references and LET are computed by translating them for the
     calculator (into cell ranges, and LET's names inlined), in a copy of the
     workbook.
+  - SUM, COUNT, COUNTA, AVERAGE, MIN and MAX of plain ranges are computed
+    by `sheets` itself, as Excel computes them (excelize's SUM skips an
+    error Excel would give), and fast: a column of running totals is summed
+    in one pass.
   - A formula the calculator can't evaluate (LAMBDA, FILTER, XMATCH, ...;
     array arithmetic over ranges, such as `SUMPRODUCT((A2:A9="East")*B2:B9)`,
     which it gets wrong; or one holding an error like `#REF!`, which it
@@ -287,11 +325,12 @@ differences stay plain numbers.
     whether "005" is text (`TEXT(...)`) or a number, and whether "1" is
     TRUE; a result it can't type is left to Excel.
   - Results that only Excel can update, from links to other workbooks, are
-    kept. Charts drawing
-  changed cells drop their cached copy of the data. The file is still
-  flagged for Excel to recalculate. A fingerprint stamp tells `sheets`
-  itself that the stored results are current; an edit by another tool voids
-  the stamp. Calls to functions that don't exist show `#NAME?`.
+    kept.
+  - Charts drawing changed cells drop their cached copy of the data. The
+    file is still flagged for Excel to recalculate. A fingerprint stamp
+    tells `sheets` itself that the stored results are current; an edit by
+    another tool voids the stamp. Calls to functions that don't exist show
+    `#NAME?`.
 - `internal/analyze` finds the structure: blocks of cells, titles, header
   and total rows, column profiles, and formula patterns
   (`=D{r}-E{r}`).
@@ -307,6 +346,9 @@ differences stay plain numbers.
 - Charts, pivot tables and images are kept. Chart ranges follow row and
   column edits; pivot table sources follow sheet renames only.
 - Columns cannot be inserted into or deleted from an Excel table.
+- Inserted rows and columns are not formatted like their neighbours, as
+  Excel does; `fmt` styles them. Conditional formats and banding reach
+  them.
 - `render` approximates Excel: other fonts stand in for Calibri, and
   conditional formats other than banding and Excel table styles are not
   drawn.
@@ -321,13 +363,15 @@ differences stay plain numbers.
 
 ```bash
 go test ./...
-go test ./cmd/sheets -update   # rewrite expected CLI output in cmd/sheets/testdata
+go test ./cmd/sheets -update                     # rewrite expected CLI output in cmd/sheets/testdata
+STREAM_ROUNDS=500 go test ./internal/xlsx -run TestStreamMatchesFullRandom   # a longer comparison of the two editors
+go run ./cmd/sheets skill --install --dir skills  # after changing the guide: regenerate skills/sheets
 ```
 
 End-to-end CLI tests are [testscript](https://pkg.go.dev/github.com/rogpeppe/go-internal/testscript)
 files in `cmd/sheets/testdata`. `internal/xlsx/testdata` holds workbooks
-made by openpyxl (see `scripts/fixtures.py`), so tests cover files from
-another producer.
+made by openpyxl and XlsxWriter (see `scripts/fixtures.py`), so tests cover
+files from other producers.
 
 `scripts/excel-check.sh` builds a set of workbooks and a checklist for a
 manual look in real Excel. That's the one check the test suite can't do.

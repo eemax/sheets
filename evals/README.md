@@ -1,7 +1,8 @@
 # A/B evaluation
 
 Does `sheets` make agents better at spreadsheet work? Each task is done by
-fresh agents twice: once with the `sheets` CLI and its guide, once with
+fresh agents twice: once with the `sheets` CLI and its agent skill's
+instructions (what `sheets agent-docs` prints), once with
 Python (openpyxl, pandas), the way agents work without it. Checks grade
 the results; the report compares pass rates, turns, tokens and cost.
 
@@ -49,3 +50,15 @@ previews read them; it is reported apart from the task's pass or fail.
 Write the three files; then check the check both ways before trusting it:
 untouched inputs must fail (`prepare`, then `check`), and a correct
 solution, by either tool, must pass.
+
+## Does the skill trigger?
+
+`triggers.json` holds 20 requests, half of which should make an agent load
+the `sheets` skill and half of which are near misses that should not (a
+CSV parser to write, Google Sheets, Apple Numbers, a legacy .xls). They are
+for testing the skill's description the way
+[agentskills.io](https://agentskills.io/skill-creation/optimizing-descriptions)
+describes: run each request a few times with the skill installed, count how
+often the agent loads it, and change the description when a request lands
+on the wrong side (the skill-creator skill runs this loop).
+

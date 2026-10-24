@@ -27,6 +27,17 @@ stderr 'expected <file> followed by <cell> <value> pairs'
 ! exec sheets set book.xlsx A:A 1
 stderr 'whole rows or columns'
 
+# A table reference fills a column's data rows, its total row left alone.
+stdin table.tsv
+exec sheets write tab.xlsx Sales!A1
+exec sheets set tab.xlsx Sales!C1 Double
+exec sheets set tab.xlsx 'Sales[Double]' '=B{r}*2'
+stdout 'Sales!C2:C3 ← =B\{r\}\*2 \(2 cells\)'
+exec sheets read tab.xlsx Sales!C4 --formulas
+! stdout '='
+! exec sheets set tab.xlsx 'Sales[Nope]' 1
+stderr 'Sales has no column "Nope"'
+
 -- fill.out --
 Sheet1!C2:C3 ← =A2*B2 (2 cells)
 formulas: Sheet1!C2 = 7.5, Sheet1!C3 = 6
@@ -36,3 +47,8 @@ Sheet1!A1:C3
 1	Qty	Price	Total
 2	3	2.5	=A2*B2
 3	4	1.5	=A3*B3
+-- table.tsv --
+Item	Qty
+a	2
+b	3
+Total	=SUM(B2:B3)

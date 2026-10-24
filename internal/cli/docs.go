@@ -8,14 +8,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// agentDocs is the whole guide; agentIndex the short one the skill holds,
-// which points at the guide's topics.
+// agentDocs is the whole guide; skillBodySource the instructions of the
+// skill (see skill.go), which point at the guide's topics: [[topic]].
 var (
 	//go:embed agent-docs.md
 	agentDocs string
-	//go:embed agent-index.md
-	agentIndex string
+	//go:embed skill-body.md
+	skillBodySource string
 )
+
+// agentIndex is the skill's instructions for an agent without the skill,
+// with each topic as the command that prints it.
+func agentIndex() string {
+	return skillBody(func(t string) string { return "`sheets agent-docs " + t + "`" }) +
+		"\n`sheets agent-docs all` prints the whole guide.\n"
+}
 
 // docTopics name the guide's sections, by their headings.
 var docTopics = []struct {
@@ -25,7 +32,7 @@ var docTopics = []struct {
 }{
 	{"reading", []string{"read", "info", "peek", "find"}, "Reading"},
 	{"query", []string{"sql"}, "SQL queries"},
-	{"references", []string{"refs"}, "References"},
+	{"addresses", []string{"references", "refs"}, "References"},
 	{"writing", []string{"write", "set"}, "Writing"},
 	{"do", []string{"batch"}, "Many changes at once: do"},
 	{"structure", []string{"rows", "cols", "columns", "sheet", "sheets"}, "Rows, columns and sheets"},
@@ -82,16 +89,17 @@ func (a *app) docsCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "agent-docs [TOPIC|all]...",
 		Short: "Print the guide written for AI agents: an index, topics, or all of it",
-		Long: `Print the guide for AI agents. With no topic, a short index of the
-commands used most and the topics; with topics, those sections of the
-guide; with all, the whole guide.
+		Long: `Print the guide for AI agents. With no topic, the instructions of the sheets
+skill (see sheets skill): the commands used most, the gotchas, and the
+topics; with topics, those sections of the guide; with all, the whole
+guide.
 
   sheets agent-docs
   sheets agent-docs style ranges
   sheets agent-docs all`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				a.printf("%s", agentIndex)
+				a.printf("%s", agentIndex())
 				return nil
 			}
 			var parts []string

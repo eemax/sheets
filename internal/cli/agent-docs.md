@@ -11,8 +11,8 @@ command.
     sheets peek book.xlsx [Sheet]         # one line per column: type, range, distinct values, formulas
     sheets read book.xlsx Sheet!A1:F20    # cells, with row numbers and column letters
     sheets find book.xlsx "acme"          # matching cells with their column header
-    sheets query book.xlsx 'SELECT ...'   # SQL over the tables (see below)
-    sheets render book.xlsx Sheet         # a PNG of the sheet, to look at (see below)
+    sheets query book.xlsx 'SELECT ...'   # SQL over the tables
+    sheets render book.xlsx Sheet         # a PNG of the sheet, to look at
 
 - `peek` output stays the same size whether a table has 10 rows or a
   million. Use it before `read`.
@@ -71,7 +71,7 @@ columns `Sheet!A:C`, whole rows `Sheet!5:20`. Sheet names with spaces need
 no inner quotes: `'My Sheet!A1'` is fine (the outer quotes are for the
 shell).
 
-`style`, `cond` and `validate` also take table references in Excel's
+`set`, `style`, `cond` and `validate` also take table references in Excel's
 syntax, named by a sheet holding one table or by an Excel table, so you
 need no column letters: `Sales[Revenue]` (the column's data rows),
 `Sales[[Units]:[Revenue]]`, `Sales[#Headers]`, `Sales[#Totals]`,
@@ -84,9 +84,14 @@ need no column letters: `Sales[Revenue]` (the column's data rows),
     sheets set book.xlsx Sales!F2 '=D2*E2'
     sheets set book.xlsx 'Sales!F2:F500' '=D2*E2'    # fill down: F3 gets =D3*E3
     sheets set book.xlsx 'Sales!F2:F500' '=D{r}*E{r}' # the same, with {r} = the row
+    sheets set book.xlsx 'Sales[Revenue]' '=D{r}*E{r}' # a table column's data rows
     sheets set book.xlsx Summary!B1 'Q3 total' Summary!B2 '=SUM(Sales!F:F)'
 
 - The file and sheet are created when missing.
+- `set` takes a table reference (`Sales[Revenue]`, see the addresses
+  topic) for exactly a column's data rows, its total row left alone. The
+  column needs its header first. A range past the data fills empty rows,
+  where a formula reading them gives errors.
 - Input for `write` is TSV, CSV or JSON. JSON can be an array of arrays, or
   an array of objects whose keys become the header row. The format is
   detected automatically.
@@ -130,7 +135,8 @@ need no column letters: `Sales[Revenue]` (the column's data rows),
 
     sheets do report.xlsx <<'EOF'
     write Sales!A1 -i sales.csv
-    set Sales!F1 Margin Sales!F2:F200 '=E{r}/D{r}'
+    set Sales!F1 Margin
+    set 'Sales[Margin]' '=E{r}/D{r}'
     fmt
     style 'Sales[#Headers]' fill=lightblue
     cond 'Sales[Margin]' '< 0' color=red
@@ -302,7 +308,7 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     sheets fmt book.xlsx --check          # exit 1 if fmt would change anything
 
 `fmt` removes existing formatting and applies one consistent style, then
-lays over it what `style`, `cond` and `view` set (see below):
+lays over it what `style`, `cond` and `view` set:
 - a dark header row with filters, labels left-aligned clear of the filter
   buttons
 - banded data rows
@@ -359,17 +365,18 @@ Detection rules:
   `font= size= color= fill=` (`#RRGGBB` or a name: lightblue, lightgreen,
   lightyellow, lightred, lightgray, darkblue, red, green, blue, ...),
   `format=TYPE [decimals=N]` (the `--as` types) or an Excel format code,
-  `align=left|center|right|center-across valign=top|middle|bottom indent=
-  rotate=`, `border=SIDES[:STYLE][:COLOR]` (all, outline, inner, top,
-  bottom; thin, medium, thick, double), `width=N|auto height=N`, `merge`,
-  `reset`. A fill without `color=` gets black or white text, whichever
-  reads.
+  `align=left|center|right|center-across`,
+  `valign=top|middle|bottom`, `indent=`, `rotate=`,
+  `border=SIDES[:STYLE][:COLOR]` (all, outline, inner, top, bottom; thin,
+  medium, thick, double), `width=N|auto height=N`, `merge`, `reset`. A
+  fill without `color=` gets black or white text, whichever reads.
 - A number format on a column (`Sales[Revenue]`) reaches its total row.
   Rows added with `write --append` take the look, conditional formats and
   validation of the rows above.
-- `cond` conditions: `'< 0'`, `'>= 100'`, `'= East'`, `'between 1 and
-  10'`, `'top 10'`, `'bottom 5%'`, `'above average'`, `duplicates`,
-  `unique`, `blank`, `errors`, `'contains x'`, `'begins with x'`, a formula
+- `cond` conditions: `'< 0'`, `'>= 100'`, `'= East'`,
+  `'between 1 and 10'`, `'top 10'`, `'bottom 5%'`, `'above average'`,
+  `duplicates`, `unique`, `blank`, `errors`, `'contains x'`,
+  `'begins with x'`, a formula
   for the range's first cell (`'=$E2="Late"'`: the $ keeps column E, so
   every cell of a row tests that row's E), `scale [red-yellow-green]`,
   `bars`, `icons`. The look defaults to Excel's light red. Quote anything
