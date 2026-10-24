@@ -283,16 +283,27 @@ rows are listed, since they now read whatever row is there.`,
 			var keys []book.SortKey
 			var by []string
 			for _, k := range args[2:] {
-				name, dir, _ := strings.Cut(k, ":")
-				desc := false
-				switch strings.ToLower(dir) {
-				case "", "asc", "ascending":
-				case "desc", "descending":
-					desc = true
-				default:
-					return fmt.Errorf("%q: the direction after : is asc or desc", k)
+				// The direction follows the last colon; a header may hold
+				// colons of its own (Ratio: A/B).
+				name, desc := k, false
+				if i := strings.LastIndex(k, ":"); i >= 0 {
+					switch strings.ToLower(k[i+1:]) {
+					case "asc", "ascending":
+						name = k[:i]
+					case "desc", "descending":
+						name, desc = k[:i], true
+					}
 				}
 				col, label, err := sortColumn(wb, s, r, header, name)
+				if err != nil && name != k {
+					// A header such as "x:desc" itself.
+					if c, l, err2 := sortColumn(wb, s, r, header, k); err2 == nil {
+						col, label, err, desc = c, l, nil, false
+					}
+				}
+				if err != nil && name == k && strings.Contains(k, ":") {
+					return fmt.Errorf("%v; a direction goes after a colon: asc or desc", err)
+				}
 				if err != nil {
 					return err
 				}
@@ -568,6 +579,10 @@ func replacer(find, with string, useRegex, exact, caseSens bool) (func(string) (
 		pattern = regexp.QuoteMeta(find)
 		with = strings.ReplaceAll(with, "$", "$$")
 	} else {
+		// Checked as given, so an error shows the pattern as written.
+		if _, err := regexp.Compile(find); err != nil {
+			return nil, fmt.Errorf("--regex %q: %v", find, err)
+		}
 		// $1 is group 1 whatever follows, as in most tools; Go alone would
 		// read $1TH as a group named 1TH.
 		with = numberedGroups(with)

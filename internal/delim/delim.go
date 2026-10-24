@@ -251,7 +251,12 @@ func numberWith(s string, dec, group byte) bool {
 // a CSV file holds values, not formulas.
 func (d Dialect) Value(field string) input.Value {
 	if d.DecimalComma {
-		field = swapMarks(field)
+		// Only a number reads with its marks swapped: 3.5.1 stays 3.5.1.
+		if swapped := swapMarks(field); swapped != field {
+			if v := input.Parse(swapped, false); v.Kind == grid.Number {
+				return v
+			}
+		}
 	}
 	v := input.Parse(field, false)
 	if v.Formula != "" {
@@ -455,6 +460,11 @@ func Encode(rows, cols int, value func(row, col int) (grid.Cell, grid.Format, er
 	if e := encoder(d); e != nil {
 		enc, err := e.Bytes(b)
 		if err != nil {
+			for _, r := range string(b) {
+				if _, err := encoder(d).String(string(r)); err != nil {
+					return nil, fmt.Errorf("the file is %s text, which cannot hold %q; leave it out, or convert the file to .xlsx", d.Encoding, r)
+				}
+			}
 			return nil, fmt.Errorf("writing %s: %w", d.Encoding, err)
 		}
 		return enc, nil

@@ -480,6 +480,9 @@ within the target. fmt leaves validation alone.`,
 					if v.Prompt != "" {
 						line += fmt.Sprintf("  prompt %q", v.Prompt)
 					}
+					if v.Warn {
+						line += "  warns"
+					}
 					if v.Error != "" {
 						line += fmt.Sprintf("  error %q", v.Error)
 					}

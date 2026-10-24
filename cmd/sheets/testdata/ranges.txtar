@@ -14,7 +14,7 @@ stdout 'by Region, Units descending'
 ! exec sheets sort book.xlsx Sales Nope
 stderr 'no column "Nope"; the columns are Region, Units, Price, Revenue'
 ! exec sheets sort book.xlsx Sales Units:up
-stderr 'the direction after : is asc or desc'
+stderr 'no column "Units:up".*; a direction goes after a colon: asc or desc'
 
 # A formula reading another row by position is not sorted blindly.
 exec sheets set book.xlsx Sales!E3 '=D2-D3'
@@ -82,6 +82,14 @@ stdout '^cleared contents, formats, notes, links of Sales!A2 \(1 cell\)$'
 exec sheets link book.xlsx Sales --list
 stdout '^no links$'
 
+# A header may hold a colon: the direction follows the last one.
+stdin colon.tsv
+exec sheets write colon.xlsx Data!A1
+exec sheets sort colon.xlsx Data 'Ratio: A/B:desc'
+stdout 'by Ratio: A/B descending'
+exec sheets read colon.xlsx Data!A2:A3
+stdout '2\tb\n3\ta'
+
 -- sales.tsv --
 Region	Units	Price	Revenue
 East	5	30	=B{r}*C{r}
@@ -107,3 +115,7 @@ Summary!A1:A3
 -- links.out --
 Sales!A2	Q3 sales → https://example.com/q3 (The source)
 Summary!B1	Sales!A1 → #Sales!A1
+-- colon.tsv --
+Name	Ratio: A/B
+a	1
+b	2

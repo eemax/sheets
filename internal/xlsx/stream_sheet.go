@@ -54,6 +54,7 @@ type window struct {
 	buf []byte
 	pos int
 	eof bool
+	err error // a read that failed before the end
 }
 
 // fill reads on, straight into the buffer; false at the end of the part.
@@ -70,6 +71,9 @@ func (w *window) fill() bool {
 	w.buf = w.buf[:len(w.buf)+n]
 	if err != nil {
 		w.eof = true
+		if err != io.EOF {
+			w.err = err
+		}
 	}
 	return n > 0 || !w.eof
 }
@@ -126,8 +130,18 @@ var (
 // job's changes.
 func rewriteSheet(r io.Reader, out io.Writer, j *sheetJob) error {
 	w := &window{r: bufio.NewReaderSize(r, 1<<20)}
+	if err := rewriteRows(w, out, j); err != nil {
+		if w.err != nil {
+			return w.err // the cause of what looked unclosed
+		}
+		return err
+	}
+	return w.err
+}
+
+func rewriteRows(w *window, out io.Writer, j *sheetJob) error {
+	// Writes go through bw, whose first error stays: Flush reports it.
 	bw := bufio.NewWriterSize(out, 1<<20)
-	defer bw.Flush()
 
 	// Head: up to the rows.
 	at := w.find("<sheetData", 0)
@@ -282,7 +296,7 @@ func rewriteSheet(r io.Reader, out io.Writer, j *sheetJob) error {
 	for w.fill() {
 	}
 	bw.Write(j.rewriteTail(w.buf[w.pos:]))
-	return nil
+	return bw.Flush()
 }
 
 // row rewrites one row: its number, its cells' references, formulas and

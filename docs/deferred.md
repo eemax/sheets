@@ -73,6 +73,9 @@ from here when there is time; the reasons still apply unless noted.
   command refuses). It would need the table's columns, totals formulas and
   structured references rewritten.
 - Pivot table sources follow sheet renames only, not row or column edits.
+- `write` and `set` keep a typed error code (`#N/A`) as text; Excel makes
+  it an error value. Errors already in a file stay errors when copied,
+  moved or sorted.
 - `rows insert` and `cols insert` leave the new cells unformatted (no
   borders or number formats inside a formatted table; conditional formats
   and banding do reach them). Excel formats them like the row above or the

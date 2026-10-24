@@ -135,6 +135,25 @@ func (e *Editor) DeleteCols(sheet string, from, to int) error {
 // inserted or deleted, as Excel does: lines among the frozen ones move the
 // split.
 func (e *Editor) movePanes(sheet string, cols bool, from, to int, insert bool) error {
+	// The recorded freeze (sheets view) moves as the pane does: it is
+	// where the pane splits, not a cell whose content it follows.
+	for _, rec := range e.Records() {
+		if rec.Kind != "view" || len(rec.Args) == 0 || rec.Args[0] != "freeze" || !strings.EqualFold(rec.Sheet, sheet) {
+			continue
+		}
+		at := rec.Range()
+		y, x := at.R1-1, at.C1-1
+		if cols {
+			x = splitAfter(x, from, to, insert)
+		} else {
+			y = splitAfter(y, from, to, insert)
+		}
+		if moved := (grid.Range{R1: y + 1, C1: x + 1, R2: y + 1, C2: x + 1}); moved != at {
+			if err := setAreas(e.f, rec, []grid.Range{moved}); err != nil {
+				return err
+			}
+		}
+	}
 	p, err := e.f.GetPanes(sheet)
 	if err != nil || !p.Freeze {
 		return err
@@ -143,15 +162,25 @@ func (e *Editor) movePanes(sheet string, cols bool, from, to int, insert bool) e
 	if cols {
 		split = &p.XSplit
 	}
-	if *split == 0 || from > *split {
+	moved := splitAfter(*split, from, to, insert)
+	if moved == *split {
 		return nil
 	}
-	if insert {
-		*split += to - from + 1
-	} else {
-		*split -= min(to, *split) - from + 1
-	}
+	*split = moved
 	return freeze(e.f, sheet, grid.Range{R1: p.YSplit + 1, C1: p.XSplit + 1, R2: p.YSplit + 1, C2: p.XSplit + 1})
+}
+
+// splitAfter is where a frozen pane splits (the rows or columns kept in
+// view) after lines from..to are inserted or deleted, as Excel moves it:
+// lines inserted or deleted among the frozen ones move it, others not.
+func splitAfter(split, from, to int, insert bool) int {
+	if split == 0 || from > split {
+		return split
+	}
+	if insert {
+		return split + to - from + 1
+	}
+	return split - (min(to, split) - from + 1)
 }
 
 // deleteLines removes rows or columns from..to.
@@ -363,14 +392,21 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 			}
 			continue
 		}
-		n.RefersTo = rewrite(n.RefersTo, "")
-		if strings.HasPrefix(n.Name, recordPrefix) {
-			// The formulas of a recorded rule follow as the rule's do.
-			if recs, _ := recordsOf([]excelize.DefinedName{n}, func(string) bool { return true }); len(recs) == 1 && recs[0].Kind == "cond" {
-				rec := recs[0]
+		if recs, _ := recordsOf([]excelize.DefinedName{n}, func(string) bool { return true }); len(recs) == 1 {
+			switch rec := recs[0]; {
+			case rec.Kind == "cond":
+				// The formulas of a recorded rule follow as the rule's do.
 				n.Comment = Record{Kind: rec.Kind, Args: condFormulas(rec.Args, func(f string) string { return rewrite(f, rec.Sheet) })}.Text()
+			case rec.Kind == "view" && !viewMoves(rec.Args):
+				// A freeze moves with the pane (see movePanes); gridlines
+				// and the like are not cells.
+				if err := e.f.SetDefinedName(&n); err != nil {
+					return err
+				}
+				continue
 			}
 		}
+		n.RefersTo = rewrite(n.RefersTo, "")
 		if err := e.f.SetDefinedName(&n); err != nil {
 			return err
 		}

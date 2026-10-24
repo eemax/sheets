@@ -1,11 +1,14 @@
 package xlsx
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/eemax/sheets/internal/grid"
 	"github.com/eemax/sheets/internal/input"
+	"github.com/xuri/excelize/v2"
 )
 
 // The streaming editor must leave a file as the full editor does. These
@@ -443,5 +447,167 @@ func TestStreamMatchesFullFound(t *testing.T) {
 			full, stream, _ := both(t, fixture(t, c.book), c.ops)
 			sameFile(t, full, stream, fmt.Sprint(c.ops))
 		})
+	}
+}
+
+// Results taken as stored are errors where they were errors, not blanks,
+// for every one, not only those computed again.
+func TestStreamFrozenErrors(t *testing.T) {
+	rows := [][]string{{"k", "v"}}
+	for i := 0; i < 40; i++ {
+		rows = append(rows, []string{"x", "=NA()"})
+	}
+	path := writeBook(t, rows)
+	change(t, path, func(e *Editor) {
+		must(t, e.Set("Data", 1, 4, input.Parse("=COUNTBLANK(B2:B41)+C1", false)))
+	})
+	full, stream, upgraded := both(t, path, []editOp{{kind: "set", sheet: "Data", row: 1, col: 3, value: "1", stream: true}})
+	if upgraded {
+		t.Fatal("the edit left the streaming editor")
+	}
+	for _, p := range []string{full, stream} {
+		if c := read(t, p).Sheet("Data").Get(1, 4); c.Kind != grid.Number || c.Num != 1 {
+			t.Errorf("%s: D1 = %+v, want 1 (errors are not blank)", filepath.Base(p), c)
+		}
+	}
+}
+
+// A recorded freeze moves as its pane does, and view entries that are not
+// cells (gridlines) stay through row edits: fmt lays them again.
+func TestViewRecordsFollowPanes(t *testing.T) {
+	cases := []struct {
+		ops  []editOp
+		want string // the freeze after the edits, and after fmt
+	}{
+		{[]editOp{{kind: "delete", sheet: "Data", row: 2, n: 1}}, "B2"},
+		{[]editOp{{kind: "insert", sheet: "Data", row: 2, n: 2}}, "B2"},
+		{[]editOp{{kind: "insert", sheet: "Data", row: 1, n: 2}}, "B4"},
+		{[]editOp{{kind: "delete", sheet: "Data", row: 1, n: 1}}, "B1"},
+	}
+	for _, c := range cases {
+		path := writeBook(t, [][]string{{"Region", "Units"}, {"East", "5"}, {"West", "2"}, {"North", "9"}})
+		change(t, path, func(e *Editor) {
+			must(t, e.View("Data", ViewOptions{Freeze: &grid.Range{R1: 2, C1: 2, R2: 2, C2: 2}, Gridlines: ptr(false)}))
+		})
+		full, stream, _ := both(t, path, c.ops)
+		sameFile(t, full, stream, fmt.Sprint(c.ops))
+		for _, p := range []string{full, stream} {
+			format(t, p)
+			e, err := OpenEditor(p, false)
+			must(t, err)
+			v, err := e.ViewOf("Data")
+			must(t, err)
+			e.Close()
+			if v.Freeze != c.want || v.Gridlines {
+				t.Errorf("%v %s: frozen at %q, gridlines %v; want %s, off", c.ops, filepath.Base(p), v.Freeze, v.Gridlines, c.want)
+			}
+		}
+	}
+}
+
+// Built-in names follow as in the full editor: a print area that loses
+// its cells goes, and a filter's name goes with its header row.
+func TestBuiltInNames(t *testing.T) {
+	for _, ops := range [][]editOp{
+		{{kind: "delete", sheet: "Data", row: 2, n: 2}},
+		{{kind: "delete", sheet: "Data", row: 1, n: 1}},
+		{{kind: "insert", sheet: "Data", row: 1, n: 1}},
+	} {
+		path := writeBook(t, [][]string{{"Region", "Units"}, {"East", "5"}, {"West", "2"}, {"North", "9"}})
+		format(t, path) // a filter, with its hidden name
+		change(t, path, func(e *Editor) {
+			must(t, e.f.SetDefinedName(&excelize.DefinedName{Name: "_xlnm.Print_Area", RefersTo: "Data!$A$2:$B$3", Scope: "Data"}))
+		})
+		full, stream, _ := both(t, path, ops)
+		names := func(p string) string {
+			x := sheetXML(t, p, "xl/workbook.xml")
+			var out []string
+			for _, m := range regexp.MustCompile(`<definedName\b[^>]*\bname="(_xlnm[^"]*)"[^>]*>([^<]*)<`).FindAllStringSubmatch(x, -1) {
+				out = append(out, m[1]+"="+m[2])
+			}
+			sort.Strings(out)
+			return strings.Join(out, " ")
+		}
+		if a, b := names(full), names(stream); a != b {
+			t.Errorf("%v: names %q (full) vs %q (stream)", ops, a, b)
+		}
+	}
+}
+
+func TestRowSpans(t *testing.T) {
+	var sp rowSpans
+	for _, c := range []struct {
+		r1, r2  int
+		missing string
+		after   string
+	}{
+		{5, 9, "[[5 9]]", "[[5 9]]"},
+		{1, 3, "[[1 3]]", "[[1 3] [5 9]]"},
+		{2, 12, "[[4 4] [10 12]]", "[[1 12]]"},
+		{20, 20, "[[20 20]]", "[[1 12] [20 20]]"},
+		{13, 19, "[[13 19]]", "[[1 20]]"},
+		{3, 8, "[]", "[[1 20]]"},
+	} {
+		if got := fmt.Sprint(sp.missing(c.r1, c.r2)); got != c.missing {
+			t.Errorf("missing(%d, %d) = %s, want %s", c.r1, c.r2, got, c.missing)
+		}
+		sp.add(c.r1, c.r2)
+		if got := fmt.Sprint(sp.spans); got != c.after {
+			t.Errorf("after add(%d, %d): %s, want %s", c.r1, c.r2, got, c.after)
+		}
+	}
+}
+
+// Every formula reading an error the calculator cannot hold is left to
+// Excel, not only the first to read it.
+func TestStreamUnholdableErrorSharedRange(t *testing.T) {
+	path := writeBook(t, [][]string{{"v"}, {"1"}, {"x"}, {"3"}})
+	change(t, path, func(e *Editor) {
+		must(t, e.f.SetCellDefault("Data", "A3", "#REF!"))
+		e.patches.errorCells["Data"] = map[string]bool{"A3": true}
+		must(t, e.Set("Data", 1, 3, input.Parse("=COUNTBLANK(A1:A4)+B1", false)))
+		must(t, e.Set("Data", 2, 3, input.Parse("=COUNTBLANK(A1:A4)+B1*2", false)))
+	})
+	if c := read(t, path).Sheet("Data").Get(3, 1); c.Kind != grid.Error {
+		t.Fatalf("A3 = %+v, want the error #REF!", c)
+	}
+	data, err := os.ReadFile(path)
+	must(t, err)
+	a, err := OpenAuto(path, data)
+	must(t, err)
+	must(t, a.Set("Data", 1, 2, input.Parse("1", false)))
+	must(t, a.Save(false))
+	if !a.Streaming() {
+		t.Fatal("left the streaming editor")
+	}
+	s := read(t, path).Sheet("Data")
+	for r := 1; r <= 2; r++ {
+		if c := s.Get(r, 3); !c.Pending {
+			t.Errorf("C%d = %+v, want no stored result (Excel computes it)", r, c)
+		}
+	}
+}
+
+// failingReader gives data, then fails.
+type failingReader struct{ data []byte }
+
+func (f *failingReader) Read(p []byte) (int, error) {
+	if len(f.data) == 0 {
+		return 0, errors.New("flate: corrupt input")
+	}
+	n := copy(p, f.data)
+	f.data = f.data[n:]
+	return n, nil
+}
+
+// A sheet that cannot be read to its end is not written cut short.
+func TestRewriteSheetReadError(t *testing.T) {
+	part := `<worksheet><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData><mergeCells count="1"><mergeCell ref="A1:B1"/></mergeCells></worksheet>`
+	for _, cut := range []int{len(part) / 3, len(part) - 20} {
+		var out bytes.Buffer
+		err := rewriteSheet(&failingReader{[]byte(part[:cut])}, &out, &sheetJob{dimension: &grid.Range{R1: 1, C1: 1, R2: 1, C2: 1}})
+		if err == nil || !strings.Contains(err.Error(), "corrupt") {
+			t.Errorf("cut at %d: err = %v", cut, err)
+		}
 	}
 }

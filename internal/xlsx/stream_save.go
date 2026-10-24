@@ -20,6 +20,7 @@ import (
 	"github.com/eemax/sheets/internal/formula"
 	"github.com/eemax/sheets/internal/grid"
 	"github.com/eemax/sheets/internal/words"
+	"github.com/xuri/excelize/v2"
 )
 
 // Saving a streaming edit: the results to store are worked out first, then
@@ -371,7 +372,8 @@ func (s *StreamEditor) noteBrokenRefs() {
 var definedNameEl = regexp.MustCompile(`(<definedName\b[^>]*\bname="([^"]*)"[^>]*>)([^<]*)(</definedName>)`)
 
 // rewriteNames brings the workbook's names up to the rows as they are
-// now; the record's styling grows over rows appended to a table.
+// now, as Editor.relines does; the record's styling grows over rows
+// appended to a table.
 func (s *StreamEditor) rewriteNames(b []byte) []byte {
 	if len(s.ops) == 0 {
 		return b
@@ -380,6 +382,42 @@ func (s *StreamEditor) rewriteNames(b []byte) []byte {
 		g := definedNameEl.FindSubmatch(m)
 		name := html.UnescapeString(string(g[2]))
 		text := html.UnescapeString(string(g[3]))
+		if strings.HasPrefix(name, recordPrefix) {
+			comment := ""
+			if c := commentAttr.FindSubmatch(g[1]); c != nil {
+				comment = html.UnescapeString(string(c[2]))
+			}
+			recs, _ := recordsOf([]excelize.DefinedName{{Name: name, RefersTo: text, Comment: comment}}, func(string) bool { return true })
+			if len(recs) == 1 && recs[0].Kind == "view" && !viewMoves(recs[0].Args) {
+				rec := recs[0]
+				if rec.Args[0] != "freeze" {
+					return m // gridlines and the like are not cells
+				}
+				// The freeze moves as the pane does (see panesNow).
+				at := rec.Range()
+				y := at.R1 - 1
+				for _, op := range s.ops {
+					switch {
+					case !strings.EqualFold(op.sheet, rec.Sheet):
+					case op.kind == 'i':
+						y = splitAfter(y, op.at, op.at+op.n-1, true)
+					case op.kind == 'd':
+						y = splitAfter(y, op.from, op.to, false)
+					}
+				}
+				if y == at.R1-1 {
+					return m
+				}
+				ref := areasRef(rec.Sheet, []grid.Range{{R1: y + 1, C1: at.C1, R2: y + 1, C2: at.C1}})
+				return append(append(append([]byte{}, g[1]...), xmlEscape(ref)...), g[4]...)
+			}
+		}
+		if name == "_xlnm._FilterDatabase" {
+			// A filter goes with its header row, and so does its name.
+			if sheet, r, ok := parseAbsRef(text); ok && s.filterGone(sheet, r) {
+				return nil
+			}
+		}
 		out := text
 		for _, op := range s.ops {
 			if op.kind == 'x' {
@@ -389,6 +427,9 @@ func (s *StreamEditor) rewriteNames(b []byte) []byte {
 				continue
 			}
 			out = op.formula(out, "")
+		}
+		if strings.HasPrefix(name, "_xlnm.") && strings.Contains(out, "#REF!") && !strings.Contains(text, "#REF!") {
+			return nil // a print area or titles that lost their cells
 		}
 		open := g[1]
 		if strings.HasPrefix(name, recordPrefix) {
@@ -584,32 +625,43 @@ func (s *StreamEditor) panesNow(sheet string) func([]byte) []byte {
 			if y == 0 {
 				return tag
 			}
+			was := y
 			for _, op := range s.ops {
-				if !strings.EqualFold(op.sheet, sheet) {
-					continue
-				}
 				switch {
-				case op.kind == 'i' && op.at <= y:
-					y += op.n
-				case op.kind == 'd' && op.from <= y:
-					y -= min(op.to, y) - op.from + 1
+				case !strings.EqualFold(op.sheet, sheet):
+				case op.kind == 'i':
+					y = splitAfter(y, op.at, op.at+op.n-1, true)
+				case op.kind == 'd':
+					y = splitAfter(y, op.from, op.to, false)
 				}
+			}
+			if y == was {
+				return tag
 			}
 			if y <= 0 && x == 0 {
 				return nil
 			}
-			t = ySplitAttr.ReplaceAllString(t, `ySplit="`+strconv.Itoa(max(y, 0))+`"`)
-			t = topLeftAttr.ReplaceAllString(t, `topLeftCell="`+grid.CellName(max(y, 0)+1, x+1)+`"`)
-			return []byte(t)
+			// As freeze writes it (see Editor.movePanes).
+			pane := `<pane`
+			if x > 0 {
+				pane += ` xSplit="` + strconv.Itoa(x) + `"`
+			}
+			if y > 0 {
+				pane += ` ySplit="` + strconv.Itoa(y) + `"`
+			}
+			active := map[bool]string{true: "bottomRight", false: "topRight"}[x > 0 && y > 0]
+			if x == 0 {
+				active = "bottomLeft"
+			}
+			return []byte(pane + ` topLeftCell="` + grid.CellName(y+1, x+1) + `" activePane="` + active + `" state="frozen"/>`)
 		})
 	}
 }
 
 var (
-	paneEl      = regexp.MustCompile(`<pane\b[^>]*/>|<pane\b[^>]*>\s*</pane>`)
-	ySplitAttr  = regexp.MustCompile(`ySplit="([^"]*)"`)
-	xSplitAttr  = regexp.MustCompile(`xSplit="([^"]*)"`)
-	topLeftAttr = regexp.MustCompile(`topLeftCell="[^"]*"`)
+	paneEl     = regexp.MustCompile(`<pane\b[^>]*/>|<pane\b[^>]*>\s*</pane>`)
+	ySplitAttr = regexp.MustCompile(`ySplit="([^"]*)"`)
+	xSplitAttr = regexp.MustCompile(`xSplit="([^"]*)"`)
 )
 
 // The document properties holding the results stamp.

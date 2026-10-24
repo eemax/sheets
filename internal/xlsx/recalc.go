@@ -116,13 +116,14 @@ func (e *Editor) formulasNow() (map[cellKey]*formulaAt, error) {
 	return all, nil
 }
 
-// depIndex finds the formulas that read a cell.
+// depIndex finds the formulas that read a cell. Each formula is wanted
+// once (see computeResults), so what was reported is dropped.
 type depIndex struct {
 	ids     []*formulaAt
 	cells   map[cellKey][]int
-	columns map[cellKey]map[grid.Range][]int // narrow ranges, by sheet and column (row 0)
-	wide    map[string]map[grid.Range][]int  // ranges over many columns, by sheet
-	always  []int                            // volatile: read anything
+	columns map[cellKey]*rowTree            // narrow ranges, by sheet and column (row 0)
+	wide    map[string]map[grid.Range][]int // ranges over many columns, by sheet
+	always  []int                           // volatile: read anything
 }
 
 func (x *depIndex) add(id int, sheet string, rg grid.Range) {
@@ -135,9 +136,9 @@ func (x *depIndex) add(id int, sheet string, rg grid.Range) {
 		for c := rg.C1; c <= rg.C2; c++ {
 			k := cellKey{sheet, 0, c}
 			if x.columns[k] == nil {
-				x.columns[k] = map[grid.Range][]int{}
+				x.columns[k] = &rowTree{nodes: map[int][]int{}}
 			}
-			x.columns[k][rg] = append(x.columns[k][rg], id)
+			x.columns[k].add(rg.R1, rg.R2, id)
 		}
 	default:
 		if x.wide[sheet] == nil {
@@ -147,23 +148,70 @@ func (x *depIndex) add(id int, sheet string, rg grid.Range) {
 	}
 }
 
-// readers calls fn with every formula that reads cell k.
+// readers calls fn with every formula that reads cell k, and not again.
 func (x *depIndex) readers(k cellKey, fn func(id int)) {
 	for _, id := range x.cells[k] {
 		fn(id)
 	}
-	for rg, ids := range x.columns[cellKey{k.sheet, 0, k.col}] {
-		if rg.Contains(k.row, k.col) {
-			for _, id := range ids {
-				fn(id)
-			}
-		}
+	delete(x.cells, k)
+	if t := x.columns[cellKey{k.sheet, 0, k.col}]; t != nil {
+		t.take(k.row, fn)
 	}
 	for rg, ids := range x.wide[k.sheet] {
 		if rg.Contains(k.row, k.col) {
 			for _, id := range ids {
 				fn(id)
 			}
+			delete(x.wide[k.sheet], rg)
+		}
+	}
+}
+
+// rowTree holds row ranges in a segment tree over a sheet's rows: a range
+// lies in the few nodes that cover it, and the nodes on the way down to a
+// row hold exactly the ranges taking it in. So finding them costs the
+// tree's depth, not the number of ranges, as for running totals, whose
+// ranges all start at the top.
+type rowTree struct {
+	nodes map[int][]int // by node: node 1 covers rows 1..rowSpan, node n's halves are 2n and 2n+1
+}
+
+const rowSpan = grid.MaxRows
+
+func (t *rowTree) add(lo, hi, id int) {
+	var put func(node, nlo, nhi int)
+	put = func(node, nlo, nhi int) {
+		if lo <= nlo && nhi <= hi {
+			t.nodes[node] = append(t.nodes[node], id)
+			return
+		}
+		mid := (nlo + nhi) / 2
+		if lo <= mid {
+			put(2*node, nlo, mid)
+		}
+		if hi > mid {
+			put(2*node+1, mid+1, nhi)
+		}
+	}
+	put(1, 1, rowSpan)
+}
+
+// take calls fn with the ranges holding row r, and drops them.
+func (t *rowTree) take(r int, fn func(id int)) {
+	node, nlo, nhi := 1, 1, rowSpan
+	for {
+		for _, id := range t.nodes[node] {
+			fn(id)
+		}
+		delete(t.nodes, node)
+		if nlo == nhi {
+			return
+		}
+		mid := (nlo + nhi) / 2
+		if r <= mid {
+			node, nhi = 2*node, mid
+		} else {
+			node, nlo = 2*node+1, mid+1
 		}
 	}
 }
@@ -468,7 +516,7 @@ func computeResults(st calcState) (calcResult, error) {
 	}
 	must := map[*formulaAt]bool{}
 	if len(st.changed) > 0 || len(st.recompute) > 0 || st.edited {
-		x := &depIndex{cells: map[cellKey][]int{}, columns: map[cellKey]map[grid.Range][]int{}, wide: map[string]map[grid.Range][]int{}}
+		x := &depIndex{cells: map[cellKey][]int{}, columns: map[cellKey]*rowTree{}, wide: map[string]map[grid.Range][]int{}}
 		for _, f := range all {
 			id := len(x.ids)
 			x.ids = append(x.ids, f)

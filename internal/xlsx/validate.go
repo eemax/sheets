@@ -2,6 +2,8 @@ package xlsx
 
 import (
 	"fmt"
+	"math"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -194,6 +196,42 @@ type Validation struct {
 	Rule   string `json:"rule"`
 	Prompt string `json:"prompt,omitempty"`
 	Error  string `json:"error,omitempty"`
+	Warn   bool   `json:"warn,omitempty"` // warns, letting the value in
+}
+
+var dateCall = regexp.MustCompile(`^DATE\((\d{4}),(\d{1,2}),(\d{1,2})\)$`)
+
+// boundText shows a rule's bound as validate takes it: a date as
+// 2026-03-01, a time as 08:30.
+func boundText(kind, f string) string {
+	switch kind {
+	case "date":
+		if m := dateCall.FindStringSubmatch(f); m != nil {
+			mo, _ := strconv.Atoi(m[2])
+			d, _ := strconv.Atoi(m[3])
+			return fmt.Sprintf("%s-%02d-%02d", m[1], mo, d)
+		}
+		if strings.EqualFold(f, "TODAY()") {
+			return "today"
+		}
+	case "time":
+		if v, err := strconv.ParseFloat(f, 64); err == nil && v >= 0 && v < 1 {
+			s := int(math.Round(v * 86400))
+			if s%60 != 0 {
+				return fmt.Sprintf("%02d:%02d:%02d", s/3600, s/60%60, s%60)
+			}
+			return fmt.Sprintf("%02d:%02d", s/3600, s/60%60)
+		}
+	}
+	if strings.HasPrefix(f, "=") || strings.ContainsAny(f, "(!$") || !isNumber(f) {
+		return "=" + formula.FromFile(strings.TrimPrefix(f, "="))
+	}
+	return f
+}
+
+func isNumber(s string) bool {
+	_, err := strconv.ParseFloat(s, 64)
+	return err == nil
 }
 
 // validations lists a sheet's data validation rules.
@@ -230,9 +268,9 @@ func validations(f *excelize.File, sheet string) ([]Validation, error) {
 				if dv.Operator == "notBetween" {
 					not = "not "
 				}
-				v.Rule = fmt.Sprintf("%s %sbetween %s and %s", k, not, f1, f2)
+				v.Rule = fmt.Sprintf("%s %sbetween %s and %s", k, not, boundText(k, f1), boundText(k, f2))
 			default:
-				v.Rule = fmt.Sprintf("%s %s %s", k, ops[dv.Operator], f1)
+				v.Rule = fmt.Sprintf("%s %s %s", k, ops[dv.Operator], boundText(k, f1))
 			}
 		}
 		if dv.Prompt != nil {
@@ -241,6 +279,7 @@ func validations(f *excelize.File, sheet string) ([]Validation, error) {
 		if dv.Error != nil {
 			v.Error = *dv.Error
 		}
+		v.Warn = dv.ErrorStyle != nil && *dv.ErrorStyle == "warning"
 		out = append(out, v)
 	}
 	return out, nil

@@ -3,6 +3,7 @@ package xlsx
 import (
 	"archive/zip"
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"regexp"
@@ -475,5 +476,107 @@ func TestResultsAfterColumnRename(t *testing.T) {
 	s := wb.Sheet("Data")
 	if c := s.At(5, 1); c.Formula != "SUM(Sales[Qty])" || c.Pending || c.Num != 7 {
 		t.Errorf("A5 = %+v, want =SUM(Sales[Qty]) stored as 7", c)
+	}
+}
+
+// The aggregates sheets computes itself follow Excel: errors pass COUNT
+// by and count for COUNTA; text and logical values count for COUNTA only.
+func TestNativeAggregates(t *testing.T) {
+	cells := map[[2]int]grid.Cell{
+		{1, 1}: {Kind: grid.Number, Num: 4},
+		{2, 1}: {Kind: grid.Error, Text: "#N/A"},
+		{3, 1}: {Kind: grid.Text, Text: "x"},
+		{4, 1}: {Kind: grid.Bool, Bool: true},
+		{5, 1}: {Kind: grid.Number, Num: -2},
+		{1, 2}: {Kind: grid.Number, Num: 1},
+		{2, 2}: {Kind: grid.Text, Text: "7"},
+	}
+	used := func(string) grid.Range { return grid.Range{R1: 1, C1: 1, R2: 6, C2: 2} }
+	value := func(_ *judge, sheet string, r, c int) (grid.Cell, bool) {
+		if !strings.EqualFold(sheet, "My Sheet") {
+			t.Errorf("read sheet %q", sheet)
+		}
+		return cells[[2]int{r, c}], true
+	}
+	native := nativeAggregates(used, value)
+	for f, want := range map[string]string{
+		"COUNT('My Sheet'!A1:A6)":             "2",
+		"COUNTA('My Sheet'!A1:A6)":            "5",
+		"SUM('My Sheet'!A1:A6)":               "#N/A",
+		"MAX('My Sheet'!A1:A6)":               "#N/A",
+		"SUM('My Sheet'!B1:B6)":               "1",
+		"AVERAGE('My Sheet'!B3:B6)":           "#DIV/0!",
+		"MIN( 'My Sheet'!A3:A5 )":             "-2",
+		"MAX('My Sheet'!A3,'My Sheet'!B1:B2)": "1",
+	} {
+		v, ok := native(nil, &formulaAt{sheet: "Other", text: f})
+		got := "not native"
+		if ok {
+			got = grid.Display(&v, grid.Format{}, false)
+		}
+		if got != want {
+			t.Errorf("%s = %s, want %s", f, got, want)
+		}
+	}
+	if _, _, ok := aggregateOf("SUM(A1:A3)+1"); ok {
+		t.Error("SUM(A1:A3)+1 is not an aggregate of references alone")
+	}
+}
+
+// Running totals are scanned on from the one before, with the same results
+// as scanning each range whole, errors and unknown values included.
+func TestNativeAggregatesRunning(t *testing.T) {
+	vals := map[int]grid.Cell{}
+	for r := 1; r <= 40; r++ {
+		vals[r] = grid.Cell{Kind: grid.Number, Num: float64(r)}
+	}
+	vals[7] = grid.Cell{Kind: grid.Text, Text: "x"}
+	vals[20] = grid.Cell{Kind: grid.Error, Text: "#N/A"}
+	unknown := 30
+	used := func(string) grid.Range { return grid.Range{R1: 1, C1: 1, R2: 40, C2: 1} }
+	native := nativeAggregates(used, func(_ *judge, _ string, r, _ int) (grid.Cell, bool) { return vals[r], r != unknown })
+	for r := 1; r <= 40; r++ {
+		for _, fn := range []string{"SUM", "COUNT", "COUNTA", "MAX"} {
+			got, ok := native(nil, &formulaAt{sheet: "S", text: fmt.Sprintf("%s(A$1:A%d)", fn, r)})
+			var want grid.Cell
+			wantOK := r < unknown
+			if wantOK {
+				sum, n, filled, high := 0.0, 0, 0, 0.0
+				var errCell *grid.Cell
+				for i := 1; i <= r; i++ {
+					switch v := vals[i]; v.Kind {
+					case grid.Number:
+						sum, n, filled = sum+v.Num, n+1, filled+1
+						high = max(high, v.Num)
+					case grid.Error:
+						filled++
+						if errCell == nil {
+							errCell = &v
+						}
+					default:
+						filled++
+					}
+				}
+				switch {
+				case errCell != nil && fn != "COUNT" && fn != "COUNTA":
+					want = *errCell
+				case fn == "SUM":
+					want = grid.Cell{Kind: grid.Number, Num: sum}
+				case fn == "COUNT":
+					want = grid.Cell{Kind: grid.Number, Num: float64(n)}
+				case fn == "COUNTA":
+					want = grid.Cell{Kind: grid.Number, Num: float64(filled)}
+				default:
+					want = grid.Cell{Kind: grid.Number, Num: high}
+				}
+			}
+			if ok != wantOK || ok && got != want {
+				t.Fatalf("%s(A$1:A%d) = %+v %v, want %+v %v", fn, r, got, ok, want, wantOK)
+			}
+		}
+	}
+	// A range read before the unknown cell still answers.
+	if v, ok := native(nil, &formulaAt{sheet: "S", text: "SUM(A$1:A5)"}); !ok || v.Num != 15 {
+		t.Errorf("SUM(A$1:A5) after the rest = %+v %v", v, ok)
 	}
 }

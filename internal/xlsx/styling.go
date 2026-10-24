@@ -19,6 +19,12 @@ func (e *Editor) used(sheet string) grid.Range {
 	if ext, ok := e.extent[sheet]; ok {
 		return ext
 	}
+	// A formula may spell the sheet otherwise (data!A1 for Data).
+	for name, ext := range e.extent {
+		if strings.EqualFold(name, sheet) {
+			return ext
+		}
+	}
 	if s := e.wb.Sheet(sheet); s != nil {
 		if u := s.Used(); !u.Empty() {
 			return u

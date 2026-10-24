@@ -25,7 +25,7 @@ type calcPlan struct {
 	// and why.
 	veto map[*formulaAt]string
 	// native computes a formula without the calculator, where it can
-	// (see StreamEditor.native).
+	// (see nativeAggregates).
 	native func(j *judge, f *formulaAt) (grid.Cell, bool)
 }
 

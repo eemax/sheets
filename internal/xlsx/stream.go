@@ -96,15 +96,6 @@ func (s *StreamEditor) mergesNow(sheet string) []grid.Range {
 	return ms
 }
 
-// OpenStream opens a workbook for streaming edits.
-func OpenStream(path string) (*StreamEditor, error) {
-	data, err := readFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return openStream(path, data)
-}
-
 func openStream(path string, data []byte) (*StreamEditor, error) {
 	s := &StreamEditor{path: path, data: data, edits: map[string]map[[2]int]*streamCell{}, expand: map[string]bool{},
 		changed: map[cellKey]string{}, recompute: map[cellKey]bool{}, extent: map[string]grid.Range{}}

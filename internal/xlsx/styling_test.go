@@ -418,7 +418,7 @@ func TestValidate(t *testing.T) {
 			got[v.Range] = v.Rule
 		}
 		want := map[string]string{"A2:A4 A7:A10": "list Rent,Staff,IT", "B2:B10": "whole >= 0", "C2:C10": "number between 0 and 1e6",
-			"D2:D10": `formula =AND(D2<>"",D2<5)`, "A5:A6": "date >= DATE(2026,1,1)"}
+			"D2:D10": `formula =AND(D2<>"",D2<5)`, "A5:A6": "date >= 2026-01-01"}
 		for k, v := range want {
 			if got[k] != v {
 				t.Errorf("rule on %s = %q, want %q (all: %v)", k, got[k], v, got)

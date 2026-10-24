@@ -222,3 +222,26 @@ func TestSheetName(t *testing.T) {
 		}
 	}
 }
+
+// In a file with decimal commas, only numbers read with their marks
+// swapped; a version or a dotted date stays as written.
+func TestDecimalCommaOnlyNumbers(t *testing.T) {
+	d := Dialect{Comma: ';', DecimalComma: true}
+	for field, want := range map[string]string{"3.5.1": "t3.5.1", "2026.03.01": "t2026.03.01", "1.234,5": "n1234.5", "7,5": "n7.5", "1.234": "n1234"} {
+		v := d.Value(field)
+		if got := key(grid.Cell{Kind: v.Kind, Text: v.Text, Num: v.Num}); got != want {
+			t.Errorf("%s reads as %s, want %s", field, got, want)
+		}
+	}
+}
+
+// A Windows-1252 file says which character it cannot hold.
+func TestEncodeUnrepresentable(t *testing.T) {
+	d := Dialect{Comma: ',', Encoding: "windows-1252", FinalNewline: true}
+	_, err := Encode(1, 1, func(int, int) (grid.Cell, grid.Format, error) {
+		return grid.Cell{Kind: grid.Text, Text: "a → b"}, grid.Format{}, nil
+	}, d, nil, false)
+	if err == nil || !strings.Contains(err.Error(), `'→'`) {
+		t.Errorf("err = %v", err)
+	}
+}

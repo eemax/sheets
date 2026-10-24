@@ -74,6 +74,30 @@ func normalizeNotes(data []byte) ([]byte, error) {
 	var out bytes.Buffer
 	zw := zip.NewWriter(&out)
 	for _, zf := range zr.File {
+		name := zf.Name
+		if to, ok := plan.rename[name]; ok {
+			name = to
+		}
+		_, retargeted := plan.targets[zf.Name]
+		_, redrawn := vml[zf.Name]
+		if !retargeted && !redrawn && (zf.Name != "[Content_Types].xml" || len(plan.rename) == 0) {
+			// As it is, under its new name if it has one: the sheets are
+			// not unpacked.
+			fh := zf.FileHeader
+			fh.Name = name
+			w, err := zw.CreateRaw(&fh)
+			if err != nil {
+				return nil, err
+			}
+			r, err := zf.OpenRaw()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := io.Copy(w, r); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		r, err := zf.Open()
 		if err != nil {
 			return nil, err
@@ -82,10 +106,6 @@ func normalizeNotes(data []byte) ([]byte, error) {
 		r.Close()
 		if err != nil {
 			return nil, err
-		}
-		name := zf.Name
-		if to, ok := plan.rename[name]; ok {
-			name = to
 		}
 		if t, ok := plan.targets[zf.Name]; ok {
 			b = retarget(b, t)

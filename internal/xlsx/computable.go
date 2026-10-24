@@ -59,7 +59,12 @@ func computableDepth(text string, rs *resolver, sheet string, depth int) (bool, 
 	case d.Multi:
 		return false, "it reads several sheets at once, which the sheets calculator cannot"
 	case len(d.Tables) > 0:
-		return false, "it uses table references (Sales[Units]), which the sheets calculator cannot read"
+		// Those translated into cells do not get here (see calcText).
+		name := d.Tables[0]
+		if name == "" {
+			name = "a table"
+		}
+		return false, "it uses a reference into " + name + " that the sheets calculator cannot place (outside the table's rows, or to a column it does not have)"
 	}
 	if errs := formula.ErrorLiterals(text); len(errs) > 0 && (len(formula.Calls(text)) > 0 || len(formula.Refs(text)) > 0) {
 		return false, "it holds " + errs[0] + ", which the sheets calculator cannot evaluate"

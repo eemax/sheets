@@ -326,6 +326,11 @@ func supersedes(rec, old Record) bool {
 func isCellProperty(k string) bool { return k != "width" && k != "height" && k != "merge" }
 
 // viewKey groups view settings that replace each other.
+// viewMoves tells whether a view entry's reference follows its cells as
+// lines move: a filter's does; a freeze moves as its pane does, and the
+// others (gridlines, no freeze, no filter) are not cells.
+func viewMoves(args []string) bool { return len(args) > 0 && args[0] == "filter" }
+
 func viewKey(arg string) string {
 	k, _, _ := strings.Cut(arg, "=")
 	return strings.TrimPrefix(k, "no")

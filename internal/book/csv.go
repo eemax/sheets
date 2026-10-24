@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 
 	"github.com/eemax/sheets/internal/delim"
@@ -29,7 +30,7 @@ func openCSV(path string, data []byte) (*grid.Workbook, error) {
 // errCSV refuses what a CSV file cannot hold.
 func errCSV(path, what string) error {
 	return fmt.Errorf("%s is a CSV file, which holds values only, not %s; convert it first: sheets convert %s %s.xlsx",
-		path, what, path, strings.TrimSuffix(path, path[strings.LastIndex(path, "."):]))
+		path, what, path, strings.TrimSuffix(path, filepath.Ext(path)))
 }
 
 type csvEditor struct {

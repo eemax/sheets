@@ -90,7 +90,21 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 	cells := map[cellKey]entry{}
 	names := map[cellKey]string{}
 	included := map[*formulaAt]bool{}
-	reads := map[*formulaAt][]cellKey{} // the non-empty cells each formula included reads
+	// What the formulas included read: their ranges; the rows of each
+	// column read so far (each is read once), and the rows holding an error
+	// the calculator cannot hold.
+	type sheetRange struct {
+		sheet string // lower-cased
+		rg    grid.Range
+	}
+	type colKey struct {
+		sheet string // lower-cased
+		col   int
+	}
+	reads := map[*formulaAt][]sheetRange{}
+	covered := map[colKey]*rowSpans{}
+	bad := map[colKey][]int{}
+	checked := map[colKey]int{}
 	var queue []*formulaAt
 	include := func(f *formulaAt) {
 		if included[f] {
@@ -120,7 +134,6 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 	for _, f := range start {
 		include(f)
 	}
-	scanned := map[string]*formulaAt{} // ranges read, by the formula that read them first
 	for len(queue) > 0 {
 		f := queue[0]
 		queue = queue[1:]
@@ -152,7 +165,8 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 				continue
 			}
 			sheet = sh.Name
-			rg := ref.Range.Intersect(s.usedNow(sheet))
+			used := s.usedNow(sheet)
+			rg := ref.Range.Intersect(used)
 			if rg.Empty() {
 				continue
 			}
@@ -160,52 +174,67 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 				plan.veto[f] = "it leaves out hidden rows, which the sheets calculator does not see in a file this large"
 				break
 			}
-			key := sheet + "!" + rg.String()
-			if prev, ok := scanned[key]; ok {
-				reads[f] = append(reads[f], reads[prev]...)
-				continue
-			}
-			scanned[key] = f
-			step := max(1, rg.Rows()/crossCheck)
-			checked := 0
-			s.eachNow(sheet, rg, func(r, c int, v grid.Cell) {
-				k := keyOf(sheet, r, c)
-				reads[f] = append(reads[f], k)
-				if v.Formula == "" {
-					if v.Kind == grid.Error {
-						if ef, ok := errorFormula[v.Text]; ok {
-							cells[k], names[k] = entry{formula: ef}, sheet
-						} else {
-							plan.veto[f] = fmt.Sprintf("it reads %s, an error the sheets calculator cannot hold", grid.FormatRef(sheet, grid.Range{R1: r, C1: c, R2: r, C2: c}))
+			lower := strings.ToLower(sheet)
+			reads[f] = append(reads[f], sheetRange{lower, rg})
+			// A sample of the stored results read, spread over each
+			// column, is computed again and checked (see crossCheck).
+			step := max(1, used.Rows()/crossCheck)
+			for c := rg.C1; c <= rg.C2; c++ {
+				ck := colKey{lower, c}
+				if covered[ck] == nil {
+					covered[ck] = &rowSpans{}
+				}
+				for _, part := range covered[ck].missing(rg.R1, rg.R2) {
+					s.eachNow(sheet, grid.Range{R1: part[0], C1: c, R2: part[1], C2: c}, func(r, c int, v grid.Cell) {
+						k := cellKey{lower, r, c}
+						if v.Formula == "" {
+							if v.Kind == grid.Error {
+								if ef, ok := errorFormula[v.Text]; ok {
+									cells[k], names[k] = entry{formula: ef}, sheet
+								} else {
+									bad[ck] = append(bad[ck], r)
+								}
+								return
+							}
+							cells[k], names[k] = entry{v: v}, sheet
+							return
 						}
-						return
+						g := at[k]
+						if g == nil {
+							return
+						}
+						if computing[g] || g.pending || !freezable(g.stored) {
+							include(g)
+							return
+						}
+						// A stored result to take; or one of the sample, of
+						// the formulas the calculator can compute (it takes
+						// the others at their results anyway).
+						if checked[ck] < crossCheck && (r-used.R1)%step == 0 {
+							if ok, _ := computable(calcOf(g), rs, g.sheet); ok {
+								checked[ck]++
+								include(g)
+								return
+							}
+						}
+						if !included[g] {
+							plan.frozen[g] = true
+							e := entry{v: g.stored}
+							if g.stored.Kind == grid.Error {
+								// As the calculator answers with it (freezable).
+								e = entry{v: g.stored, formula: errorFormula[g.stored.Text]}
+							}
+							cells[k], names[k] = e, sheet
+						}
+					})
+					covered[ck].add(part[0], part[1])
+				}
+				for _, r := range bad[ck] {
+					if rg.R1 <= r && r <= rg.R2 && plan.veto[f] == "" {
+						plan.veto[f] = fmt.Sprintf("it reads %s, an error the sheets calculator cannot hold", grid.FormatRef(sheet, grid.Range{R1: r, C1: c, R2: r, C2: c}))
 					}
-					cells[k], names[k] = entry{v: v}, sheet
-					return
 				}
-				g := at[k]
-				if g == nil {
-					return
-				}
-				if computing[g] || g.pending || !freezable(g.stored) {
-					include(g)
-					return
-				}
-				// A stored result to take; a sample is computed again and
-				// checked, of the formulas the calculator can compute (it
-				// takes the others at their results anyway).
-				if checked < crossCheck && (r-rg.R1)%step == 0 {
-					if ok, _ := computable(calcOf(g), rs, g.sheet); ok {
-						checked++
-						include(g)
-						return
-					}
-				}
-				if !included[g] {
-					plan.frozen[g] = true
-					cells[k], names[k] = entry{v: g.stored}, sheet
-				}
-			})
+			}
 		}
 	}
 
@@ -220,6 +249,7 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 		}
 	}
 	excel := map[*formulaAt]bool{}
+	marked := map[sheetRange]bool{}
 	for len(needs) > 0 {
 		g := needs[len(needs)-1]
 		needs = needs[:len(needs)-1]
@@ -228,10 +258,22 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 		}
 		excel[g] = true
 		inBook[keyOf(g.sheet, g.row, g.col)] = true
-		for _, k := range reads[g] {
-			inBook[k] = true
-			if h := at[k]; h != nil && included[h] && !excel[h] {
-				needs = append(needs, h)
+		for _, sr := range reads[g] {
+			if marked[sr] {
+				continue
+			}
+			marked[sr] = true
+			for r := sr.rg.R1; r <= sr.rg.R2; r++ {
+				for c := sr.rg.C1; c <= sr.rg.C2; c++ {
+					k := cellKey{sr.sheet, r, c}
+					if _, ok := cells[k]; !ok {
+						continue
+					}
+					inBook[k] = true
+					if h := at[k]; h != nil && included[h] && !excel[h] {
+						needs = append(needs, h)
+					}
+				}
 			}
 		}
 	}
@@ -343,6 +385,42 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 	return f, plan, release, nil
 }
 
+// rowSpans are the rows of a column read so far, as sorted, separate
+// spans.
+type rowSpans struct{ spans [][2]int }
+
+// missing lists the parts of rows r1..r2 not read yet.
+func (sp *rowSpans) missing(r1, r2 int) [][2]int {
+	var out [][2]int
+	at := r1
+	i := sort.Search(len(sp.spans), func(i int) bool { return sp.spans[i][1] >= r1 })
+	for ; i < len(sp.spans) && at <= r2; i++ {
+		x := sp.spans[i]
+		if x[0] > r2 {
+			break
+		}
+		if x[0] > at {
+			out = append(out, [2]int{at, x[0] - 1})
+		}
+		at = max(at, x[1]+1)
+	}
+	if at <= r2 {
+		out = append(out, [2]int{at, r2})
+	}
+	return out
+}
+
+// add marks rows r1..r2 read.
+func (sp *rowSpans) add(r1, r2 int) {
+	i := sort.Search(len(sp.spans), func(i int) bool { return sp.spans[i][1] >= r1-1 })
+	j := i
+	for j < len(sp.spans) && sp.spans[j][0] <= r2+1 {
+		r1, r2 = min(r1, sp.spans[j][0]), max(r2, sp.spans[j][1])
+		j++
+	}
+	sp.spans = append(sp.spans[:i], append([][2]int{{r1, r2}}, sp.spans[j:]...)...)
+}
+
 // nameOf spells a defined name as the workbook does.
 func nameOf(wb *grid.Workbook, lower string) string {
 	for _, n := range wb.Names {
@@ -405,7 +483,7 @@ var aggregate = regexp.MustCompile(`^(?i)(SUM|COUNT|COUNTA|AVERAGE|MIN|MAX)\((.+
 
 // aggregateOf reads a formula that is an aggregate of references alone.
 func aggregateOf(text string) (string, []formula.RefUse, bool) {
-	text = strings.ReplaceAll(text, " ", "")
+	text = dropSpaces(text)
 	m := aggregate.FindStringSubmatch(text)
 	if m == nil {
 		return "", nil, false
@@ -422,66 +500,159 @@ func aggregateOf(text string) (string, []formula.RefUse, bool) {
 	return strings.ToUpper(m[1]), uses, true
 }
 
+// dropSpaces drops the spaces of a formula outside quoted sheet names and
+// strings.
+func dropSpaces(s string) string {
+	if !strings.Contains(s, " ") {
+		return s
+	}
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == ' ':
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
 // nativeAggregates computes aggregates of references straight from the
 // values the calculation workbook holds: for the totals of large tables,
 // the calculator walks every cell of its range, slowly. value gives a
 // cell's value, false for a formula whose result is unknown.
+//
+// Formulas are computed top to bottom, so ranges that start alike and grow
+// (running totals, =SUM($B$2:B9)) are each scanned on from where the one
+// before stopped.
 func nativeAggregates(usedNow func(sheet string) grid.Range, value func(j *judge, sheet string, r, c int) (grid.Cell, bool)) func(j *judge, f *formulaAt) (grid.Cell, bool) {
+	type scanKey struct {
+		sheet      string
+		r1, c1, c2 int
+	}
+	scans := map[scanKey]*aggScan{}
 	return func(j *judge, f *formulaAt) (grid.Cell, bool) {
 		fn, uses, ok := aggregateOf(calcOf(f))
 		if !ok {
 			return grid.Cell{}, false
 		}
-		var sum, low, high float64
-		n, filled := 0, 0
+		var total aggScan
 		for _, u := range uses {
 			sheet := u.Sheet
 			if sheet == "" {
 				sheet = f.sheet
 			}
 			rg := u.Range.Intersect(usedNow(sheet))
-			for r := rg.R1; r <= rg.R2 && !rg.Empty(); r++ {
-				for c := rg.C1; c <= rg.C2; c++ {
-					v, ok := value(j, sheet, r, c)
-					if !ok {
-						return grid.Cell{}, false
-					}
-					switch v.Kind {
-					case grid.Error:
-						return v, true
-					case grid.Number:
-						if n == 0 || v.Num < low {
-							low = v.Num
-						}
-						if n == 0 || v.Num > high {
-							high = v.Num
-						}
-						sum += v.Num
-						n++
-						filled++
-					case grid.Text, grid.Bool:
-						filled++
-					}
-				}
+			if rg.Empty() {
+				continue
 			}
-		}
-		switch fn {
-		case "SUM":
-			return grid.Cell{Kind: grid.Number, Num: sum}, true
-		case "COUNT":
-			return grid.Cell{Kind: grid.Number, Num: float64(n)}, true
-		case "COUNTA":
-			return grid.Cell{Kind: grid.Number, Num: float64(filled)}, true
-		case "AVERAGE":
-			if n == 0 {
-				return grid.Cell{Kind: grid.Error, Text: "#DIV/0!"}, true
+			k := scanKey{strings.ToLower(sheet), rg.R1, rg.C1, rg.C2}
+			sc := scans[k]
+			if sc == nil || sc.r2 > rg.R2 {
+				sc = &aggScan{r2: rg.R1 - 1}
 			}
-			return grid.Cell{Kind: grid.Number, Num: sum / float64(n)}, true
-		case "MIN":
-			return grid.Cell{Kind: grid.Number, Num: low}, true
-		case "MAX":
-			return grid.Cell{Kind: grid.Number, Num: high}, true
+			if !sc.extend(rg, func(r, c int) (grid.Cell, bool) { return value(j, sheet, r, c) }) {
+				delete(scans, k) // read in part: of no use to the next
+				return grid.Cell{}, false
+			}
+			scans[k] = sc
+			total.add(sc, fn)
 		}
-		return grid.Cell{}, false
+		return total.result(fn)
 	}
+}
+
+// aggScan is what an aggregate has read of a range, rows R1 to r2.
+type aggScan struct {
+	r2        int
+	sum       float64
+	low, high float64
+	n, filled int        // numbers; cells holding anything
+	err       *grid.Cell // the first error, in reading order
+}
+
+// extend reads on to the last row of rg; false when a value is unknown.
+func (sc *aggScan) extend(rg grid.Range, value func(r, c int) (grid.Cell, bool)) bool {
+	for r := sc.r2 + 1; r <= rg.R2; r++ {
+		for c := rg.C1; c <= rg.C2; c++ {
+			v, ok := value(r, c)
+			if !ok {
+				return false
+			}
+			switch v.Kind {
+			case grid.Error:
+				if sc.err == nil {
+					e := v
+					sc.err = &e
+				}
+				sc.filled++
+			case grid.Number:
+				if sc.n == 0 || v.Num < sc.low {
+					sc.low = v.Num
+				}
+				if sc.n == 0 || v.Num > sc.high {
+					sc.high = v.Num
+				}
+				sc.sum += v.Num
+				sc.n++
+				sc.filled++
+			case grid.Text, grid.Bool:
+				sc.filled++
+			}
+		}
+		sc.r2 = r
+	}
+	return true
+}
+
+// add takes in another range's scan, for an aggregate of several.
+func (sc *aggScan) add(o *aggScan, fn string) {
+	if sc.err == nil && o.err != nil {
+		sc.err = o.err
+	}
+	if o.n > 0 {
+		if sc.n == 0 || o.low < sc.low {
+			sc.low = o.low
+		}
+		if sc.n == 0 || o.high > sc.high {
+			sc.high = o.high
+		}
+	}
+	sc.sum += o.sum
+	sc.n += o.n
+	sc.filled += o.filled
+}
+
+// result is the aggregate's value, as Excel gives it: errors pass COUNT
+// by and count for COUNTA; the others give the first.
+func (sc *aggScan) result(fn string) (grid.Cell, bool) {
+	if sc.err != nil && fn != "COUNT" && fn != "COUNTA" {
+		return *sc.err, true
+	}
+	switch fn {
+	case "SUM":
+		return grid.Cell{Kind: grid.Number, Num: sc.sum}, true
+	case "COUNT":
+		return grid.Cell{Kind: grid.Number, Num: float64(sc.n)}, true
+	case "COUNTA":
+		return grid.Cell{Kind: grid.Number, Num: float64(sc.filled)}, true
+	case "AVERAGE":
+		if sc.n == 0 {
+			return grid.Cell{Kind: grid.Error, Text: "#DIV/0!"}, true
+		}
+		return grid.Cell{Kind: grid.Number, Num: sc.sum / float64(sc.n)}, true
+	case "MIN":
+		return grid.Cell{Kind: grid.Number, Num: sc.low}, true
+	case "MAX":
+		return grid.Cell{Kind: grid.Number, Num: sc.high}, true
+	}
+	return grid.Cell{}, false
 }

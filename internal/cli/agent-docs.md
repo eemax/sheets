@@ -222,8 +222,8 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     sheets convert book.xlsx sales.csv --sheet Sales
 
 - A .csv or .tsv file is one sheet named after the file. Reading commands,
-  `write`, `set`, `sort`, `replace`, `clear`, `copy`, `move` and rows work
-  on it directly. Its delimiter (also `;` with decimal commas), encoding
+  `write`, `set`, `sort`, `replace`, `clear`, `copy`, `move`, `rows` and
+  `cols` work on it directly. Its delimiter (also `;` with decimal commas), encoding
   and line breaks are kept, and rows no edit touched stay byte for byte.
 - A CSV file holds values only: formulas are saved as their results, and
   formatting, charts or more sheets need `convert` to .xlsx first.
@@ -390,7 +390,8 @@ the time. The copy is used only for exactly the same file contents.
 
 Writing values, inserting and deleting rows, and appending to a table
 rewrite only the sheets they change, so they stay quick on large files:
-about a second for one cell of a 200,000-row sheet. Other edits (styling,
+about a second for one cell of a 200,000-row sheet (three the first time
+the file is read). Other edits (styling,
 columns, sheets, copy, move, sort), and listing styling (`cond --list`,
 `style --show`, `view`), load the whole workbook, which takes several
 seconds at that size. Put a large file's styling into one `do` batch.
