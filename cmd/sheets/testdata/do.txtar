@@ -1,0 +1,118 @@
+# do: many commands, one save, one undo step; nothing saved on an error.
+stdin build.sh
+exec sheets do report.xlsx
+cmp stdout build.out
+exec sheets read report.xlsx Sales
+cmp stdout sales.out
+exec sheets undo report.xlsx --list
+stdout -count=1 'sheets do report.xlsx'
+
+# The first error stops the batch, and the file is left as it was.
+stdin broken.sh
+! exec sheets do report.xlsx
+stdout '^> set Sales!B2 100$'
+stderr 'line 3 \(set Sales!E9 ''=SUM\(''\): Sales!E9: =SUM\( is not a valid formula: the \( at position 5 is not closed; nothing was saved'
+exec sheets read report.xlsx Sales!B2
+stdout '^2\t2$'
+
+# A dry run shows everything and saves nothing.
+stdin small.sh
+exec sheets do report.xlsx --dry-run
+stdout 'Sales!B2 ← 50'
+stdout '^2\t1500$'
+stdout '^dry run: 3 commands, nothing was saved$'
+exec sheets read report.xlsx Sales!B2
+stdout '^2\t2$'
+
+# JSON gathers each command's output.
+stdin small.sh
+exec sheets do report.xlsx --json
+stdout '"saved":true'
+stdout '"command":"set Sales!B2 50","output":\{"file":"report.xlsx","cells":\[\{"ref":"Sales!B2","input":"50","cells":1\}\]\}'
+
+# A check that finds problems reports them; the batch goes on and saves.
+stdin lint.sh
+exec sheets do report.xlsx
+stdout 'error  Sales!G2  1 cell shows #DIV/0!'
+stdout '^saved report.xlsx: 2 commands, one undo step; problems found by line 2 \(lint\)$'
+exec sheets read report.xlsx Sales!G2
+stdout '#DIV/0!'
+
+# Commands as arguments.
+exec sheets do report.xlsx 'set Sales!G2 7' 'read Sales!G2'
+stdout '^2\t7$'
+stdout 'saved report.xlsx: 2 commands'
+
+# A script from a file; commands that do not run in a batch.
+exec sheets do report.xlsx -f small.sh
+stdout 'saved report.xlsx: 3 commands, one undo step'
+stdin undo.sh
+! exec sheets do report.xlsx
+stderr 'undo does not run in a batch: run it after the batch'
+stdin other.sh
+! exec sheets do report.xlsx
+stderr 'a batch works on report.xlsx only; this line names other.xlsx'
+! exec sheets do report.xlsx -f missing.sh
+stderr 'missing.sh'
+
+-- build.sh --
+# A report from CSV, styled, in one go.
+sheets write Sales!A1 -i sales.csv
+write Sales!D1 <<END
+Revenue
+=B{r}*C{r}
+=B{r}*C{r}
+END
+fmt
+style 'Sales[#Headers]' fill=darkblue
+cond 'Sales[Revenue]' '>= 100' fill=lightgreen
+view Sales --freeze A2
+read Sales!D2:D3
+-- sales.csv --
+Region,Units,Price
+East,2,30
+West,5,40
+-- build.out --
+> sheets write Sales!A1 -i sales.csv
+wrote 3 rows × 3 cols to Sales!A1:C3 (new file)
+types: B integer, C integer
+> write Sales!D1 <<END
+wrote 3 rows × 1 col to Sales!D1:D3
+types: D formula
+formulas: D2 = 60, D3 = 200
+> fmt
+formatted report.xlsx · preset default
+Sales  table A1:D3: Region text, Units integer, Price integer, Revenue integer
+> style 'Sales[#Headers]' fill=darkblue
+styled Sales!A1:D1: fill=darkblue
+> cond 'Sales[Revenue]' '>= 100' fill=lightgreen
+Sales!D2:D3: '>= 100' fill=lightgreen
+> view Sales --freeze A2
+Sales: frozen at A2, gridlines off, zoom 100%, filter A1:D3, active
+> read Sales!D2:D3
+Sales!D2:D3
+	D
+2	60
+3	200
+saved report.xlsx: 7 commands, one undo step
+-- sales.out --
+Sales!A1:D3
+	A	B	C	D
+1	Region	Units	Price	Revenue
+2	East	2	30	60
+3	West	5	40	200
+-- broken.sh --
+set Sales!B2 100
+read Sales!B2
+set Sales!E9 '=SUM('
+-- small.sh --
+set Sales!B2 50
+sheets set report.xlsx Sales!C9 note
+read Sales!D2
+-- lint.sh --
+set Sales!G2 '=1/0'
+lint
+-- undo.sh --
+undo
+-- other.sh --
+set other.xlsx A1 5

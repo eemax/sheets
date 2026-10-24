@@ -50,13 +50,35 @@ sheets skill --install    # teach Claude Code to use it (~/.claude/skills/sheets
 | `set <file> <cell> <value>...` | Sets cells or formulas; a range fills down with shifted references |
 | `rows insert\|delete`, `cols insert\|delete` | Insert or delete rows and columns; references follow, and broken ones become `#REF!` and are reported |
 | `sheet add\|rename\|delete\|copy\|move\|hide\|show` | Manage sheets; renaming updates every reference, deleting refuses while it is referenced |
-| `fmt <file>` | Strips formatting and applies the house style; `--preset finance`, `--as COL=type`, `--check` |
+| `fmt <file>` | Strips formatting and applies the house style, keeping what style, cond and view set; `--preset finance`, `--as COL=type`, `--check`, `--reset` |
+| `style <file> <target> <prop>...` | Fills, fonts, number formats, borders, alignment, widths, merges on cells; `--show` prints how cells look, `--list` the record fmt keeps |
+| `cond <file> <target> <condition>` | Conditional formats: comparisons, top/bottom, averages, duplicates, text, formulas, colour scales, data bars, icons; `--list`, `--clear` |
+| `validate <file> <target> <rule>` | Data validation: dropdown lists, number, date and length limits, formulas; `--prompt`, `--error`, `--warn`, `--list`, `--clear` |
+| `view <file> [sheet]` | Freeze panes, tab colour, gridlines, zoom, hidden rows and columns, filter buttons, active sheet |
+| `do <file>` | Runs a script of commands against one file: one save, one undo step, nothing saved on an error |
 | `undo <file>` | Restores the file to before the last change sheets made; `--list` |
 | `agent-docs` | Prints the guide for agents (also in [internal/cli/agent-docs.md](internal/cli/agent-docs.md)) |
 | `skill` | Prints or installs (`--install`) the Claude Code skill |
 
 Every command takes `--json`, and every command that changes a file takes
 `--dry-run`.
+
+`style`, `cond` and `validate` take a range, a sheet, or a table reference
+in Excel's syntax, named by a sheet holding one table or by an Excel table:
+`Sales[Revenue]`, `Sales[[Units]:[Revenue]]`, `Sales[#Headers]`,
+`Sales[#Totals]`, `Sales[[#Totals],[Units]]`.
+
+```bash
+sheets do report.xlsx <<'EOF'
+write Sales!A1 -i sales.csv
+fmt
+style 'Sales[#Headers]' fill=lightblue
+style 'Sales[Revenue]' format=currency decimals=0
+cond 'Sales[Margin]' '< 0' color=red bold
+validate 'Sales[Region]' list North,South,East,West
+view Sales --freeze B2
+EOF
+```
 
 ### Formulas
 
@@ -143,9 +165,32 @@ contents:
 The `finance` preset adds the banking color code: blue for typed-in
 numbers, black for formulas, green for references to other sheets.
 
-Formatting depends only on the cell contents, so `fmt` is idempotent and
-`fmt --check` works in CI. Column types are inferred, and `--as Revenue=currency`
-overrides them. The choice is saved in the file, so later runs keep it.
+Formatting depends only on the cell contents and the recorded styling
+(below), so `fmt` is idempotent and `fmt --check` works in CI. Column types
+are inferred, and `--as Revenue=currency` overrides them. The choice is
+saved in the file, so later runs keep it.
+
+### Styling on request
+
+`style`, `cond` and `view` change what the user asks for on top of the
+house style, and record it in the workbook so that `fmt` keeps it: each
+entry is a hidden defined name whose range follows inserted and deleted
+rows and columns (in Excel too), with what was applied as its comment
+(`_sheets.000003` → `Sales!$A$1:$F$1`, "style fill=lightblue bold"). Every
+`fmt` strips formatting as before, then lays the recorded styling over the
+house style; recorded conditional formats stay where they are. `fmt
+--reset` drops the record.
+
+- A fill without a text colour gets black or white text, whichever has the
+  contrast to read.
+- A number format given a table column (`Sales[Revenue]`) reaches its total
+  row. Rows added with `write --append` take the look, conditional formats
+  and validation of the rows above, as Excel extends a list's formats.
+- Conditional format formulas follow inserted and deleted rows and columns,
+  as in Excel (excelize moves only their ranges), and highlights take
+  priority over the banding.
+- `style --show` describes cells in the same properties `style` takes, so
+  an agent can check a result without rendering it.
 
 Formula columns take the type of what they compute from: `=Units*Price` is
 currency when Price is, and `=Start+30` is a date. Divisions and date
@@ -182,12 +227,33 @@ differences stay plain numbers.
   - moving rows keeps the namespace declarations of chart drawings, which
     excelize drops
   - dynamic arrays get the cell metadata Excel 365 expects
-- Formula values: after `sheets` writes a file, it marks the file for
-  recalculation, and its cached results are treated as stale. `sheets`
-  computes them with excelize's calculator and Excel recalculates on open.
-  Calls to functions that don't exist show `#NAME?`. Real Excel functions
-  the calculator lacks (LET, LAMBDA, FILTER, ...) show `?`: Excel computes
-  them.
+- Formula results: a file `sheets` saves never stores a stale result.
+  When saving, it follows the dependencies from every changed cell, and
+  from rows, columns or sheets that moved. It recomputes each formula
+  reached with excelize's calculator and stores the result, so pandas,
+  previews and other tools read what Excel would show.
+  - Table references and LET are computed by translating them for the
+    calculator (into cell ranges, and LET's names inlined), in a copy of the
+    workbook.
+  - A formula the calculator can't evaluate (LAMBDA, FILTER, XMATCH, ...;
+    array arithmetic over ranges, such as `SUMPRODUCT((A2:A9="East")*B2:B9)`,
+    which it gets wrong; or one holding an error like `#REF!`, which it
+    misreads) loses its stored result instead of keeping a wrong one, and
+    Excel computes it on open.
+  - The calculator recomputes everything a formula reads, silently: so a
+    result is trusted only when everything under it is computable, free of
+    circular references, and agrees with every result Excel stored on the
+    way. A formula the calculator can't evaluate, whose stored result
+    still holds, stands at that result for what reads it.
+  - excelize gives every result as text, so a small type checker works out
+    whether "005" is text (`TEXT(...)`) or a number, and whether "1" is
+    TRUE; a result it can't type is left to Excel.
+  - Results that only Excel can update, from links to other workbooks, are
+    kept. Charts drawing
+  changed cells drop their cached copy of the data. The file is still
+  flagged for Excel to recalculate. A fingerprint stamp tells `sheets`
+  itself that the stored results are current; an edit by another tool voids
+  the stamp. Calls to functions that don't exist show `#NAME?`.
 - `internal/analyze` finds the structure: blocks of cells, titles, header
   and total rows, column profiles, and formula patterns
   (`=D{r}-E{r}`).
@@ -204,6 +270,9 @@ differences stay plain numbers.
 - `render` approximates Excel: other fonts stand in for Calibri, and
   conditional formats other than banding and Excel table styles are not
   drawn.
+- `do` re-reads and re-writes the workbook in memory for each command: fine
+  for ordinary files, slow for a batch of many commands on a file with
+  hundreds of thousands of rows.
 - Deleting rows goes through excelize one row at a time. A few rows take
   about a second, but a thousand rows from a 20,000-row sheet take about 15
   seconds.
@@ -222,3 +291,6 @@ another producer.
 
 `scripts/excel-check.sh` builds a set of workbooks and a checklist for a
 manual look in real Excel. That's the one check the test suite can't do.
+
+[docs/deferred.md](docs/deferred.md) lists work we chose not to do yet, and
+why.

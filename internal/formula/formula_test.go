@@ -172,3 +172,39 @@ func TestRefsAndNumbers(t *testing.T) {
 		t.Errorf("Numbers = %v", nums)
 	}
 }
+
+func TestCheck(t *testing.T) {
+	for f, ok := range map[string]bool{
+		"=SUM(A1:A3)":                          true,
+		"=IF(A1=\"x)\",1,0)":                   true,
+		"='My Sheet'!A1+'It''s'!B2":            true,
+		"=SUM(Sales[Units])":                   true,
+		"=Sales[[#Totals],[Units]]":            true,
+		"=SUM(T[Col'[1']])":                    true,
+		"=T[It''s]":                            true,
+		"=SUM({1,2;3,4})":                      true,
+		"=A1%":                                 true,
+		"=SUM(A1,)":                            true,
+		"=-A1":                                 true,
+		"=[1]Sheet1!A1":                        true,
+		"=LET(x,1,x+1)":                        true,
+		"=SUM(":                                false,
+		"=SUM(A1))":                            false,
+		"=A1+":                                 false,
+		"=\"abc":                               false,
+		"='My Sheet!A1":                        false,
+		"=":                                    false,
+		"=SUM(A1:A3":                           false,
+		"={1,2":                                false,
+		"=Sales[Units":                         false,
+		"=A1:":                                 false,
+		"=(A1+B1)*(C1":                         false,
+		"=IF(A1>0,\"yes\",\"no\")":             true,
+		"=TEXT(A1,\"#,##0\")&\" units\"":       true,
+		"=SUMIFS(C:C,A:A,\"East\",B:B,\">2\")": true,
+	} {
+		if err := Check(f); (err == nil) != ok {
+			t.Errorf("Check(%q) = %v, want ok=%v", f, err, ok)
+		}
+	}
+}

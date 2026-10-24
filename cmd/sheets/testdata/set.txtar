@@ -13,7 +13,7 @@ exec sheets set book.xlsx D3 =NOPE(A3)
 stdout '1 formula error: Sheet1!D3 #NAME\? \(unknown function NOPE\)'
 
 # A real Excel function the calculator lacks is not an error.
-exec sheets set book.xlsx D4 '=LET(x,A2,x*2)'
+exec sheets set book.xlsx D4 '=XMATCH(3,A2:A3)'
 stdout 'not evaluated: Sheet1!D4: .*Excel computes it on open'
 ! stdout 'formula error'
 

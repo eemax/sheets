@@ -19,6 +19,7 @@ import (
 func (e *Editor) InsertRows(sheet string, at, n int) error {
 	err := e.relines(sheet, false,
 		func(f, home string) string { return formula.InsertLines(f, home, sheet, false, at, n) },
+		func(rg grid.Range) bool { return rg.R1 < at && at <= rg.R2 },
 		func(r, c int) (int, int, bool) {
 			if r >= at {
 				r += n
@@ -27,6 +28,9 @@ func (e *Editor) InsertRows(sheet string, at, n int) error {
 		},
 		func() error { return e.f.InsertRows(sheet, at, n) })
 	if err != nil {
+		return err
+	}
+	if err := e.movePanes(sheet, false, at, at+n-1, true); err != nil {
 		return err
 	}
 	e.shiftExtent(sheet, func(r grid.Range) grid.Range {
@@ -47,6 +51,9 @@ func (e *Editor) DeleteRows(sheet string, from, to int) error {
 		return err
 	}
 	if err := e.deleteLines(sheet, false, from, to); err != nil {
+		return err
+	}
+	if err := e.movePanes(sheet, false, from, to, false); err != nil {
 		return err
 	}
 	n := to - from + 1
@@ -70,6 +77,7 @@ func (e *Editor) InsertCols(sheet string, at, n int) error {
 	}
 	err := e.relines(sheet, true,
 		func(f, home string) string { return formula.InsertLines(f, home, sheet, true, at, n) },
+		func(rg grid.Range) bool { return rg.C1 < at && at <= rg.C2 },
 		func(r, c int) (int, int, bool) {
 			if c >= at {
 				c += n
@@ -78,6 +86,9 @@ func (e *Editor) InsertCols(sheet string, at, n int) error {
 		},
 		func() error { return e.f.InsertCols(sheet, grid.ColName(at), n) })
 	if err != nil {
+		return err
+	}
+	if err := e.movePanes(sheet, true, at, at+n-1, true); err != nil {
 		return err
 	}
 	e.shiftExtent(sheet, func(r grid.Range) grid.Range {
@@ -100,6 +111,9 @@ func (e *Editor) DeleteCols(sheet string, from, to int) error {
 	if err := e.deleteLines(sheet, true, from, to); err != nil {
 		return err
 	}
+	if err := e.movePanes(sheet, true, from, to, false); err != nil {
+		return err
+	}
 	n := to - from + 1
 	e.shiftExtent(sheet, func(r grid.Range) grid.Range {
 		switch {
@@ -114,11 +128,40 @@ func (e *Editor) DeleteCols(sheet string, from, to int) error {
 	return nil
 }
 
+// movePanes keeps frozen rows and columns frozen across lines from..to
+// inserted or deleted, as Excel does: lines among the frozen ones move the
+// split.
+func (e *Editor) movePanes(sheet string, cols bool, from, to int, insert bool) error {
+	p, err := e.f.GetPanes(sheet)
+	if err != nil || !p.Freeze {
+		return err
+	}
+	split := &p.YSplit
+	if cols {
+		split = &p.XSplit
+	}
+	if *split == 0 || from > *split {
+		return nil
+	}
+	if insert {
+		*split += to - from + 1
+	} else {
+		*split -= min(to, *split) - from + 1
+	}
+	return freeze(e.f, sheet, grid.Range{R1: p.YSplit + 1, C1: p.XSplit + 1, R2: p.YSplit + 1, C2: p.XSplit + 1})
+}
+
 // deleteLines removes rows or columns from..to.
 func (e *Editor) deleteLines(target string, cols bool, from, to int) error {
 	n := to - from + 1
 	return e.relines(target, cols,
 		func(f, home string) string { return formula.DeleteLines(f, home, target, cols, from, to) },
+		func(rg grid.Range) bool {
+			if cols {
+				return rg.C1 <= to && rg.C2 >= from
+			}
+			return rg.R1 <= to && rg.R2 >= from
+		},
 		func(r, c int) (int, int, bool) {
 			line := r
 			if cols {
@@ -158,35 +201,60 @@ func (e *Editor) deleteLines(target string, cols bool, from, to int) error {
 // rewritten in one pass (rewrite gets the formula and the sheet holding it),
 // and put back where move says their cell went once op has moved cells,
 // names, merges, conditional formats, validations, filters and tables.
-func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) string, move func(r, c int) (int, int, bool), op func() error) error {
-	type moved struct {
-		sheet    string
-		row, col int
-		f        string
+//
+// hit tells whether a range on the target sheet takes in, or spans, the
+// lines that come or go: the result of a formula reading such a range can
+// change, and is recomputed when saving.
+func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) string, hit func(grid.Range) bool, move func(r, c int) (int, int, bool), op func() error) error {
+	rs := e.resolver()
+	now, err := e.formulasNow()
+	if err != nil {
+		return err
 	}
-	var keep []moved
-	for _, s := range e.wb.Sheets {
-		var cells [][2]int
-		s.Each(s.Used(), func(r, c int, cell *grid.Cell) {
-			if cell.Formula == "" {
-				return
-			}
-			cells = append(cells, [2]int{r, c})
-			m := moved{sheet: s.Name, row: r, col: c, f: rewrite(cell.Formula, s.Name)}
-			if s.Name == target {
-				var ok bool
-				if m.row, m.col, ok = move(r, c); !ok {
-					return
-				}
-			}
-			keep = append(keep, m)
-		})
-		// Bottom-right first, so a shared formula's anchor goes last.
-		for i := len(cells) - 1; i >= 0; i-- {
-			if err := e.f.SetCellFormula(s.Name, grid.CellName(cells[i][0], cells[i][1]), ""); err != nil {
-				return err
+	var all []*formulaAt
+	for _, f := range now {
+		all = append(all, f)
+	}
+	// Bottom-right first, so a shared formula's anchor goes last.
+	sort.Slice(all, func(i, j int) bool {
+		a, b := all[i], all[j]
+		if a.sheet != b.sheet {
+			return a.sheet < b.sheet
+		}
+		if a.row != b.row {
+			return a.row > b.row
+		}
+		return a.col > b.col
+	})
+	var keep []formulaAt
+	recompute := map[cellKey]bool{}
+	for _, f := range all {
+		if err := e.f.SetCellFormula(f.sheet, grid.CellName(f.row, f.col), ""); err != nil {
+			return err
+		}
+		m := formulaAt{sheet: f.sheet, row: f.row, col: f.col, text: rewrite(f.text, f.sheet), pending: f.pending, stored: f.stored}
+		if strings.EqualFold(f.sheet, target) {
+			var ok bool
+			if m.row, m.col, ok = move(f.row, f.col); !ok {
+				continue
 			}
 		}
+		keep = append(keep, m)
+		if e.recompute[keyOf(f.sheet, f.row, f.col)] || movedResult(rs, f.sheet, f.row, f.col, f.text, target, hit) {
+			recompute[keyOf(m.sheet, m.row, m.col)] = true
+		}
+	}
+	// Cells written earlier in the session move with their rows too.
+	changed := map[cellKey]string{}
+	for k, sheet := range e.changed {
+		if k.sheet == strings.ToLower(target) {
+			r, c, ok := move(k.row, k.col)
+			if !ok {
+				continue
+			}
+			k.row, k.col = r, c
+		}
+		changed[k] = sheet
 	}
 	// Names: excelize shifts them, but cannot parse LET names either; and
 	// it would point names into deleted lines at their neighbours. Built-in
@@ -208,6 +276,7 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 	}
 	// Chart ranges are always sheet-qualified.
 	e.patches.rangeRewrites = append(e.patches.rangeRewrites, func(f string) string { return rewrite(f, "") })
+	e.patches.ruleRewrites = append(e.patches.ruleRewrites, rewrite)
 	for _, n := range names {
 		n.RefersTo = rewrite(n.RefersTo, "")
 		if err := e.f.SetDefinedName(&n); err != nil {
@@ -215,13 +284,91 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 		}
 	}
 	for _, m := range keep {
-		if err := e.setFormula(m.sheet, grid.CellName(m.row, m.col), m.f); err != nil {
+		if err := e.setFormula(m.sheet, grid.CellName(m.row, m.col), m.text); err != nil {
 			return err
 		}
 	}
+	e.lines, e.recompute, e.changed = keep, recompute, changed
 	e.structural = true
 	e.forgetPositions()
 	return nil
+}
+
+// sheetEdit notes a sheet renamed (to is the new name), deleted (to is
+// ""), or copied (copy is set), keeping what the session tracks for
+// recomputing results in step: the formulas where they stand, and the
+// cells written.
+func (e *Editor) sheetEdit(from, to string, copy bool, rewrite func(string) string) {
+	e.sheetsChanged = true
+	if e.lines != nil {
+		var lines []formulaAt
+		for _, l := range e.lines {
+			mine := strings.EqualFold(l.sheet, from)
+			if copy && mine {
+				c := l
+				c.sheet = to
+				lines = append(lines, c)
+			}
+			if mine && !copy {
+				if to == "" {
+					continue
+				}
+				l.sheet = to
+			}
+			if rewrite != nil {
+				l.text = rewrite(l.text)
+			}
+			lines = append(lines, l)
+		}
+		e.lines = lines
+	}
+	if copy {
+		return
+	}
+	move := func(k cellKey) (cellKey, bool) {
+		if k.sheet != strings.ToLower(from) {
+			return k, true
+		}
+		k.sheet = strings.ToLower(to)
+		return k, to != ""
+	}
+	changed := map[cellKey]string{}
+	for k, sheet := range e.changed {
+		if k2, ok := move(k); ok {
+			if k2 != k {
+				sheet = to
+			}
+			changed[k2] = sheet
+		}
+	}
+	recompute := map[cellKey]bool{}
+	for k := range e.recompute {
+		if k2, ok := move(k); ok {
+			recompute[k2] = true
+		}
+	}
+	e.changed, e.recompute = changed, recompute
+}
+
+// movedResult tells whether moving lines can change a formula's result:
+// it reads a range that takes in or spans them, or depends on positions
+// on the target sheet. (Volatile formulas are recomputed anyway.)
+func movedResult(rs *resolver, sheet string, row, col int, text, target string, hit func(grid.Range) bool) bool {
+	d := formula.DepsOf(text)
+	refs, ok := rs.ranges(sheet, row, col, d, 0)
+	if !ok {
+		return true
+	}
+	onTarget := strings.EqualFold(sheet, target)
+	for _, r := range refs {
+		if strings.EqualFold(r.Sheet, target) {
+			if hit(r.Range) {
+				return true
+			}
+			onTarget = true
+		}
+	}
+	return d.Position && onTarget
 }
 
 // forgetPositions drops cell positions recorded at open, which have moved;
@@ -352,6 +499,7 @@ func (e *Editor) RenameSheet(from, to string) error {
 	e.patches.rangeRewrites = append(e.patches.rangeRewrites, func(f string) string { return formula.RenameSheet(f, from, to) })
 	e.renameState(from, to)
 	e.rewriteSnapshot(func(f string) string { return formula.RenameSheet(f, from, to) })
+	e.sheetEdit(from, to, false, func(f string) string { return formula.RenameSheet(f, from, to) })
 	return nil
 }
 
@@ -434,9 +582,28 @@ func (e *Editor) DeleteSheet(name string) error {
 	if len(e.f.GetSheetList()) == 1 {
 		return fmt.Errorf("cannot delete %q: a workbook needs at least one sheet", name)
 	}
+	// Formulas reading the sheet become #REF!: new results to store.
+	rs := e.resolver()
+	now, err := e.formulasNow()
+	if err != nil {
+		return err
+	}
+	for _, f := range now {
+		if !strings.EqualFold(f.sheet, name) && movedResult(rs, f.sheet, f.row, f.col, f.text, name, func(grid.Range) bool { return true }) {
+			e.mustRecompute(f.sheet, f.row, f.col)
+		}
+	}
+	for _, rec := range e.Records() {
+		if strings.EqualFold(rec.Sheet, name) {
+			if err := dropRecords(e.f, rec.name); err != nil {
+				return err
+			}
+		}
+	}
 	if err := e.f.DeleteSheet(name); err != nil {
 		return err
 	}
+	e.sheetEdit(name, "", false, func(f string) string { return formula.DropSheet(f, name) })
 	e.patches.sheetEdits = append(e.patches.sheetEdits, sheetEdit{from: name})
 	e.patches.rangeRewrites = append(e.patches.rangeRewrites, func(f string) string { return formula.DropSheet(f, name) })
 	e.rewriteSnapshot(func(f string) string { return formula.DropSheet(f, name) })
@@ -475,6 +642,15 @@ func (e *Editor) CopySheet(from, to string) ([]string, error) {
 	if err := e.place(to, "", from); err != nil {
 		return nil, err
 	}
+	// The copy's styling is kept by fmt as the original's is.
+	for _, rec := range e.Records() {
+		if strings.EqualFold(rec.Sheet, from) {
+			rec.Sheet = to
+			if _, err := addRecord(e.f, rec); err != nil {
+				return nil, err
+			}
+		}
+	}
 	var notes []string
 	if e.hasDrawings[from] {
 		notes = append(notes, "charts and pictures are not copied")
@@ -485,6 +661,7 @@ func (e *Editor) CopySheet(from, to string) ([]string, error) {
 		e.wb.Sheets = append(e.wb.Sheets, &cp)
 		e.extent[to] = s.Used()
 	}
+	e.sheetEdit(from, to, true, nil)
 	return notes, nil
 }
 

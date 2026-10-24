@@ -1,6 +1,9 @@
 package formula
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // classic lists the functions of the Excel 2007 file format; together with
 // the future functions they are every function Excel knows. A call to
@@ -81,4 +84,36 @@ func LambdaFamily(f string) string {
 		}
 	}
 	return ""
+}
+
+// Functions lists every function Excel knows, by its plain name.
+func Functions() []string {
+	out := make([]string, 0, len(classic)+len(future))
+	for f := range classic {
+		out = append(out, f)
+	}
+	for f := range future {
+		out = append(out, f)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// CalledFunctions lists the functions a formula calls, by plain name, upper
+// case; names that are not Excel functions (a LAMBDA kept in a workbook
+// name) included.
+func CalledFunctions(f string) []string {
+	var out []string
+	seen := map[string]bool{}
+	ts := lex(f)
+	for i, t := range ts {
+		if !t.call || i > 0 && ts[i-1].text == "!" {
+			continue
+		}
+		if n := strings.ToUpper(bare(t.text)); !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
 }

@@ -24,6 +24,7 @@ func (a *app) fmtCmd() *cobra.Command {
 		sheets []string
 		as     []string
 		list   bool
+		reset  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "fmt <file>",
@@ -33,9 +34,10 @@ row with filters, banded data rows, thin borders, a bold total row, frozen
 header, fitted column widths and consistent number formats (thousands
 separators, negatives in parentheses, ISO dates).
 
-Formatting depends only on the cell contents, so running fmt twice changes
-nothing and --check can verify a file in CI (exit status 1 when it would
-change).
+Formatting depends only on the cell contents and the styling recorded by
+sheets style, cond and view, which fmt lays over the house style (--reset
+drops it). Running fmt twice changes nothing, and --check can verify a file
+in CI (exit status 1 when it would change).
 
 Column types are inferred. Override them with --as, by header or letter:
 
@@ -63,7 +65,7 @@ Types: integer, decimal, currency[:symbol], percent, date, datetime, time, text.
 				}
 				return fmt.Errorf("unknown preset %q (presets: %s)", preset, strings.Join(names, ", "))
 			}
-			opts := book.FormatOptions{Preset: p, Sheets: sheets, DryRun: a.dryRun}
+			opts := book.FormatOptions{Preset: p, Sheets: sheets, DryRun: a.dryRun, Reset: reset}
 			for _, s := range as {
 				o, err := parseOverride(s)
 				if err != nil {
@@ -130,6 +132,7 @@ Types: integer, decimal, currency[:symbol], percent, date, datetime, time, text.
 	f.StringArrayVar(&sheets, "sheet", nil, "format only this sheet (repeatable)")
 	f.StringArrayVar(&as, "as", nil, "force a column type: COLUMN=TYPE (repeatable)")
 	f.BoolVar(&list, "list-presets", false, "list style presets")
+	f.BoolVar(&reset, "reset", false, "drop the styling sheets style, cond and view recorded, instead of keeping it")
 	return cmd
 }
 

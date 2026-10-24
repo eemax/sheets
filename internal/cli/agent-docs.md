@@ -31,10 +31,17 @@ command.
 - Values print plainly: ISO dates (2026-07-01), percentages with % (12.5%),
   numbers without thousands separators, TRUE/FALSE, error codes like
   #DIV/0!.
-- Formula results come from the file. After `sheets` has written to a file,
-  Excel has not recalculated it yet, so `sheets` computes the results
-  itself. `?` marks a formula its calculator cannot evaluate (LET, LAMBDA,
-  FILTER and a few others); Excel computes those on open.
+- Formula results come from the file. When `sheets` saves, it recomputes
+  every formula the change reaches and stores the result, so pandas,
+  previews and other tools read current numbers, never stale ones. Table
+  references (`Sales[Units]`, `[@Price]`) and LET are computed. `?` marks a
+  formula the calculator cannot evaluate (LAMBDA, FILTER, XMATCH, OFFSET,
+  array arithmetic such as `SUMPRODUCT((A2:A9="East")*B2:B9)`, and a few
+  others), or one that reads such a formula: it has no stored result until
+  Excel computes it on open, and the output of the change lists it with the
+  reason. Prefer forms it computes (`SUMIFS`, `COUNTIFS`, `SUMPRODUCT` of
+  plain ranges) so you can check the result. Circular references are
+  reported and get no result.
 
 ## SQL queries
 
@@ -63,6 +70,12 @@ command.
 columns `Sheet!A:C`, whole rows `Sheet!5:20`. Sheet names with spaces need
 no inner quotes: `'My Sheet!A1'` is fine (the outer quotes are for the
 shell).
+
+`style`, `cond` and `validate` also take table references in Excel's
+syntax, named by a sheet holding one table or by an Excel table, so you
+need no column letters: `Sales[Revenue]` (the column's data rows),
+`Sales[[Units]:[Revenue]]`, `Sales[#Headers]`, `Sales[#Totals]`,
+`Sales[#All]`, `Sales[[#Totals],[Units]]`.
 
 ## Writing
 
@@ -107,7 +120,26 @@ shell).
   SEQUENCE, ...) are stored as dynamic arrays and spill in Excel; keep the
   cells below and to the right free. Writing into the spill area of an
   existing dynamic array gives a warning (Excel would show #SPILL!).
-- Write data first, then format.
+- Write data first, then `fmt`, then the styling asked for (`style`,
+  `cond`, `validate`, `view`).
+
+## Many changes at once: do
+
+    sheets do report.xlsx <<'EOF'
+    write Sales!A1 -i sales.csv
+    set Sales!F1 Margin Sales!F2:F200 '=E{r}/D{r}'
+    fmt
+    style 'Sales[#Headers]' fill=lightblue
+    cond 'Sales[Margin]' '< 0' color=red
+    EOF
+
+- One command per line, as on the command line without `sheets` and the
+  file. The file is saved once at the end, as one undo step; the first
+  error stops the batch and nothing is saved. Each command sees the
+  changes before it (`read` and `peek` in a batch show them).
+- Data for `write` comes from `-i file`, `< file`, or a here-document in
+  the script (`write Sales!A1 <<END`, the rows, `END`).
+- Use it whenever a change takes more than two or three commands.
 
 ## Rows, columns and sheets
 
@@ -190,7 +222,8 @@ shell).
   the PNG to check formatting or a chart before handing a file over.
 - It approximates Excel: other fonts stand in for Calibri, and conditional
   formats other than banding and Excel table styles are not drawn (the
-  output says so).
+  output says so; `cond --list` shows them). `style --show` lists how
+  cells look, as text.
 
 ## Safety: dry runs and undo
 
@@ -210,7 +243,8 @@ shell).
     sheets fmt book.xlsx --as Revenue=currency --as 'Q3!D=percent'
     sheets fmt book.xlsx --check          # exit 1 if fmt would change anything
 
-`fmt` removes existing formatting and applies one consistent style:
+`fmt` removes existing formatting and applies one consistent style, then
+lays over it what `style`, `cond` and `view` set (see below):
 - a dark header row with filters, labels left-aligned clear of the filter
   buttons
 - banded data rows
@@ -244,6 +278,50 @@ Detection rules:
 - A formula column takes the type of what it computes from: `=Units*Price`
   is currency when Price is, and `=Start+30` is a date. Divisions (ratios)
   and date differences (day counts) stay numbers.
+
+## Styling on request: style, cond, validate, view
+
+    sheets style book.xlsx 'Sales[#Headers]' fill=lightblue bold
+    sheets style book.xlsx 'Sales[Revenue]' format=currency decimals=0
+    sheets style book.xlsx 'Sales[#Totals]' border=top:thin border=bottom:double
+    sheets style book.xlsx Sales!A1 size=16 bold
+    sheets style book.xlsx Sales!A1:F9 --show                 # how cells look, in these terms
+    sheets cond book.xlsx 'Sales[Margin]' '< 0' color=red
+    sheets cond book.xlsx Sales!A2:F200 '=$E2="Late"' fill=lightyellow   # whole rows
+    sheets cond book.xlsx 'Sales[Units]' bars                 # also: scale, icons
+    sheets validate book.xlsx 'Sales[Region]' list North,South,East,West
+    sheets validate book.xlsx 'Sales[Units]' whole '>=' 0 --error 'Units cannot be negative'
+    sheets view book.xlsx Sales --freeze B2 --tab green --hide F:G
+
+- `fmt` keeps what `style`, `cond` and `view` set: they record it in the
+  file (as hidden names that follow inserted and deleted rows), and every
+  `fmt` lays it over the house style again. `style --list` shows the
+  record, `--unrecord N` removes an entry, `fmt --reset` drops it all.
+- Properties: `bold italic underline strike wrap` (`nobold`, ...),
+  `font= size= color= fill=` (`#RRGGBB` or a name: lightblue, lightgreen,
+  lightyellow, lightred, lightgray, darkblue, red, green, blue, ...),
+  `format=TYPE [decimals=N]` (the `--as` types) or an Excel format code,
+  `align=left|center|right|center-across valign=top|middle|bottom indent=
+  rotate=`, `border=SIDES[:STYLE][:COLOR]` (all, outline, inner, top,
+  bottom; thin, medium, thick, double), `width=N|auto height=N`, `merge`,
+  `reset`. A fill without `color=` gets black or white text, whichever
+  reads.
+- A number format on a column (`Sales[Revenue]`) reaches its total row.
+  Rows added with `write --append` take the look, conditional formats and
+  validation of the rows above.
+- `cond` conditions: `'< 0'`, `'>= 100'`, `'= East'`, `'between 1 and
+  10'`, `'top 10'`, `'bottom 5%'`, `'above average'`, `duplicates`,
+  `unique`, `blank`, `errors`, `'contains x'`, `'begins with x'`, a formula
+  for the range's first cell (`'=$E2="Late"'`: the $ keeps column E, so
+  every cell of a row tests that row's E), `scale [red-yellow-green]`,
+  `bars`, `icons`. The look defaults to Excel's light red. Quote anything
+  with < or >.
+- `validate` rules: `list A,B,C`, `list =Lists!$A$2:$A$9`,
+  `whole|number|date|time|length OP X` or `... between X and Y`,
+  `formula =...`; `--prompt`, `--error`, `--warn`.
+- `cond` and `validate` take `--list` (what a sheet has) and `--clear`
+  (remove what lies within the target). `view` with no flags reports the
+  sheet: frozen cell, gridlines, zoom, tab, filter, hidden rows/columns.
 
 ## Large files
 

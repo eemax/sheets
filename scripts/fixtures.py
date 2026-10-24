@@ -3,7 +3,7 @@
 They hold what real files carry: charts, validations, comments, links,
 Excel tables, styling from another tool. Regenerate with:
 
-    uv run --with openpyxl python scripts/fixtures.py internal/xlsx/testdata
+    uv run --with openpyxl --with xlsxwriter python scripts/fixtures.py internal/xlsx/testdata
 """
 import datetime
 import sys
@@ -104,3 +104,36 @@ ws.add_table(table)
 ws["A8"] = "Source: CRM"
 ws["E2"] = "=SUM(SalesT[Units])"
 wb.save(f"{out}/tables.xlsx")
+
+# cached.xlsx: formulas with their results stored, as Excel saves them (no
+# recalculation flag); written with XlsxWriter, which can store results.
+import xlsxwriter
+
+xw = xlsxwriter.Workbook(f"{out}/cached.xlsx")
+data = xw.add_worksheet("Data")
+data.write_row(0, 0, ["Region", "Units"])
+for i, (region, units) in enumerate([("North", 5), ("South", 7), ("East", 3)], 1):
+    data.write_row(i, 0, [region, units])
+data.write("A5", "Total")
+data.write_formula("B5", "=SUM(B2:B4)", None, 15)
+xw.define_name("Rate", "=Data!$D$1")
+data.write("D1", 2)
+summary = xw.add_worksheet("Summary")
+summary.write_formula("A1", "=Data!B5*Rate", None, 30)  # through a total and a name
+summary.write_formula("A2", "=_xlfn.LET(_xlpm.x,Data!B2,_xlpm.x*10)", None, 50)  # computed as Data!B2*10
+summary.write_formula("A3", "=Data!B3+1", None, 8)  # untouched by an edit of B2
+summary.write_formula("A4", "=ROWS(Data!B2:B4)", None, 3)
+summary.write_formula("A5", "=_xlfn.XMATCH(5,Data!B2:B4)", None, 1)  # a function the calculator lacks
+xw.close()
+
+# Excel drops the recalculation flag XlsxWriter sets when it saves.
+import zipfile
+
+path = f"{out}/cached.xlsx"
+with zipfile.ZipFile(path) as z:
+    items = [(i, z.read(i.filename)) for i in z.infolist()]
+with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+    for info, data in items:
+        if info.filename == "xl/workbook.xml":
+            data = data.replace(b' fullCalcOnLoad="1"', b"")
+        z.writestr(info, data)

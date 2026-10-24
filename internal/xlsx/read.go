@@ -9,7 +9,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -22,7 +21,7 @@ import (
 
 // Read loads a workbook from disk.
 func Read(filename string) (*grid.Workbook, error) {
-	data, err := os.ReadFile(filename)
+	data, err := readFile(filename)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +38,7 @@ func Read(filename string) (*grid.Workbook, error) {
 // parsed in the cache, so reading it again skips the parse.
 func ReadBytes(data []byte) (*grid.Workbook, error) {
 	if len(data) < cache.MinSize || cache.Disabled() {
-		wb, _, err := parse(data)
+		wb, _, _, err := parse(data)
 		return wb, err
 	}
 	key := cache.Key("xlsx", data)
@@ -47,13 +46,13 @@ func ReadBytes(data []byte) (*grid.Workbook, error) {
 		wb := &grid.Workbook{}
 		if len(b) > 0 && wb.UnmarshalBinary(b[1:]) == nil {
 			if b[0] == 1 {
-				wb.Resolver = &calc{data: data}
+				wb.Resolver = &calc{data: data, wb: wb}
 			}
 			return wb, nil
 		}
 		cache.Remove(key)
 	}
-	wb, _, err := parse(data)
+	wb, _, _, err := parse(data)
 	if err != nil {
 		return nil, err
 	}
@@ -99,13 +98,15 @@ type tablePart struct {
 // encrypted with a password.
 var oleMagic = []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}
 
-func parse(data []byte) (*grid.Workbook, map[string]*layout, error) {
+// parse reads a package. stamped reports that its stored formula results,
+// though flagged for recalculation, are vouched for by sheets' stamp.
+func parse(data []byte) (wb *grid.Workbook, layouts map[string]*layout, stamped bool, err error) {
 	if bytes.HasPrefix(data, oleMagic) {
-		return nil, nil, fmt.Errorf("file is password-protected or in the legacy .xls format; save it as an unencrypted .xlsx")
+		return nil, nil, false, fmt.Errorf("file is password-protected or in the legacy .xls format; save it as an unencrypted .xlsx")
 	}
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return nil, nil, fmt.Errorf("not an xlsx file: %w", err)
+		return nil, nil, false, fmt.Errorf("not an xlsx file: %w", err)
 	}
 	p := &pkg{files: map[string]*zip.File{}}
 	for _, f := range zr.File {
@@ -122,12 +123,12 @@ func parse(data []byte) (*grid.Workbook, map[string]*layout, error) {
 	}
 	var wbx xWorkbook
 	if err := p.decode(wbPath, &wbx); err != nil {
-		return nil, nil, fmt.Errorf("reading workbook: %w", err)
+		return nil, nil, false, fmt.Errorf("reading workbook: %w", err)
 	}
 	wbDir := path.Dir(wbPath)
 	rels, err := p.rels(path.Join(wbDir, "_rels", path.Base(wbPath)+".rels"), wbDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("reading workbook relationships: %w", err)
+		return nil, nil, false, fmt.Errorf("reading workbook relationships: %w", err)
 	}
 	relByID := map[string]xRel{}
 	var sstPath, stylesPath string
@@ -141,27 +142,30 @@ func parse(data []byte) (*grid.Workbook, map[string]*layout, error) {
 		}
 	}
 
-	wb := &grid.Workbook{Format: "xlsx", Formats: []grid.Format{{}}}
+	wb = &grid.Workbook{Format: "xlsx", Formats: []grid.Format{{}}}
 	if wbx.Pr != nil {
 		wb.Date1904 = wbx.Pr.Date1904 == "1" || wbx.Pr.Date1904 == "true"
 	}
-	stale := wbx.Calc != nil && (wbx.Calc.FullCalcOnLoad == "1" || wbx.Calc.FullCalcOnLoad == "true")
+	stale := wbx.Calc != nil && truthy(wbx.Calc.FullCalcOnLoad)
+	if stale && p.stamped() {
+		stale, stamped = false, true
+	}
 
 	var sst []string
 	if sstPath != "" {
 		if sst, err = p.sharedStrings(sstPath); err != nil {
-			return nil, nil, fmt.Errorf("reading shared strings: %w", err)
+			return nil, nil, false, fmt.Errorf("reading shared strings: %w", err)
 		}
 	}
 	var xfFmt []uint16 // cell style index → index into wb.Formats
 	if stylesPath != "" {
 		if xfFmt, err = p.styles(stylesPath, wb); err != nil {
-			return nil, nil, fmt.Errorf("reading styles: %w", err)
+			return nil, nil, false, fmt.Errorf("reading styles: %w", err)
 		}
 	}
 
 	pending := false
-	layouts := map[string]*layout{}
+	layouts = map[string]*layout{}
 	for _, s := range wbx.Sheets {
 		rel, ok := relByID[s.relID()]
 		if !ok || !strings.HasSuffix(rel.Type, "/worksheet") {
@@ -173,11 +177,11 @@ func parse(data []byte) (*grid.Workbook, map[string]*layout, error) {
 		layouts[s.Name] = lay
 		hasPending, err := p.worksheet(rel.Target, sh, lay, sst, xfFmt, stale)
 		if err != nil {
-			return nil, nil, fmt.Errorf("reading sheet %q: %w", s.Name, err)
+			return nil, nil, false, fmt.Errorf("reading sheet %q: %w", s.Name, err)
 		}
 		tables, drawing := p.sheetRels(rel.Target)
 		for _, t := range tables {
-			sh.Tables = append(sh.Tables, grid.NamedTable{Name: t.name, Range: t.ref, Totals: t.totals, Filter: t.filter && t.headers > 0})
+			sh.Tables = append(sh.Tables, grid.NamedTable{Name: t.name, Range: t.ref, Totals: t.totals, Filter: t.filter && t.headers > 0, Columns: columnNames(t.xml)})
 		}
 		lay.tables = tables
 		if drawing != "" {
@@ -191,6 +195,10 @@ func parse(data []byte) (*grid.Workbook, map[string]*layout, error) {
 		if strings.HasPrefix(n.Name, "_xlnm.") {
 			continue
 		}
+		if strings.HasPrefix(n.Name, recordPrefix) {
+			wb.Styled++
+			continue
+		}
 		dn := grid.DefinedName{Name: n.Name, Ref: strings.TrimSpace(n.Ref)}
 		if n.LocalSheetID != "" {
 			if i, err := strconv.Atoi(n.LocalSheetID); err == nil && i < len(wbx.Sheets) {
@@ -200,9 +208,9 @@ func parse(data []byte) (*grid.Workbook, map[string]*layout, error) {
 		wb.Names = append(wb.Names, dn)
 	}
 	if pending {
-		wb.Resolver = &calc{data: data}
+		wb.Resolver = &calc{data: data, wb: wb}
 	}
-	return wb, layouts, nil
+	return wb, layouts, stamped, nil
 }
 
 type pkg struct {
@@ -265,6 +273,7 @@ type xWorkbook struct {
 	Names  []struct {
 		Name         string `xml:"name,attr"`
 		LocalSheetID string `xml:"localSheetId,attr"`
+		Comment      string `xml:"comment,attr"`
 		Ref          string `xml:",chardata"`
 	} `xml:"definedNames>definedName"`
 }

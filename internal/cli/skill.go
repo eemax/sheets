@@ -9,7 +9,7 @@ import (
 
 const skillFront = `---
 name: sheets
-description: Read, write and format Excel spreadsheets (.xlsx, .xlsm) with the sheets CLI. Use whenever a task involves a spreadsheet file - seeing what a workbook holds, reading or searching cells, writing data or formulas, inserting or deleting rows, columns or sheets, or making a sheet look professional. Prefer it over writing openpyxl or pandas code; its output is sized for your context.
+description: Read, write and format Excel spreadsheets (.xlsx, .xlsm) with the sheets CLI. Use whenever a task involves a spreadsheet file - seeing what a workbook holds, reading or searching cells, writing data or formulas, inserting or deleting rows, columns or sheets, making a sheet look professional, or styling it as asked (fills, number formats, highlights, dropdowns, frozen panes). Prefer it over writing openpyxl or pandas code; its output is sized for your context.
 ---
 
 `

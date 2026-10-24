@@ -35,9 +35,28 @@ type patches struct {
 	// columnRenames are table columns renamed after their headers, which
 	// the formulas naming them follow.
 	columnRenames []*columnRename
+	// results are formula results to store, by lower-cased sheet and
+	// cell; an Empty one removes the stored result (see recalc.go).
+	results map[string]map[string]grid.Cell
+	// stamp vouches for the stored results (see stamp.go).
+	stamp bool
+	// touched are the cells whose values changed, by lower-cased sheet;
+	// charts drawing them lose their cached copy of the data.
+	touched map[string][][2]int
 	// newCharts are chart parts sheets created, which get the house style
 	// excelize cannot set.
 	newCharts map[string]chartFix
+	// ruleRewrites are the session's row and column edits, for the
+	// formulas of conditional formats (see rewriteRuleFormulas).
+	ruleRewrites []func(f, home string) string
+	// grow extends conditional formats and data validations over rows
+	// appended to a table (see growRecords).
+	grow []growth
+	// noTabColor are sheets whose tab colour is removed.
+	noTabColor map[string]bool
+	// dropConds are conditional formats removed, by sheet and range (see
+	// dropCondBlocks).
+	dropConds map[string]map[string]bool
 }
 
 // chartFix is what a new chart needs beyond what excelize writes.
@@ -49,7 +68,7 @@ type chartFix struct {
 type sheetEdit struct{ from, to string }
 
 func newPatches() *patches {
-	return &patches{plainCols: map[string]bool{}, noFilter: map[string]bool{}, dynamic: map[string]map[string]bool{}, plain: map[string]map[string]bool{}, newCharts: map[string]chartFix{}}
+	return &patches{plainCols: map[string]bool{}, noFilter: map[string]bool{}, dynamic: map[string]map[string]bool{}, plain: map[string]map[string]bool{}, newCharts: map[string]chartFix{}, noTabColor: map[string]bool{}, dropConds: map[string]map[string]bool{}}
 }
 
 // markCell records whether a cell holds a dynamic array formula.
@@ -66,7 +85,11 @@ func (p *patches) markCell(sheet, cell string, dynamic bool) {
 }
 
 func (p *patches) rename(from, to string) {
-	for _, m := range []map[string]bool{p.plainCols, p.noFilter} {
+	if v, ok := p.dropConds[from]; ok {
+		p.dropConds[to] = v
+		delete(p.dropConds, from)
+	}
+	for _, m := range []map[string]bool{p.plainCols, p.noFilter, p.noTabColor} {
 		if v, ok := m[from]; ok {
 			m[to] = v
 			delete(m, from)
@@ -118,6 +141,11 @@ type zipPart struct {
 //   - Dynamic array formulas need a cm attribute pointing at cell metadata,
 //     which excelize cannot set.
 func serialize(f *excelize.File, pt *patches) ([]byte, error) {
+	if pt != nil && pt.stamp {
+		if err := f.SetCustomProps(excelize.CustomProperty{Name: stampName, Value: "v1 " + stampPlaceholder}); err != nil {
+			return nil, err
+		}
+	}
 	buf, err := f.WriteToBuffer()
 	if err != nil {
 		return nil, err
@@ -176,14 +204,7 @@ func serialize(f *excelize.File, pt *patches) ([]byte, error) {
 		if !strings.HasPrefix(zp.name, "xl/charts/chart") || !strings.HasSuffix(zp.name, ".xml") {
 			continue
 		}
-		if len(pt.rangeRewrites) > 0 {
-			list[i].data = rewriteFormulas(list[i].data, func(f string) string {
-				for _, fn := range pt.rangeRewrites {
-					f = fn(f)
-				}
-				return f
-			})
-		}
+		list[i].data = freshCaches(list[i].data, pt.rangeRewrites, pt.touched)
 		if fix, ok := pt.newCharts[zp.name]; ok {
 			list[i].data = surfaceGaps(list[i].data)
 			if fix.valueAxisAtEnd {
@@ -201,7 +222,7 @@ func serialize(f *excelize.File, pt *patches) ([]byte, error) {
 		}
 		if zp.name == "xl/workbook.xml" || zp.name == wbPath {
 			// Left behind when the last defined name is deleted.
-			list[i].data = bytes.Replace(zp.data, []byte("<definedNames></definedNames>"), nil, 1)
+			list[i].data = hideRecords(bytes.Replace(zp.data, []byte("<definedNames></definedNames>"), nil, 1))
 			if len(pt.columnRenames) > 0 {
 				list[i].data = rewriteFormulas(list[i].data, func(f string) string {
 					return pt.renameColumns(f, func(*columnRename) bool { return false })
@@ -223,13 +244,57 @@ func serialize(f *excelize.File, pt *patches) ([]byte, error) {
 		if pt.noFilter[sheet] {
 			b = autoFilter.ReplaceAll(b, nil)
 		}
+		if pt.noTabColor[sheet] {
+			b = tabColor.ReplaceAll(b, nil)
+		}
+		if drop := pt.dropConds[sheet]; len(drop) > 0 {
+			b, _ = dropCondBlocks(b, func(sq string, _ bool) bool { return drop[sq] })
+		}
+		if len(pt.ruleRewrites) > 0 {
+			b = rewriteRuleFormulas(b, sheet, pt.ruleRewrites)
+		}
+		var gs []growth
+		for _, g := range pt.grow {
+			if strings.EqualFold(g.sheet, sheet) {
+				gs = append(gs, g)
+			}
+		}
+		if len(gs) > 0 {
+			b = growSqrefs(b, gs)
+		}
+		b = orderRules(b)
 		if dyn, plain := pt.dynamic[sheet], pt.plain[sheet]; len(dyn)+len(plain) > 0 {
 			b = patchCells(b, dyn, plain, cm)
 		}
 		if len(pt.columnRenames) > 0 {
 			b = renameColumnsIn(b, sheet, pt)
 		}
+		if res := pt.results[strings.ToLower(sheet)]; len(res) > 0 {
+			b = storeResults(b, res)
+		}
 		list[i].data = b
+	}
+
+	if pt.stamp {
+		names, err := p.valueParts()
+		if err != nil {
+			return nil, err
+		}
+		lower := map[string]int{}
+		for i, zp := range list {
+			lower[strings.ToLower(zp.name)] = i
+		}
+		fp := fingerprint(names, func(n string) []byte {
+			if i, ok := lower[n]; ok {
+				return list[i].data
+			}
+			return nil
+		})
+		i, ok := lower["docprops/custom.xml"]
+		if !ok || !bytes.Contains(list[i].data, []byte(stampPlaceholder)) {
+			return nil, fmt.Errorf("internal error: the results stamp went missing")
+		}
+		list[i].data = bytes.Replace(list[i].data, []byte(stampPlaceholder), []byte(fp), 1)
 	}
 
 	var out bytes.Buffer

@@ -29,6 +29,14 @@ type writeResult struct {
 	Note         string            `json:"note,omitempty"`
 	Formulas     *formulaReport    `json:"formulas,omitempty"`
 	Warnings     []string          `json:"warnings,omitempty"`
+	written      []cellRef         // formulas written, reported once saved
+}
+
+// saved completes the result after saving: the formula results the file
+// stores, and the editor's warnings.
+func (res *writeResult) saved(ed book.Editor) {
+	res.Formulas = evaluateFormulas(ed, res.written, false)
+	res.Warnings = ed.Warnings()
 }
 
 func (a *app) writeCmd() *cobra.Command {
@@ -97,7 +105,7 @@ skipped.`,
 			if err := ed.Save(a.dryRun); err != nil {
 				return err
 			}
-			res.Warnings = ed.Warnings()
+			res.saved(ed)
 			if a.json {
 				return a.printJSON(res)
 			}
@@ -287,7 +295,7 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 		}
 	}
 
-	res.Formulas = evaluateFormulas(ed, formulas, false)
+	res.written = formulas
 	return res, nil
 }
 

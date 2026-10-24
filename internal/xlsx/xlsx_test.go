@@ -78,7 +78,8 @@ func TestRoundTrip(t *testing.T) {
 	if f := wb.FormatOf(s.At(2, 3)); f.Kind != grid.Currency || f.Symbol != "$" {
 		t.Errorf("C2 format = %+v", f)
 	}
-	if c := s.At(2, 5); c.Formula != "C2*2" || !c.Computed {
+	// The result is stored in the file, and trusted on reading it back.
+	if c := s.At(2, 5); c.Formula != "C2*2" || c.Pending || c.Computed || c.Num != 2401 {
 		t.Errorf("E2 = %+v", c)
 	}
 }
@@ -397,9 +398,9 @@ func TestModernFormulas(t *testing.T) {
 	}
 	xml := sheetXML(t, path, "xl/worksheets/sheet1.xml")
 	for _, want := range []string{
-		`<c r="D1" t="str" cm="1"><f t="array" ref="D1">_xlfn.UNIQUE(A2:A4)</f>`,
-		`<f>_xlfn.XLOOKUP(&#34;Bob&#34;,A2:A4,B2:B4)</f>`,
-		`<f>_xlfn.LET(_xlpm.x,B2,_xlpm.x*2)</f>`,
+		`<c r="D1" cm="1" t="str"><f t="array" ref="D1">_xlfn.UNIQUE(A2:A4)</f><v>Ada</v>`,
+		`<f>_xlfn.XLOOKUP(&#34;Bob&#34;,A2:A4,B2:B4)</f><v>4</v>`,
+		`<f>_xlfn.LET(_xlpm.x,B2,_xlpm.x*2)</f><v>18</v>`, // computed inlined
 	} {
 		if !strings.Contains(xml, want) {
 			t.Errorf("missing %s in\n%s", want, xml)
@@ -794,5 +795,21 @@ func TestReadCache(t *testing.T) {
 	}
 	if v := second.Value(b, 3, 5); v.Kind != grid.Number || v.Num != 3*0.75 {
 		t.Errorf("E3 = %+v, want 2.25", v)
+	}
+}
+
+// openpyxl writes its default fill as <patternFill/>, which excelize reads
+// back as an invalid pattern; typed values with a format still go in.
+func TestNumFmtOnOpenpyxlStyles(t *testing.T) {
+	path := fixture(t, "tables.xlsx")
+	e, err := OpenEditor(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Set("Sales", 9, 1, input.Parse("$120.00", false)); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Save(false); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -3,17 +3,17 @@
 stdin data.tsv
 exec sheets write book.xlsx
 
-exec sheets set book.xlsx D1 '=XLOOKUP("b",A2:A4,B2:B4)' D2 '=UNIQUE(A2:A4)' D3 '=LET(x,B2,x*2)' D4 '=NOPE(1)'
-stdout 'formulas: Sheet1!D1 = 2, Sheet1!D2 = "a" \(spills\)'
+exec sheets set book.xlsx D1 '=XLOOKUP("b",A2:A4,B2:B4)' D2 '=UNIQUE(A2:A4)' D3 '=LET(x,B2,x*2)' D4 '=NOPE(1)' D5 '=XMATCH(2,B2:B4)'
+stdout 'formulas: Sheet1!D1 = 2, Sheet1!D2 = "a" \(spills\), Sheet1!D3 = 2'
 stdout '1 formula error: Sheet1!D4 #NAME\? \(unknown function NOPE\)'
-stdout 'not evaluated: Sheet1!D3: LET is not supported by the sheets calculator'
+stdout 'not evaluated: Sheet1!D5: XMATCH is not supported by the sheets calculator; Excel computes it on open'
 
 # Formulas read back as typed, without the file format's prefixes.
 exec sheets read book.xlsx D1:D3 --formulas
 cmp stdout formulas.out
 
-exec sheets read book.xlsx D3
-stdout '^3\t\?$'
+exec sheets read book.xlsx D5
+stdout '^5\t\?$'
 
 -- data.tsv --
 Name	Score

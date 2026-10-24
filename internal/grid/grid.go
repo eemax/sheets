@@ -137,10 +137,11 @@ func (c Chart) Shown() Chart {
 
 // NamedTable is a table object stored in the file.
 type NamedTable struct {
-	Name   string
-	Range  Range
-	Totals int  // totals rows at the bottom of Range
-	Filter bool // its header row shows filter buttons
+	Name    string
+	Range   Range
+	Totals  int      // totals rows at the bottom of Range
+	Filter  bool     // its header row shows filter buttons
+	Columns []string // column names, left to right
 }
 
 // TableAt returns the named table overlapping r, if any.
@@ -259,6 +260,9 @@ type Workbook struct {
 	Names    []DefinedName
 	Formats  []Format // indexed by Cell.Fmt; Formats[0] is General
 	Date1904 bool
+	// Styled counts the entries of styling sheets recorded (sheets style
+	// --list), kept as hidden names that Names leaves out.
+	Styled int
 	// Resolver computes values of Pending formula cells. Nil when the
 	// format cannot evaluate formulas.
 	Resolver Resolver

@@ -19,6 +19,7 @@ type header struct {
 	Names    []DefinedName
 	Formats  []Format
 	Date1904 bool
+	Styled   int
 	Sheets   []sheetHeader
 }
 
@@ -49,7 +50,7 @@ const (
 // MarshalBinary encodes the sheets, names and formats. Path, Size and
 // Resolver are not kept.
 func (w *Workbook) MarshalBinary() ([]byte, error) {
-	h := header{Format: w.Format, Names: w.Names, Formats: w.Formats, Date1904: w.Date1904}
+	h := header{Format: w.Format, Names: w.Names, Formats: w.Formats, Date1904: w.Date1904, Styled: w.Styled}
 	strs := map[string]uint64{}
 	var table []string
 	index := func(s string) uint64 {
@@ -268,6 +269,6 @@ func (w *Workbook) UnmarshalBinary(data []byte) error {
 	if len(d.b) != 0 {
 		return errCorrupt
 	}
-	w.Format, w.Names, w.Formats, w.Date1904, w.Sheets = h.Format, h.Names, h.Formats, h.Date1904, sheets
+	w.Format, w.Names, w.Formats, w.Date1904, w.Styled, w.Sheets = h.Format, h.Names, h.Formats, h.Date1904, h.Styled, sheets
 	return nil
 }

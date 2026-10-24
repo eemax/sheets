@@ -44,6 +44,22 @@ type Editor interface {
 	// is body by n rows written right below it.
 	ExtendTable(sheet string, body grid.Range, n int)
 
+	// Style lays a look over a range and records it, so fmt keeps it.
+	Style(sheet string, r grid.Range, l *Look) (StyleResult, error)
+	// Records lists the recorded styling; Unrecord removes entries.
+	Records() []Record
+	Unrecord(seqs []int) error
+	Cond(sheet string, r grid.Range, rule []string) (string, error)
+	CondFormats(sheet string) ([]CondFormat, error)
+	ClearCond(sheet string, r *grid.Range) (int, error)
+	Validate(sheet string, r grid.Range, rule ValidationRule) (string, error)
+	Validations(sheet string) ([]Validation, error)
+	ClearValidation(sheet string, r *grid.Range) (int, error)
+	View(sheet string, o ViewOptions) error
+	ViewOf(sheet string) (ViewState, error)
+	// Looks describes cell styles in blocks, as style properties.
+	Looks(sheet string, r grid.Range) ([]LookRun, error)
+
 	// Save writes the file; with dryRun it only works out the outcome.
 	Save(dryRun bool) error
 	Close() error
@@ -57,7 +73,26 @@ type (
 	FormatOptions = xlsx.FormatOptions
 	Override      = xlsx.Override
 	FormatResult  = xlsx.FormatResult
+
+	Look           = xlsx.Look
+	StyleResult    = xlsx.StyleResult
+	Record         = xlsx.Record
+	CondFormat     = xlsx.CondFormat
+	ValidationRule = xlsx.ValidationRule
+	Validation     = xlsx.Validation
+	ViewOptions    = xlsx.ViewOptions
+	ViewState      = xlsx.ViewState
+	LookRun        = xlsx.LookRun
 )
+
+// ParseLook reads style properties (see xlsx.ParseLook).
+func ParseLook(ws []string) (Look, error) { return xlsx.ParseLook(ws) }
+
+// ParseColor reads a colour: #RRGGBB or a name.
+func ParseColor(s string) (string, error) { return xlsx.ParseColor(s) }
+
+// ColorNames lists the colour names ParseColor knows.
+func ColorNames() []string { return xlsx.ColorNames() }
 
 func format(path string) (string, error) {
 	switch strings.ToLower(filepath.Ext(path)) {

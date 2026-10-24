@@ -7,14 +7,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"runtime/debug"
 	"strings"
 
 	"github.com/eemax/sheets/internal/book"
 	"github.com/eemax/sheets/internal/grid"
 	"github.com/eemax/sheets/internal/undo"
+	"github.com/eemax/sheets/internal/words"
 	"github.com/eemax/sheets/internal/xlsx"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // Version is set at build time with -ldflags "-X ...cli.Version=v1.2.3".
@@ -31,6 +34,9 @@ type app struct {
 	json   bool
 	tty    bool
 	dryRun bool
+	// batch is set for the commands of a batch (sheets do): they print no
+	// next-step hints.
+	batch bool
 }
 
 // Main runs the CLI and returns the process exit code.
@@ -44,7 +50,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 	root := a.root()
-	root.SetArgs(args)
+	root.SetArgs(negatives(root, args))
 	root.SetIn(stdin)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
@@ -91,7 +97,7 @@ Run 'sheets agent-docs' for a guide written for AI agents.`,
 	}
 	root.PersistentFlags().BoolVar(&a.json, "json", false, "print JSON instead of text")
 	root.PersistentFlags().BoolVar(&a.dryRun, "dry-run", false, "show what a change would do without saving it")
-	root.AddCommand(a.infoCmd(), a.peekCmd(), a.readCmd(), a.findCmd(), a.queryCmd(), a.lintCmd(), a.diffCmd(), a.chartCmd(), a.renderCmd(), a.writeCmd(), a.setCmd(), a.fmtCmd(),
+	root.AddCommand(a.infoCmd(), a.peekCmd(), a.readCmd(), a.findCmd(), a.queryCmd(), a.lintCmd(), a.diffCmd(), a.chartCmd(), a.renderCmd(), a.writeCmd(), a.setCmd(), a.fmtCmd(), a.styleCmd(), a.condCmd(), a.validateCmd(), a.viewCmd(), a.doCmd(),
 		a.linesCmd(false), a.linesCmd(true), a.sheetCmd(), a.undoCmd(), a.docsCmd(), a.skillCmd())
 	root.CompletionOptions.HiddenDefaultCmd = true
 	return root
@@ -125,23 +131,14 @@ func (a *app) printf(format string, args ...any) {
 // hint prints a suggested next command. Hints go to stdout in text mode,
 // where an agent reads them, and are carried in the JSON otherwise.
 func (a *app) hint(format string, args ...any) {
+	if a.batch {
+		return
+	}
 	fmt.Fprintf(a.stdout, "next: "+format+"\n", args...)
 }
 
 // shellQuote quotes an argument for a suggested command line.
-func shellQuote(s string) string {
-	safe := s != ""
-	for _, r := range s {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./:@%+=,", r)) {
-			safe = false
-			break
-		}
-	}
-	if safe {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
+func shellQuote(s string) string { return words.Quote(s) }
 
 // open reads a workbook.
 func open(path string) (*grid.Workbook, error) {
@@ -193,10 +190,65 @@ func plural(n int, word string) string {
 		return "1 " + word
 	}
 	suffix := "s"
-	if strings.HasSuffix(word, "series") {
+	switch {
+	case strings.HasSuffix(word, "series"):
 		suffix = ""
-	} else if strings.HasSuffix(word, "ch") || strings.HasSuffix(word, "s") || strings.HasSuffix(word, "x") {
+	case strings.HasSuffix(word, "ch") || strings.HasSuffix(word, "s") || strings.HasSuffix(word, "x"):
 		suffix = "es"
+	case strings.HasSuffix(word, "y") && !strings.ContainsRune("aeiou", rune(word[len(word)-2])):
+		word, suffix = word[:len(word)-1], "ies"
 	}
 	return grid.FormatNumber(float64(n)) + " " + word + suffix
+}
+
+var negativeNumber = regexp.MustCompile(`^-[0-9.$€£¥]`)
+
+// negatives keeps values like -5 or -$1,200 from being read as flags: when
+// args hold one, the flags move in front of a -- and the values after it.
+func negatives(root *cobra.Command, args []string) []string {
+	has := false
+	for _, a := range args {
+		if a == "--" {
+			return args
+		}
+		if negativeNumber.MatchString(a) {
+			has = true
+		}
+	}
+	if !has {
+		return args
+	}
+	cmd, rest, err := root.Find(args)
+	if err != nil {
+		return args
+	}
+	path := args[:len(args)-len(rest)]
+	fs := cmd.Flags()
+	fs.AddFlagSet(cmd.InheritedFlags())
+	var flags, values []string
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		var f *pflag.Flag
+		switch {
+		case strings.HasPrefix(a, "--") && len(a) > 2:
+			name, _, hasValue := strings.Cut(a[2:], "=")
+			if f = fs.Lookup(name); f != nil && hasValue {
+				flags = append(flags, a)
+				continue
+			}
+		case strings.HasPrefix(a, "-") && len(a) == 2:
+			f = fs.ShorthandLookup(a[1:])
+		}
+		if f == nil {
+			values = append(values, a)
+			continue
+		}
+		flags = append(flags, a)
+		if f.NoOptDefVal == "" && i+1 < len(rest) {
+			i++
+			flags = append(flags, rest[i])
+		}
+	}
+	out := append(append(append([]string{}, path...), flags...), "--")
+	return append(out, values...)
 }

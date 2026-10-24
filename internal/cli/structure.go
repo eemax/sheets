@@ -227,7 +227,10 @@ unless --force (those references then become #REF!, as in Excel).`,
 				if err := ed.RenameSheet(args[1], args[2]); err != nil {
 					return err
 				}
-				res.Done = fmt.Sprintf("renamed %s to %s (%s updated)", grid.QuoteSheet(args[1]), grid.QuoteSheet(args[2]), plural(refs, "reference"))
+				res.Done = fmt.Sprintf("renamed %s to %s", grid.QuoteSheet(args[1]), grid.QuoteSheet(args[2]))
+				if refs > 0 {
+					res.Done += fmt.Sprintf(" (%s updated)", plural(refs, "reference"))
+				}
 				report(ed, res)
 				return nil
 			})

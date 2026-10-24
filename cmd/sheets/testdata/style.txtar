@@ -1,0 +1,113 @@
+# style, cond, validate and view: targeted styling that fmt keeps.
+stdin budget.tsv
+exec sheets write budget.xlsx Budget!A1
+exec sheets fmt budget.xlsx
+
+# The formatting request agents get: header, money columns, frozen header.
+exec sheets style budget.xlsx 'Budget[#Headers]' bold fill=lightblue
+cmp stdout header.out
+exec sheets style budget.xlsx 'Budget[[Budget]:[Remaining]]' format=currency decimals=0
+stdout '^styled Budget!B2:D4: format=currency decimals=0$'
+exec sheets view budget.xlsx Budget --freeze A2 --tab green
+stdout '^Budget: frozen at A2, gridlines off, zoom 100%, tab #00B050, filter A1:D4, active$'
+exec sheets cond budget.xlsx 'Budget[Remaining]' '< 0' color=red bold
+stdout '^Budget!D2:D4: ''< 0'' color=red bold$'
+exec sheets validate budget.xlsx 'Budget[Item]' list Rent,Staff,IT,Travel --prompt 'Pick an item'
+stdout '^Budget!A2:A4: list Rent,Staff,IT,Travel$'
+
+exec sheets style budget.xlsx Budget!A1:D4 --show
+cmp stdout looks.out
+
+# fmt lays the record over the house style, and changes nothing more.
+exec sheets fmt budget.xlsx
+stdout 'kept the recorded styling \(4 entries; sheets style --list\)'
+exec sheets fmt budget.xlsx --check
+stdout 'is formatted'
+exec sheets style budget.xlsx Budget!A1:D4 --show
+cmp stdout looks.out
+exec sheets style budget.xlsx --list
+cmp stdout record.out
+exec sheets cond budget.xlsx Budget --list
+cmp stdout cond.out
+exec sheets validate budget.xlsx Budget --list
+stdout '^Budget!A2:A4  list Rent,Staff,IT,Travel  prompt "Pick an item"$'
+
+# Rows appended to the table get its look, and the rules grow with it.
+stdin more.tsv
+exec sheets write budget.xlsx Budget --append
+exec sheets style budget.xlsx Budget!B5:D6 --show
+stdout '^Budget!B5:D6  ''format="\$"#,##0_\);\("\$"#,##0\)''$'
+exec sheets cond budget.xlsx Budget --list
+stdout 'Budget!D2:D6  < 0  \(kept by fmt\)'
+exec sheets validate budget.xlsx Budget --list
+stdout 'Budget!A2:A6  list'
+exec sheets style budget.xlsx --list
+stdout '#2  Budget!B2:D6  style format=currency decimals=0'
+
+# Inserting rows moves everything together.
+exec sheets rows insert budget.xlsx Budget!1
+exec sheets style budget.xlsx --list
+stdout '#1  Budget!A2:D2  style bold fill=lightblue'
+stdout '#3  Budget!A3 +view freeze'
+exec sheets view budget.xlsx Budget
+stdout 'frozen at A3'
+exec sheets cond budget.xlsx Budget --list
+stdout 'Budget!D3:D7  < 0'
+
+# Unrecorded, the styling goes with the next fmt; --reset drops it all.
+exec sheets style budget.xlsx --unrecord 1
+stdout 'removed 1 entry from the record'
+exec sheets fmt budget.xlsx --reset
+! stdout 'kept'
+exec sheets style budget.xlsx --list
+stdout 'no recorded styling'
+exec sheets cond budget.xlsx Budget --list
+! stdout '< 0'
+
+# Errors say what to write instead.
+! exec sheets style budget.xlsx Budget!A1 blod
+stderr '"blod" is not a style property'
+! exec sheets style budget.xlsx 'Budget[Budgt]' bold
+stderr 'Budget has no column "Budgt" \(columns: Item, Budget, Spent, Remaining\)'
+! exec sheets style budget.xlsx Budget!A2:B2 merge
+stderr 'merging A2:B2 would hide B2, which hold values'
+! exec sheets cond budget.xlsx Budget!D2:D7 'more than 5'
+stderr 'is not a condition: give one of'
+! exec sheets cond budget.xlsx Budget '< 0'
+stderr 'is a sheet; give the cells'
+! exec sheets validate budget.xlsx Budget!B3:B7 whole '>' x
+stderr '"x" is not a number'
+! exec sheets view budget.xlsx Budget --freeze top
+stderr 'expected the first cell that scrolls'
+
+# Negative numbers are values, not flags.
+exec sheets cond budget.xlsx Budget!D3:D7 between -100 and -1 fill=lightyellow
+stdout 'between -100 and -1'
+exec sheets validate budget.xlsx Budget!C3:C7 number '>=' -1000
+exec sheets validate budget.xlsx Budget --list
+stdout 'Budget!C3:C7  number >= -1000'
+
+-- budget.tsv --
+Item	Budget	Spent	Remaining
+Rent	1200	1100	=B{r}-C{r}
+Staff	800	850	=B{r}-C{r}
+IT	150	90.5	=B{r}-C{r}
+-- more.tsv --
+Item	Budget	Spent	Remaining
+Travel	300	120	=B{r}-C{r}
+Rent	100	50	=B{r}-C{r}
+-- header.out --
+styled Budget!A1:D1: bold fill=lightblue
+note: text set to black, readable on the #DDEBF7 fill (give color= to choose)
+-- looks.out --
+Budget!A1:D1  bold fill=#DDEBF7 align=left valign=middle border=all:thin:#D1D5DB
+Budget!A2:A4  border=all:thin:#D1D5DB
+Budget!B2:D4  'format="$"#,##0_);("$"#,##0)' border=all:thin:#D1D5DB
+-- record.out --
+#1  Budget!A1:D1  style bold fill=lightblue
+#2  Budget!B2:D4  style format=currency decimals=0
+#3  Budget!A2     view freeze
+#4  Budget!D2:D4  cond '< 0' color=red bold
+-- cond.out --
+Budget!A2:D4  =MOD(ROW()-2,2)=1  (fmt banding)
+Budget!D2:D4  < 0  (kept by fmt)

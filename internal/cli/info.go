@@ -17,6 +17,8 @@ type infoResult struct {
 	Bytes  int64       `json:"bytes"`
 	Sheets []sheetInfo `json:"sheets"`
 	Names  []nameInfo  `json:"names,omitempty"`
+	// Styled counts the entries of recorded styling (sheets style --list).
+	Styled int `json:"styled,omitempty"`
 }
 
 type sheetInfo struct {
@@ -65,7 +67,7 @@ func (a *app) infoCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res := infoResult{File: args[0], Format: wb.Format, Bytes: wb.Size}
+			res := infoResult{File: args[0], Format: wb.Format, Bytes: wb.Size, Styled: wb.Styled}
 			for _, s := range wb.Sheets {
 				res.Sheets = append(res.Sheets, describeSheet(wb, s))
 			}
@@ -202,6 +204,9 @@ func (a *app) printInfo(res infoResult) {
 			parts = append(parts, p)
 		}
 		a.printf("names: %s\n", strings.Join(parts, ", "))
+	}
+	if res.Styled > 0 {
+		a.printf("styling: %s recorded, which fmt keeps (sheets style --list)\n", plural(res.Styled, "entry"))
 	}
 	if best != "" {
 		a.hint("sheets peek %s %s", shellQuote(res.File), shellQuote(best))

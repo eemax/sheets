@@ -36,20 +36,33 @@ type Editor struct {
 	// deleted or renamed.
 	structural  bool
 	hasDrawings map[string]bool
+
+	// What this session changed, for recomputing stored results (see
+	// recalc.go): cells written, formulas an edit of rows, columns or
+	// sheets may have changed, and, after such an edit of rows or
+	// columns, every formula where it now stands.
+	changed       map[cellKey]string
+	recompute     map[cellKey]bool
+	lines         []formulaAt
+	sheetsChanged bool
+	// dropped notes, after saving, why a formula got no stored result,
+	// or what its error means.
+	dropped map[cellKey]string
+	st      *styler // for targeted styling (see styling.go)
 }
 
 // OpenEditor opens path for editing, or starts a new workbook when the file
 // does not exist and create is set.
 func OpenEditor(path string, create bool) (*Editor, error) {
 	e := &Editor{path: path, styles: map[string]int{}, unshare: map[string]bool{}, extent: map[string]grid.Range{}, patches: newPatches(), hasDrawings: map[string]bool{}}
-	data, err := os.ReadFile(path)
+	data, err := readFile(path)
 	switch {
 	case err == nil:
 		e.data = data
 		if e.f, err = excelize.OpenReader(bytes.NewReader(data)); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
-		if e.wb, e.layouts, err = parse(data); err != nil {
+		if e.wb, e.layouts, _, err = parse(data); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 		for name, l := range e.layouts {
@@ -95,6 +108,11 @@ func (e *Editor) EnsureSheet(name string) (string, bool, error) {
 // Set writes one value. Typed values (dates, percentages, currency) get the
 // house number format while the rest of the cell's style is kept.
 func (e *Editor) Set(sheet string, row, col int, v input.Value) error {
+	if v.Formula != "" {
+		if err := formula.Check(v.Formula); err != nil {
+			return fmt.Errorf("%s: =%s is not a valid formula: %v", grid.FormatRef(sheet, grid.Range{R1: row, C1: col, R2: row, C2: col}), strings.TrimPrefix(v.Formula, "="), err)
+		}
+	}
 	if err := e.unshareFormulas(sheet, row, col); err != nil {
 		return err
 	}
@@ -122,6 +140,7 @@ func (e *Editor) Set(sheet string, row, col int, v input.Value) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", grid.FormatRef(sheet, grid.Range{R1: row, C1: col, R2: row, C2: col}), err)
 	}
+	e.touch(sheet, row, col)
 	if !v.IsEmpty() {
 		e.grow(sheet, grid.Range{R1: row, C1: col, R2: row, C2: col})
 	}
@@ -186,6 +205,7 @@ func (e *Editor) clearSpill(sheet string, row, col int) error {
 	s.Each(spill, func(r, c int, cell *grid.Cell) {
 		if err == nil && (r != row || c != col) && cell.Formula == "" {
 			err = e.f.SetCellDefault(sheet, grid.CellName(r, c), "")
+			e.touch(sheet, r, c)
 		}
 	})
 	return err
@@ -238,8 +258,9 @@ func (e *Editor) applyNumFmt(sheet, cell, code string) error {
 		st.NumFmt = 0
 		st.DecimalPlaces = nil
 		st.CustomNumFmt = &code
+		normalizeFill(st)
 		if id, err = e.f.NewStyle(st); err != nil {
-			return err
+			return fmt.Errorf("%s: keeping its style while setting the number format: %w", cell, err)
 		}
 		e.styles[key] = id
 	}
@@ -310,6 +331,7 @@ func (e *Editor) Clear(sheet string) error {
 	s.Each(used, func(r, c int, _ *grid.Cell) {
 		if err == nil {
 			err = e.f.SetCellDefault(sheet, grid.CellName(r, c), "")
+			e.touch(sheet, r, c)
 		}
 	})
 	if err != nil {
@@ -335,9 +357,18 @@ func (e *Editor) Clear(sheet string) error {
 // Evaluate calculates the current value of a cell after edits. Formula
 // errors are Error cells. ok is false when the calculator cannot evaluate
 // the formula; note then says why.
+//
+// After saving, it is the result stored in the file, or why there is none.
 func (e *Editor) Evaluate(sheet string, row, col int) (v grid.Cell, note string, ok bool) {
+	if v, ok := e.patches.results[strings.ToLower(sheet)][grid.CellName(row, col)]; ok {
+		note := e.dropped[keyOf(sheet, row, col)]
+		if v.Kind == grid.Empty && !strings.HasPrefix(note, "circular reference") && !strings.Contains(note, "Excel computes it") {
+			note += "; Excel computes it on open"
+		}
+		return v, note, v.Kind != grid.Empty
+	}
 	v, note, err := evaluate(e.f, sheet, grid.CellName(row, col))
-	return v, note, err == nil
+	return v, note, err == nil || errors.Is(err, errUncertain)
 }
 
 // Save writes the workbook atomically, or with dryRun only works out what
@@ -357,9 +388,16 @@ func (e *Editor) Save(dryRun bool) error {
 			return err
 		}
 	}
+	if err := e.restyleWritten(); err != nil {
+		return err
+	}
 	if err := e.fixTables(); err != nil {
 		return err
 	}
+	if err := e.recalc(); err != nil {
+		return err
+	}
+	e.patches.stamp = true
 	buf, err := serialize(e.f, e.patches)
 	if err != nil {
 		return err
@@ -402,6 +440,10 @@ func save(f *excelize.File, path string, pt *patches) error {
 }
 
 func writeAtomic(path string, buf []byte) error {
+	if b := held(path); b != nil {
+		b.data, b.changed = buf, true
+		return nil
+	}
 	dir := filepath.Dir(path)
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("cannot write %s: %w", path, err)

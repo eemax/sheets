@@ -36,6 +36,23 @@ type tableNow struct {
 	ref     grid.Range
 	headers int
 	totals  int // 0 once its totals row is deleted
+	columns []string
+}
+
+// columnNames reads the column names of a table part, in order.
+func columnNames(data []byte) []string {
+	var out []string
+	for _, tag := range tableColumn.FindAll(data, -1) {
+		if m := nameAttr.FindSubmatch(tag); m != nil {
+			out = append(out, html.UnescapeString(string(m[2])))
+		}
+	}
+	return out
+}
+
+// formulaTable is the table as structured references see it.
+func (t tableNow) formulaTable() formula.Table {
+	return formula.Table{Name: t.name, Sheet: t.sheet, Ref: t.ref, Headers: t.headers, Totals: t.totals, Columns: t.columns}
 }
 
 // locate follows a range of sheet through the range rewrites: the sheet it
@@ -66,7 +83,7 @@ func (t tableSource) now(rewrites []func(string) string) (tableNow, bool) {
 	if !ok {
 		return tableNow{}, false
 	}
-	tn := tableNow{name: t.name, sheet: sheet, ref: ref, headers: t.headers}
+	tn := tableNow{name: t.name, sheet: sheet, ref: ref, headers: t.headers, columns: columnNames(t.xml)}
 	if t.totals > 0 {
 		totals := t.ref
 		totals.R1 = totals.R2 - t.totals + 1
@@ -85,6 +102,9 @@ func (e *Editor) ExtendTable(sheet string, body grid.Range, n int) {
 	e.patches.rangeRewrites = append(e.patches.rangeRewrites, func(f string) string {
 		return formula.ExtendRangesIn(f, "", sheet, body.R2, body.R2+n, body.C1, body.C2)
 	})
+	if err := e.growRecords(sheet, body, n); err != nil {
+		e.warnings = append(e.warnings, "could not extend recorded styling: "+err.Error())
+	}
 }
 
 // tablesOn lists the Excel tables on a sheet where they stand now.
@@ -137,24 +157,16 @@ var (
 	nameAttr    = regexp.MustCompile(`(\sname=")([^"]*)(")`)
 	// Formulas a table part keeps: of calculated columns and totals.
 	tableFormula = regexp.MustCompile(`(<(?:calculatedColumnFormula|totalsRowFormula)\b[^>]*>)([^<]*)(</[a-zA-Z]+>)`)
-	// A cell holding something (not self-closed), and its reference.
-	cellXML  = regexp.MustCompile(`(?s)<c\b[^>]*?[^/]>.*?</c>`)
-	cellAttr = regexp.MustCompile(`\sr="([A-Z]+[0-9]+)"`)
 )
 
 // renameColumnsIn applies the column renames to the cell formulas of a
 // worksheet part.
 func renameColumnsIn(b []byte, sheet string, p *patches) []byte {
-	return cellXML.ReplaceAllFunc(b, func(m []byte) []byte {
+	return rewriteCells(b, func(string) bool { return true }, func(m []byte, ref string) []byte {
 		if !bytes.Contains(m, []byte("<f")) || !bytes.Contains(m, []byte("[")) {
 			return m
 		}
-		head := m[:bytes.IndexByte(m, '>')+1]
-		ref := cellAttr.FindSubmatch(head)
-		if ref == nil {
-			return m
-		}
-		r, c, _ := grid.ParseCell(string(ref[1]))
+		r, c, _ := grid.ParseCell(ref)
 		return rewriteFormulas(m, func(f string) string {
 			return p.renameColumns(f, func(cr *columnRename) bool {
 				return strings.EqualFold(cr.sheet, sheet) && cr.ref.Contains(r, c)
@@ -286,6 +298,7 @@ func (e *Editor) nameColumns(t tableNow, data []byte) ([]byte, error) {
 			if err := e.f.SetCellStr(t.sheet, cell, text); err != nil {
 				return nil, err
 			}
+			e.touch(t.sheet, t.ref.R1, t.ref.C1+i)
 			why := "was empty"
 			if was != "" {
 				why = fmt.Sprintf("repeated %q", was)
@@ -296,6 +309,7 @@ func (e *Editor) nameColumns(t tableNow, data []byte) ([]byte, error) {
 			if err := e.f.SetCellStr(t.sheet, cell, text); err != nil {
 				return nil, err
 			}
+			e.touch(t.sheet, t.ref.R1, t.ref.C1+i)
 		}
 		seen[strings.ToLower(text)] = true
 		names[i] = text

@@ -110,6 +110,105 @@ cp 01-house-style.xlsx 10-query-into.xlsx
 s query 10-query-into.xlsx 'SELECT Region, SUM(Units) AS Units, SUM(Revenue) AS Revenue FROM Sales GROUP BY Region ORDER BY Revenue DESC' --into Summary
 s fmt 10-query-into.xlsx
 
+# 11. Targeted styling (sheets style and view), kept through fmt.
+"$bin" do 11-styling.xlsx >/dev/null <<'EOF'
+write Report!A3 <<END
+Item	Budget	Spent	Remaining	Owner	Notes
+Rent	1200000	1100000	=B{r}-C{r}	Facilities	Annual lease, renews in March
+Staff	800000	850000	=B{r}-C{r}	HR	Two hires delayed
+IT	150000	90000.5	=B{r}-C{r}	IT
+Travel	60000	72000	=B{r}-C{r}	Finance	Conference season
+Total	=SUM(B4:B7)	=SUM(C4:C7)	=SUM(D4:D7)
+END
+set Report!A1 'Budget review 2026'
+fmt
+style Report!A1:F1 merge align=center size=16 bold
+style 'Report[#Headers]' fill=lightblue
+style 'Report[[Budget]:[Remaining]]' format=currency decimals=0
+style 'Report[#Totals]' border=top:thin border=bottom:double
+style Report!E3 rotate=45
+style 'Report[Owner]' italic color=darkgray indent=1
+style Report!F:F width=24 wrap
+view Report --freeze B4 --tab teal --zoom 120
+EOF
+"$bin" do 11-styling.xlsx >/dev/null <<'EOF'
+write Report --append <<END
+Item	Budget	Spent	Remaining	Owner
+Training	20000	5000	=B{r}-C{r}	HR
+END
+fmt
+EOF
+
+# 12. Conditional formats of every kind, over fmt's banding.
+"$bin" do 12-conditional.xlsx >/dev/null <<'EOF'
+write Scores!A1 <<END
+Name	Score	Change	Status	Region	Code
+Ada	92	0.12	On time	East	A-1
+Bob	47	-0.08	Late	West	B-2
+Cy	75	0.03	On time	East	A-1
+Dee	88	-0.15	Late	North	C-9
+Eve	61	0.2	Done	South	D-4
+Fay	39	0	Late	East	E-5
+Gus	99	0.07	On time	West	F-6
+Hal		0.01	Done	North	G-7
+END
+fmt
+cond Scores!A2:F9 '=$D2="Late"' fill=lightyellow
+cond 'Scores[Score]' 'top 25%' fill=lightgreen bold
+cond 'Scores[Score]' '< 50' color=red bold
+cond 'Scores[Score]' blank fill=lightgray
+cond 'Scores[Change]' '< 0' color=red 'format=0.0%;(0.0%)'
+cond 'Scores[Change]' bars
+cond 'Scores[Region]' 'contains st' italic
+cond 'Scores[Code]' duplicates color=purple
+EOF
+"$bin" do 12-conditional.xlsx >/dev/null <<'EOF'
+write Scales!A1 <<END
+Month	Visits	Growth	Rating
+Jan	120	0.05	1
+Feb	340	0.12	2
+Mar	90	-0.04	3
+Apr	410	0.2	4
+May	260	0.02	5
+END
+fmt
+cond 'Scales[Visits]' scale
+cond 'Scales[Growth]' scale red-white-green
+cond 'Scales[Rating]' icons arrows
+cond 'Scales[Visits]' 'above average' bold
+EOF
+
+# 13. Data validation of every kind.
+"$bin" do 13-validation.xlsx >/dev/null <<'EOF'
+write Orders!A1 <<END
+Region	Product	Qty	Price	Date	Code	Note
+East	Pen	2	1.5	2026-03-01	A100
+END
+write Lists!A1 <<END
+Products
+Pen
+Ink
+Paper
+Stapler
+END
+fmt
+validate Orders!A2:A50 list East,West,North,South --prompt 'Pick a region'
+validate Orders!B2:B50 list =Lists!$A$2:$A$5
+validate Orders!C2:C50 whole between 1 and 1000 --error 'Qty is 1 to 1000'
+validate Orders!D2:D50 number '>' 0 --warn --error 'A price is usually above 0'
+validate Orders!E2:E50 date between 2026-01-01 and 2026-12-31
+validate Orders!F2:F50 formula '=COUNTIF($F$2:$F$50,F2)=1' --error 'Codes are unique'
+validate Orders!G2:G50 length '<=' 20 --prompt 'Up to 20 characters'
+EOF
+
+# 14. 12 after inserting rows above and a column before its data: rules,
+#     ranges and frozen panes follow, as Excel moves them.
+cp 12-conditional.xlsx 14-moved.xlsx
+s view 14-moved.xlsx Scores --freeze B2
+s rows insert 14-moved.xlsx Scores!1 -n 2
+s cols insert 14-moved.xlsx Scores!A
+s set 14-moved.xlsx Scores!A1 'Two rows and a column were inserted'
+
 cat > CHECKLIST.md <<'MD'
 # Excel check
 
@@ -191,5 +290,49 @@ If it asks to repair, note which file and what the repair log says.
 ## 10-query-into.xlsx
 - A Summary sheet with Region, Units, Revenue, one row per region, sorted
   by Revenue, in the house style; Revenue in $.
+
+## 11-styling.xlsx
+- A1 "Budget review 2026": merged over A1:F1, centred, 16 pt bold.
+- Header row light blue with black bold text (not white), filter buttons.
+- Budget, Spent and Remaining as $ without decimals, the total row and
+  Training too (the row appended after the styling, above Total, which
+  now sums five rows: 2,230,000 budget).
+- The total row has a thin line above and a double line below.
+- E3 "Owner" turned 45 degrees; Owner names italic, gray, indented.
+- Notes column wide and wrapping.
+- Frozen at B4 (rows 1-3 and column A stay put), teal tab, zoom 120%.
+- Formulas > Name Manager: no names starting with _sheets (they are
+  hidden).
+
+## 12-conditional.xlsx
+- Scores: the rows of Late people (Bob, Dee, Fay) light yellow across
+  the row; the other rows keep the gray/white banding.
+- Score: top 25% (Ada, Gus) light green bold; below 50 (Bob, Fay) red
+  bold; Hal's empty score light gray.
+- Change: negative values red, shown as (8.0%); solid blue data bars.
+- Region: East and West italic (they contain "st").
+- Code: the two A-1 codes purple.
+- Home > Conditional Formatting > Manage Rules (This Worksheet): the
+  rules are listed with the banding (MOD(ROW()-2,2)=1) last.
+- Scales: Visits a red-yellow-green scale (410 green, 90 red) and bold
+  above average; Growth red-white-green; Rating arrows.
+
+## 13-validation.xlsx
+- Orders!A2: a dropdown East, West, North, South, with the prompt
+  "Pick a region" on selection; typing "Mars" is refused.
+- B2: a dropdown of Pen, Ink, Paper, Stapler (from the Lists sheet).
+- C2: 0 or 5000 refused with "Qty is 1 to 1000".
+- D2: -1 warns ("A price is usually above 0") but can be kept.
+- E2: 2025-12-31 refused. F3: typing A100 (already in F2) refused
+  ("Codes are unique"). G2: shows "Up to 20 characters" and refuses
+  longer text.
+
+## 14-moved.xlsx
+- Scores: A1 reads "Two rows and a column were inserted"; the table now
+  starts at B3. Every highlight from 12 is on the same people as before
+  (Late rows yellow, Ada and Gus green, Bob and Fay red, ...): the rules
+  moved with the data, formulas included.
+- Frozen at C4: rows 1-3 and columns A-B stay put, as the header row and
+  the Name column did before.
 MD
 echo "wrote $(ls "$out" | grep -c xlsx) workbooks to $out; see CHECKLIST.md"

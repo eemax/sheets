@@ -4,6 +4,8 @@
 package formula
 
 import (
+	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -577,4 +579,70 @@ func Numbers(f string) []float64 {
 		}
 	}
 	return out
+}
+
+// Check finds what makes a formula unreadable to Excel, which offers to
+// repair a file holding one: unclosed quotes or brackets, or an operator
+// with nothing after it. It does not know the functions, so =NOPE(1)
+// passes (Excel answers #NAME?).
+func Check(f string) error {
+	f = strings.TrimPrefix(strings.TrimSpace(f), "=")
+	if strings.TrimSpace(f) == "" {
+		return errors.New("it is empty")
+	}
+	var stack []byte
+	var at []int // where each open bracket is
+	closer := map[byte]byte{'(': ')', '{': '}', '[': ']'}
+	last := byte(0) // the last character outside quotes, not a blank
+	for i := 0; i < len(f); i++ {
+		c := f[i]
+		if len(stack) > 0 && stack[len(stack)-1] == '[' {
+			// Inside a structured reference: ' escapes the next character.
+			switch c {
+			case '\'':
+				i++
+			case '[':
+				stack, at = append(stack, c), append(at, i)
+			case ']':
+				stack, at = stack[:len(stack)-1], at[:len(at)-1]
+			}
+			last = c
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			j := i + 1
+			for ; j < len(f); j++ {
+				if f[j] == c {
+					if j+1 < len(f) && f[j+1] == c { // "" inside a string
+						j++
+						continue
+					}
+					break
+				}
+			}
+			if j >= len(f) {
+				return fmt.Errorf("the %c at position %d is not closed", c, i+2)
+			}
+			i, last = j, c
+			continue
+		case '(', '{', '[':
+			stack, at = append(stack, c), append(at, i)
+		case ')', '}', ']':
+			if len(stack) == 0 || closer[stack[len(stack)-1]] != c {
+				return fmt.Errorf("the %c at position %d closes nothing", c, i+2)
+			}
+			stack, at = stack[:len(stack)-1], at[:len(at)-1]
+		}
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			last = c
+		}
+	}
+	if n := len(stack); n > 0 {
+		return fmt.Errorf("the %c at position %d is not closed", stack[n-1], at[n-1]+2)
+	}
+	if strings.IndexByte("+-*/^&=<>,(:", last) >= 0 {
+		return fmt.Errorf("it ends with %q", string(last))
+	}
+	return nil
 }

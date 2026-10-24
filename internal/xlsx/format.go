@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 	"strings"
 
 	"github.com/eemax/sheets/internal/analyze"
@@ -22,6 +21,9 @@ type FormatOptions struct {
 	Sheets    []string   // only these sheets; empty means all
 	Overrides []Override // forced column types
 	DryRun    bool       // work out the result without writing
+	// Reset drops the recorded styling (sheets style, cond and view) of
+	// the formatted sheets instead of laying it over the house style.
+	Reset bool
 }
 
 // Override forces the number format kind of a column.
@@ -60,7 +62,7 @@ type FormattedColumn struct {
 
 // Format restyles a workbook in place.
 func Format(path string, opts FormatOptions) (*FormatResult, error) {
-	data, err := os.ReadFile(path)
+	data, err := readFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +79,7 @@ func Format(path string, opts FormatOptions) (*FormatResult, error) {
 
 // Check reports whether Format would change nothing.
 func Check(path string, opts FormatOptions) (bool, *FormatResult, error) {
-	data, err := os.ReadFile(path)
+	data, err := readFile(path)
 	if err != nil {
 		return false, nil, err
 	}
@@ -86,15 +88,19 @@ func Check(path string, opts FormatOptions) (bool, *FormatResult, error) {
 		return false, nil, fmt.Errorf("%s: %w", path, err)
 	}
 	defer base.Close()
-	before, err := serialize(base, nil)
-	if err != nil {
-		return false, nil, err
-	}
 	fm, res, err := formatBytes(data, opts)
 	if err != nil {
 		return false, nil, fmt.Errorf("%s: %w", path, err)
 	}
 	defer fm.f.Close()
+	// The stamp is renewed the same way on both sides, so that it alone
+	// is no difference.
+	bp := newPatches()
+	bp.stamp = fm.patches.stamp
+	before, err := serialize(base, bp)
+	if err != nil {
+		return false, nil, err
+	}
 	after, err := serialize(fm.f, fm.patches)
 	if err != nil {
 		return false, nil, err
@@ -146,7 +152,7 @@ func parts(data []byte) (map[string][]byte, error) {
 }
 
 func formatBytes(data []byte, opts FormatOptions) (*formatter, *FormatResult, error) {
-	wb, layouts, err := parse(data)
+	wb, layouts, stamped, err := parse(data)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -155,6 +161,25 @@ func formatBytes(data []byte, opts FormatOptions) (*formatter, *FormatResult, er
 			return nil, nil, fmt.Errorf("sheet %q not found (sheets: %s)", name, strings.Join(wb.SheetNames(), ", "))
 		}
 	}
+	formatted := func(sheet string) bool { return len(opts.Sheets) == 0 || nameIn(sheet, opts.Sheets) }
+	// The record decides which conditional formats stay; the rest go
+	// before excelize opens the file (see stripConds).
+	recs, drop, err := rawRecords(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	var keep []Record
+	for _, rec := range recs {
+		if formatted(rec.Sheet) && opts.Reset {
+			drop = append(drop, rec.name)
+			continue
+		}
+		keep = append(keep, rec)
+	}
+	data, found, err := stripConds(data, formatted, func(sheet, sqref string) bool { return recordedCond(keep, sheet, sqref) })
+	if err != nil {
+		return nil, nil, err
+	}
 	f, err := excelize.OpenReader(bytes.NewReader(data))
 	if err != nil {
 		return nil, nil, err
@@ -162,13 +187,29 @@ func formatBytes(data []byte, opts FormatOptions) (*formatter, *FormatResult, er
 	fm := &formatter{
 		f: f, wb: wb, p: opts.Preset, layouts: layouts, patches: newPatches(),
 		styles: map[cellStyle]int{}, overrides: opts.Overrides, matched: make([]bool, len(opts.Overrides)),
+		st: newStyler(f),
 	}
+	// Formatting changes no results: ones the stamp vouched for still
+	// hold, so it is renewed for the restyled sheets.
+	fm.patches.stamp = stamped
 	fail := func(err error) (*formatter, *FormatResult, error) {
 		f.Close()
 		return nil, nil, err
 	}
 	res := &FormatResult{}
 	if err := f.SetDefaultFont(fm.p.Font); err != nil {
+		return fail(err)
+	}
+	for _, rec := range keep {
+		// A conditional format deleted since (in Excel, say) leaves its
+		// entry behind.
+		if rec.Kind == "cond" && formatted(rec.Sheet) && !hasRange(found[rec.Sheet], rec.Range) {
+			drop = append(drop, rec.name)
+			continue
+		}
+		fm.recs = append(fm.recs, rec)
+	}
+	if err := dropRecords(f, drop...); err != nil {
 		return fail(err)
 	}
 	for _, s := range wb.Sheets {
@@ -208,6 +249,8 @@ type formatter struct {
 	bandDxf   *int
 	overrides []Override
 	matched   []bool
+	recs      []Record // recorded styling, laid over the house style
+	st        *styler
 }
 
 // cellStyle is everything fmt sets on a cell; it doubles as the style cache
@@ -405,22 +448,14 @@ func (fm *formatter) sheet(s *grid.Sheet) (FormattedSheet, error) {
 	name := s.Name
 	f := fm.f
 
-	// Strip: cell, row and column styles, and conditional formats.
+	// Strip: cell, row and column styles. (Conditional formats are gone
+	// already, but the ones sheets cond recorded.)
 	lay := fm.layouts[name]
 	if err := stripStyles(f, name, lay); err != nil {
 		return out, err
 	}
 	if lay != nil {
 		fm.patches.plainCols[name] = true
-	}
-	cfs, err := f.GetConditionalFormats(name)
-	if err != nil {
-		return out, err
-	}
-	for ref := range cfs {
-		if err := f.UnsetConditionalFormat(name, ref); err != nil {
-			return out, err
-		}
 	}
 
 	// Excel tables carry their own style and filter; a sheet filter
@@ -500,7 +535,70 @@ func (fm *formatter) sheet(s *grid.Sheet) (FormattedSheet, error) {
 		return out, err
 	}
 	show := fm.p.Gridlines
-	return out, f.SetSheetView(name, 0, &excelize.ViewOptions{ShowGridLines: &show})
+	if err := f.SetSheetView(name, 0, &excelize.ViewOptions{ShowGridLines: &show}); err != nil {
+		return out, err
+	}
+	n, err := fm.replay(name, used)
+	if n > 0 {
+		out.Notes = append(out.Notes, fmt.Sprintf("kept the recorded styling (%s; sheets style --list)", map[bool]string{true: "1 entry", false: fmt.Sprintf("%d entries", n)}[n == 1]))
+	}
+	return out, err
+}
+
+// replay lays a sheet's recorded styling over the house style: looks from
+// sheets style, and the freeze, gridlines and filter of sheets view.
+// Recorded conditional formats were kept in place. It returns how many
+// entries it laid over.
+func (fm *formatter) replay(sheet string, used grid.Range) (int, error) {
+	f := fm.f
+	n := 0
+	for _, rec := range fm.recs {
+		if !strings.EqualFold(rec.Sheet, sheet) {
+			continue
+		}
+		n++
+		switch rec.Kind {
+		case "style":
+			l, err := ParseLook(rec.Args)
+			if err != nil {
+				continue // written by a later sheets; leave it be
+			}
+			if err := fm.st.apply(sheet, clip(rec.Range, used), &l, nil); err != nil {
+				return n, fmt.Errorf("recorded styling %s %s: %w", rec.Ref, rec.Text(), err)
+			}
+		case "view":
+			if len(rec.Args) == 0 {
+				continue
+			}
+			var err error
+			switch rec.Args[0] {
+			case "freeze":
+				err = freeze(f, sheet, rec.Range)
+			case "nofreeze":
+				err = freeze(f, sheet, grid.Range{R1: 1, C1: 1, R2: 1, C2: 1})
+			case "gridlines=on", "gridlines=off":
+				on := rec.Args[0] == "gridlines=on"
+				err = f.SetSheetView(sheet, 0, &excelize.ViewOptions{ShowGridLines: &on})
+			case "filter":
+				delete(fm.patches.noFilter, sheet)
+				var props excelize.SheetPropsOptions
+				if props, err = f.GetSheetProps(sheet); err == nil {
+					if err = f.AutoFilter(sheet, rec.Range.String(), nil); err == nil {
+						err = f.SetSheetProps(sheet, &props)
+					}
+				}
+			case "nofilter":
+				fm.patches.noFilter[sheet] = true
+				if err = f.DeleteDefinedName(&excelize.DefinedName{Name: "_xlnm._FilterDatabase", Scope: sheet}); err != nil && strings.Contains(err.Error(), "no defined name") {
+					err = nil
+				}
+			}
+			if err != nil {
+				return n, fmt.Errorf("recorded view %s: %w", rec.Text(), err)
+			}
+		}
+	}
+	return n, nil
 }
 
 func (fm *formatter) region(s *grid.Sheet, reg analyze.Region, w widths, listObject bool) (FormattedTable, error) {
@@ -728,6 +826,16 @@ func firstNonEmpty(a, b string) string {
 func inMerge(s *grid.Sheet, r, c int) bool {
 	for _, m := range s.Merges {
 		if m.Contains(r, c) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRange tells whether a list of conditional format ranges holds r.
+func hasRange(sqrefs []string, r grid.Range) bool {
+	for _, sq := range sqrefs {
+		if rs := sqrefRanges(sq); len(rs) == 1 && rs[0] == r {
 			return true
 		}
 	}
