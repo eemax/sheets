@@ -1,0 +1,1 @@
+plan.xlsx is our five-year plan. The board wants a downside case: revenue growth of 2% a year and COGS at 52% of revenue. Put those into the plan, and tell me the resulting 2030 net income, the five-year cumulative net income and the NPV from the Summary sheet.

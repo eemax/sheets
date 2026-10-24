@@ -1,0 +1,1 @@
+In orders_2026.xlsx, store S-114's March orders were imported twice by mistake (the order IDs repeat). Remove the duplicate rows, keep the workbook otherwise as it is, and tell me the corrected March revenue and the full-year total from the Summary sheet.

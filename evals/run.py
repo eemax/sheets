@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """A/B evaluation of agents doing spreadsheet tasks: with the sheets CLI,
-and with Python (openpyxl, pandas), the way agents work without it.
+and the ways agents work without it.
 
     evals/run.py prepare OUT     # a folder per task and arm: inputs and the prompt
     evals/run.py check OUT       # grade what the agents left, write OUT/report.md
     evals/run.py run OUT         # prepare, run each agent with `claude -p`, check
+
+Arms: sheets (the CLI and its guide), python (openpyxl and pandas), skill
+(Python with a spreadsheet skill: EVAL_BASELINE_SKILL names its SKILL.md)
+and mcp (the excel-mcp-server tools, run with uvx).
 
 Each task in evals/tasks has prompt.md (the request, the same for both arms),
 setup.py (writes the input files, and the true answers to a file the agent
@@ -16,8 +20,10 @@ Checks of kind "stored" (whether a file stores formula results, as pandas
 and previews read them) are counted apart from the task's pass or fail.
 """
 import argparse
+import concurrent.futures
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -26,7 +32,8 @@ import time
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(ROOT)
 TASKS = os.path.join(ROOT, "tasks")
-ARMS = ["sheets", "python"]
+ARMS = ["sheets", "python", "skill", "mcp"]
+MCP_SERVER = ["uvx", "--from", "excel-mcp-server==2.2.2", "excel-mcp-server", "stdio"]
 
 
 def tasks(only):
@@ -43,6 +50,7 @@ def sheets_bin(out):
 
 
 def uv(*args, **kw):
+    kw.setdefault("env", dict(os.environ, PYTHONPATH=os.path.join(ROOT, "lib")))
     return subprocess.run(["uv", "run", "-q", "--with", "openpyxl", "--with", "xlsxwriter", "python", *args], **kw)
 
 
@@ -53,23 +61,37 @@ def truth_path(out, task, arm):
     return os.path.join(d, arm + ".json")
 
 
+def baseline_skill(out):
+    """Copy the baseline skill's folder into OUT/skills and return it and
+    its instructions (SKILL.md without its frontmatter)."""
+    src = os.environ.get("EVAL_BASELINE_SKILL")
+    if not src:
+        sys.exit("the skill arm needs EVAL_BASELINE_SKILL: the SKILL.md of a spreadsheet skill")
+    d = os.path.join(out, "skills", os.path.basename(os.path.dirname(os.path.abspath(src))))
+    if not os.path.isdir(d):
+        shutil.copytree(os.path.dirname(os.path.abspath(src)), d)
+    body = re.sub(r"\A---\n.*?\n---\n", "", open(src).read(), flags=re.S).strip()
+    return d, body
+
+
 def prompt_for(task, arm, work, bindir):
     request = open(os.path.join(TASKS, task, "prompt.md")).read().strip()
     guide = open(os.path.join(ROOT, "arms", arm + ".md")).read().strip()
     if arm == "sheets":
         docs = subprocess.run([os.path.join(bindir, "sheets"), "agent-docs"], capture_output=True, text=True, check=True).stdout
         guide += "\n\n" + docs.strip()
-    elif os.environ.get("EVAL_BASELINE_SKILL"):
-        # The skill agents use for spreadsheets without sheets, if given.
-        guide += "\n\n" + open(os.environ["EVAL_BASELINE_SKILL"]).read().strip()
+    elif arm == "skill":
+        # As Claude Code loads a skill: its folder, then its instructions.
+        d, body = baseline_skill(os.path.dirname(bindir))
+        guide += f"\n\nBase directory for this skill: {d}\n\n{body}"
     return (f"{guide}\n\n---\n\nThe files are in {work}. Work only there.\n\n{request}\n\n"
             "When you are done, end with your answer (or a short summary of what you changed).")
 
 
-def prepare(out, only):
+def prepare(out, only, arms):
     bindir = sheets_bin(out)
     for task in tasks(only):
-        for arm in ARMS:
+        for arm in arms:
             d = os.path.join(out, task, arm)
             work = os.path.join(d, "work")
             shutil.rmtree(d, ignore_errors=True)
@@ -89,34 +111,67 @@ def run_agent(d, arm, bindir, model, budget):
         path.insert(0, bindir)
     env["PATH"] = os.pathsep.join(path)
     env["SHEETS_CACHE_DIR"] = os.path.join(d, ".cache")
-    cmd = ["claude", "-p", open(os.path.join(d, "prompt.txt")).read(), "--output-format", "json",
-           "--model", model, "--max-budget-usd", str(budget),
-           "--allowedTools", "Bash", "Read", "Write", "Edit", "Glob", "Grep",
-           "--disallowedTools", "WebFetch", "WebSearch", "Task"]
+    # No user or project settings, skills or MCP servers: each arm gets only
+    # what it is given.
+    tools = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "ToolSearch"]
+    cmd = ["claude", "-p", open(os.path.join(d, "prompt.txt")).read(), "--output-format", "stream-json", "--verbose",
+           "--model", model, "--max-budget-usd", str(budget), "--no-session-persistence",
+           "--setting-sources", "", "--disable-slash-commands", "--strict-mcp-config"]
+    if arm == "mcp":
+        config = {"mcpServers": {"excel": {"command": MCP_SERVER[0], "args": MCP_SERVER[1:] + ["--allow-dir", work]}}}
+        cmd += ["--mcp-config", json.dumps(config)]
+        tools.append("mcp__excel")
+    cmd += ["--allowedTools", *tools, "--disallowedTools", "WebFetch", "WebSearch", "Task", "Agent"]
     start = time.time()
-    res = subprocess.run(cmd, cwd=work, env=env, capture_output=True, text=True)
-    try:
-        out = json.loads(res.stdout)
-    except json.JSONDecodeError:
-        out = {"result": res.stdout + res.stderr, "is_error": True}
+    # No stdin: a command that reads it ends at once instead of waiting.
+    res = subprocess.run(cmd, cwd=work, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    # The transcript, kept to see what each agent did; its last event is the
+    # result.
+    with open(os.path.join(d, "transcript.jsonl"), "w") as f:
+        f.write(res.stdout)
+    events = []
+    for line in res.stdout.splitlines():
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    out = next((e for e in reversed(events) if e.get("type") == "result"), None) or {"result": res.stdout[-2000:] + res.stderr[-2000:], "is_error": True}
     with open(os.path.join(d, "answer.txt"), "w") as f:
         f.write(out.get("result") or "")
     usage = out.get("usage") or {}
     meta = {"turns": out.get("num_turns"), "cost_usd": out.get("total_cost_usd"),
             "seconds": round(time.time() - start, 1), "error": out.get("is_error"),
             "tokens": sum(usage.get(k, 0) or 0 for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")),
-            "output_tokens": usage.get("output_tokens")}
+            "output_tokens": usage.get("output_tokens"), "tools": tool_uses(events)}
     with open(os.path.join(d, "meta.json"), "w") as f:
         json.dump(meta, f)
     return meta
 
 
-def check(out, only):
+def tool_uses(events):
+    """How often the agent called each tool; shell commands by program."""
+    counts = {}
+    for e in events:
+        if e.get("type") != "assistant":
+            continue
+        for block in e.get("message", {}).get("content", []):
+            if block.get("type") != "tool_use":
+                continue
+            name = block["name"]
+            if name == "Bash":
+                words = re.findall(r"(?:^|[|;&\n(]\s*)(?:\w+=\S+\s+)*(sheets|uv|uvx|python3?|pip3?|cat|head|unzip|ls|cd)\b",
+                                   block.get("input", {}).get("command", ""))
+                name = "Bash:" + (",".join(sorted(set(words))) or "other")
+            counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def check(out, only, arms=ARMS):
     bindir = os.path.join(out, "bin")
     env = dict(os.environ, SHEETS_BIN=os.path.join(bindir, "sheets"), PYTHONPATH=os.path.join(ROOT, "lib"), SHEETS_UNDO="off")
     results = {}
     for task in tasks(only):
-        for arm in ARMS:
+        for arm in arms:
             d = os.path.join(out, task, arm)
             if not os.path.isdir(d):
                 continue
@@ -137,8 +192,9 @@ def check(out, only):
 
 def write_report(out, results):
     lines = ["# sheets A/B evaluation", "",
-             "| task | arm | pass | checks | stored results | turns | tokens | cost $ |", "|---|---|---|---|---|---|---|---|"]
-    totals = {arm: {"pass": 0, "n": 0, "stored": 0, "stored_n": 0, "turns": 0, "tokens": 0, "cost": 0.0} for arm in ARMS}
+             "| task | arm | pass | checks | stored results | turns | tokens | cost $ | seconds |", "|---|---|---|---|---|---|---|---|---|"]
+    totals = {arm: {"pass": 0, "n": 0, "stored": 0, "stored_n": 0, "turns": 0, "tokens": 0, "cost": 0.0, "seconds": 0.0}
+              for arm in ARMS if any(a == arm for _, a in results)}
     for (task, arm), r in sorted(results.items()):
         task_checks = [c for c in r["checks"] if c["kind"] == "task"]
         stored = [c for c in r["checks"] if c["kind"] == "stored"]
@@ -151,11 +207,13 @@ def write_report(out, results):
         t["turns"] += m.get("turns") or 0
         t["tokens"] += m.get("tokens") or 0
         t["cost"] += m.get("cost_usd") or 0
+        t["seconds"] += m.get("seconds") or 0
+        cost = f"{m['cost_usd']:.2f}" if m.get("cost_usd") is not None else ""
         lines.append(f"| {task} | {arm} | {'✅' if r['passed'] else '❌'} | {sum(c['ok'] for c in task_checks)}/{len(task_checks)} | "
-                     f"{sum(c['ok'] for c in stored)}/{len(stored)} | {m.get('turns', '')} | {m.get('tokens', '')} | {m.get('cost_usd', '')} |")
-    lines += ["", "| arm | tasks passed | stored results | turns | tokens | cost $ |", "|---|---|---|---|---|---|"]
+                     f"{sum(c['ok'] for c in stored)}/{len(stored)} | {m.get('turns', '')} | {m.get('tokens', '')} | {cost} | {m.get('seconds', '')} |")
+    lines += ["", "| arm | tasks passed | stored results | turns | tokens | cost $ | seconds |", "|---|---|---|---|---|---|---|"]
     for arm, t in totals.items():
-        lines.append(f"| {arm} | {t['pass']}/{t['n']} | {t['stored']}/{t['stored_n']} | {t['turns']} | {t['tokens']} | {t['cost']:.2f} |")
+        lines.append(f"| {arm} | {t['pass']}/{t['n']} | {t['stored']}/{t['stored_n']} | {t['turns']} | {t['tokens']} | {t['cost']:.2f} | {t['seconds']:.0f} |")
     lines += ["", "## Failed checks", ""]
     for (task, arm), r in sorted(results.items()):
         for c in r["checks"]:
@@ -173,19 +231,26 @@ def main():
     ap.add_argument("--tasks", nargs="*", help="task name prefixes (default: all)")
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--budget", type=float, default=2.0, help="USD per agent run")
+    ap.add_argument("--arms", nargs="*", default=["sheets", "python"], choices=ARMS, help="arms to run (default: sheets python)")
+    ap.add_argument("--jobs", type=int, default=1, help="agents to run at once")
     a = ap.parse_args()
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
     if a.action == "prepare":
-        prepare(out, a.tasks)
+        prepare(out, a.tasks, a.arms)
     elif a.action == "check":
         check(out, a.tasks)
     else:
-        bindir = prepare(out, a.tasks)
-        for task in tasks(a.tasks):
-            for arm in ARMS:
-                print(f"{task} / {arm} ...", file=sys.stderr)
-                run_agent(os.path.join(out, task, arm), arm, bindir, a.model, a.budget)
+        bindir = prepare(out, a.tasks, a.arms)
+        runs = [(task, arm) for task in tasks(a.tasks) for arm in a.arms]
+
+        def one(run):
+            task, arm = run
+            meta = run_agent(os.path.join(out, task, arm), arm, bindir, a.model, a.budget)
+            print(f"{task} / {arm}: {meta['turns']} turns, ${meta['cost_usd'] or 0:.2f}, {meta['seconds']} s", file=sys.stderr)
+
+        with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
+            list(pool.map(one, runs))
         check(out, a.tasks)
 
 

@@ -64,7 +64,10 @@ if c.add("Summary has Region, Revenue, Target, Gap", h and all(k in cols for k i
                        (rule.type == "expression" and rule.formula and rule.formula[0].replace(" ", "").endswith("<0"))
             if negative and isinstance(rgb, str) and len(rgb) >= 6 and int(rgb[-6:-4], 16) > 150 and int(rgb[-4:-2], 16) < 100:
                 red = True
-    c.add("negative Gap in red (a conditional format)", red)
+    # A number format with [Red] for negatives shows them red too.
+    formats = [summary.cell(r, cols["gap"]).number_format for r in rows.values()]
+    red = red or bool(formats) and all(";" in f and "[RED]" in f.split(";")[1].upper() for f in formats)
+    c.add("negative Gap in red (a conditional format or a [Red] number format)", red, sorted(set(formats)))
     c.add("Summary revenue stored", all(close(openpyxl.load_workbook(path, data_only=True)[summary.title].cell(r, cols["revenue"]).value or 0, truth["revenue"][g])
                                         for g, r in rows.items()), kind="stored")
 

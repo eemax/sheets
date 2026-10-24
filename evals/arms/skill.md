@@ -1,0 +1,1 @@
+For spreadsheet work, use Python with openpyxl and pandas, following the xlsx skill below. Run scripts with `uv run --with openpyxl --with pandas python script.py` (the packages are fetched on first use). LibreOffice is not installed. Do not use the `sheets` tool.

@@ -1,0 +1,1 @@
+For spreadsheet work, use the Excel MCP server's tools (named mcp__excel__...; load them with ToolSearch). Do not use Python or other libraries to read or write spreadsheet files. Pass files by their absolute paths.

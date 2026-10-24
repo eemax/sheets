@@ -7,8 +7,10 @@ separately with openpyxl, data_only.
 """
 import json
 import os
+import re
 import subprocess
 import sys
+import zipfile
 
 import openpyxl
 
@@ -50,6 +52,37 @@ def close(a, b, tol=0.005):
         return abs(float(a) - float(b)) <= tol * max(1, abs(float(b)))
     except (TypeError, ValueError):
         return False
+
+
+_UNITS = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mn": 1e6, "million": 1e6, "bn": 1e9, "billion": 1e9}
+
+
+def numbers(text):
+    """The numbers a reply mentions: 1,234.5, $1.2M, 338k, (1,200), -5%."""
+    found = []
+    pattern = r"([(\-\u2212])?\s?[$€£]?\s?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*(million|thousand|billion|mn|bn|m|k)?\b"
+    for m in re.finditer(pattern, text, re.I):
+        n = float(m.group(2).replace(",", "") + (m.group(3) or ""))
+        n *= _UNITS.get((m.group(4) or "").lower(), 1)
+        found.append(-n if m.group(1) else n)
+    return found
+
+
+def mentions(text, value, rel=0.005):
+    """Whether a reply states a number, to within rel (sign aside)."""
+    return any(abs(abs(n) - abs(value)) <= rel * max(1, abs(value)) for n in numbers(text))
+
+
+def excel_saved(path):
+    """Make a file xlsxwriter wrote look as Excel saves it: results stored,
+    no flag asking the next program to recalculate."""
+    with zipfile.ZipFile(path) as z:
+        items = [(i, z.read(i.filename)) for i in z.infolist()]
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for info, data in items:
+            if info.filename == "xl/workbook.xml":
+                data = data.replace(b' fullCalcOnLoad="1"', b"")
+            z.writestr(info, data)
 
 
 class Checks:
