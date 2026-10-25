@@ -5,7 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/eemax/sheets/internal/book"
+	"github.com/eemax/sheets/internal/engine"
+	"github.com/eemax/sheets/internal/formula"
 	"github.com/eemax/sheets/internal/grid"
 )
 
@@ -30,15 +31,28 @@ type cellRef struct {
 	spills   bool // a dynamic array: the value shown is its first element
 }
 
+// spills tells whether a formula returns an array, which spills: a
+// function returning one (=SORT(A2:A9)), or arithmetic over a range
+// (=A2:A9*2).
+func spills(f string) bool {
+	_, arr := engine.ArrayUse(f)
+	return arr || formula.Spills(f)
+}
+
 const (
 	maxEvaluate    = 2000
 	maxListed      = 5
 	maxErrorListed = 10
 )
 
+// evaluator gives what a cell holds after a change: Editor.Evaluate.
+type evaluator interface {
+	Evaluate(sheet string, row, col int) (v grid.Cell, note string, ok bool)
+}
+
 // evaluateFormulas evaluates written formulas. qualify prefixes refs with
 // their sheet, for commands that may touch several sheets.
-func evaluateFormulas(ed book.Editor, cells []cellRef, qualify bool) *formulaReport {
+func evaluateFormulas(ed evaluator, cells []cellRef, qualify bool) *formulaReport {
 	if len(cells) == 0 {
 		return nil
 	}

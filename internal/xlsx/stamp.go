@@ -193,6 +193,9 @@ func storeResults(b []byte, res map[string]grid.Cell) []byte {
 		return b
 	}
 	inArray := func(ref string) bool {
+		if _, ok := res[ref]; ok {
+			return false // a spilled value just written
+		}
 		r, c, _ := grid.ParseCell(ref)
 		for _, rg := range arrays {
 			if rg.Contains(r, c) {

@@ -12,9 +12,9 @@ stdout '1 formula error: Sheet1!D2 #DIV/0!'
 exec sheets set book.xlsx D3 =NOPE(A3)
 stdout '1 formula error: Sheet1!D3 #NAME\? \(unknown function NOPE\)'
 
-# A real Excel function the calculator lacks is not an error.
-exec sheets set book.xlsx D4 '=XMATCH(3,A2:A3)'
-stdout 'not evaluated: Sheet1!D4: .*Excel computes it on open'
+# A real Excel function the engine lacks is not an error.
+exec sheets set book.xlsx D4 '=CELL("row",A3)'
+stdout 'not evaluated: Sheet1!D4: CELL is not supported by the sheets calculator; Excel computes it on open'
 ! stdout 'formula error'
 
 exec sheets set book.xlsx 'Other!B2' hello

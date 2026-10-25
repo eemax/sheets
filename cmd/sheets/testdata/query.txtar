@@ -30,6 +30,38 @@ stderr 'no such column: Nope \(columns: Sales\(Date, Region, Units, Price, Share
 ! exec sheets query book.xlsx 'SELECT 1' --into A1
 stderr '--into needs a sheet'
 
+# A report in sections under one header is one table of every section's
+# lines, each named by its section; subtotals and the grand total are left
+# out.
+stdin report.tsv
+exec sheets write report.xlsx
+exec sheets info report.xlsx
+stdout 'A1:C5  table · section "West" · 2 rows \+ total · Product, Units, Sales'
+stdout 'A7:C10  section "East" of the table above · 2 rows \+ total'
+stdout 'A12:C12  total row of the table above'
+exec sheets query report.xlsx
+stdout 'Sheet1  Sheet1!A1:C12 · 4 rows \(total rows left out\)'
+stdout 'sections West, East, named in _section'
+exec sheets query report.xlsx 'SELECT _section, SUM(Sales) FROM Sheet1 GROUP BY 1 ORDER BY 1'
+cmp stdout sections.out
+
+-- report.tsv --
+Product	Units	Sales
+West
+  Alpha	1	10
+  Bravo	2	20
+West total	=SUM(B3:B4)	=SUM(C3:C4)
+
+East
+  Alpha	3	30
+  Bravo	4	40
+East total	=SUM(B8:B9)	=SUM(C8:C9)
+
+Grand total	=B5+B10	=C5+C10
+-- sections.out --
+_section	SUM(Sales)
+East	70
+West	30
 -- sales.tsv --
 Date	Region	Units	Price	Share	Revenue
 2026-07-01	North	120	$12.50	18%	=C{r}*D{r}

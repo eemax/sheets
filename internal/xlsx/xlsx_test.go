@@ -390,15 +390,15 @@ func TestModernFormulas(t *testing.T) {
 	if v, _, ok := e.Evaluate("Data", 1, 5); !ok || v.Num != 4 {
 		t.Errorf("XLOOKUP = %+v %v", v, ok)
 	}
-	if _, note, ok := e.Evaluate("Data", 1, 6); ok || !strings.Contains(note, "LET is not supported") {
-		t.Errorf("LET: ok=%v note=%q", ok, note)
+	if v, _, ok := e.Evaluate("Data", 1, 6); !ok || v.Num != 18 {
+		t.Errorf("LET = %+v %v", v, ok)
 	}
 	if err := e.Save(false); err != nil {
 		t.Fatal(err)
 	}
 	xml := sheetXML(t, path, "xl/worksheets/sheet1.xml")
 	for _, want := range []string{
-		`<c r="D1" cm="1" t="str"><f t="array" ref="D1">_xlfn.UNIQUE(A2:A4)</f><v>Ada</v>`,
+		`<c r="D1" cm="1" t="str"><f t="array" ref="D1:D2">_xlfn.UNIQUE(A2:A4)</f><v>Ada</v>`, // spilled, as Excel saves it
 		`<f>_xlfn.XLOOKUP(&#34;Bob&#34;,A2:A4,B2:B4)</f><v>4</v>`,
 		`<f>_xlfn.LET(_xlpm.x,B2,_xlpm.x*2)</f><v>18</v>`, // computed inlined
 	} {

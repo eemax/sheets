@@ -47,7 +47,7 @@ func ReadBytes(data []byte) (*grid.Workbook, error) {
 		wb := &grid.Workbook{}
 		if len(b) > 0 && wb.UnmarshalBinary(b[1:]) == nil {
 			if b[0] == 1 {
-				wb.Resolver = &calc{data: data, wb: wb}
+				wb.Resolver = &calc{wb: wb}
 			}
 			return wb, nil
 		}
@@ -185,7 +185,7 @@ func parse(data []byte) (wb *grid.Workbook, layouts map[string]*layout, stamped 
 		}
 		parts := p.sheetParts(rel.Target)
 		for _, t := range parts.tables {
-			sh.Tables = append(sh.Tables, grid.NamedTable{Name: t.name, Range: t.ref, Totals: t.totals, Filter: t.filter && t.headers > 0, Columns: columnNames(t.xml)})
+			sh.Tables = append(sh.Tables, grid.NamedTable{Name: t.name, Range: t.ref, Totals: t.totals, Filter: t.filter && t.headers > 0, Columns: columnNames(t.xml), Calculated: calculatedFormulas(t.xml)})
 		}
 		lay.tables = parts.tables
 		if parts.drawing != "" {
@@ -227,7 +227,7 @@ func parse(data []byte) (wb *grid.Workbook, layouts map[string]*layout, stamped 
 		wb.Names = append(wb.Names, dn)
 	}
 	if pending {
-		wb.Resolver = &calc{data: data, wb: wb}
+		wb.Resolver = &calc{wb: wb}
 	}
 	return wb, layouts, stamped, nil
 }
@@ -532,6 +532,13 @@ func (p *pkg) worksheet(name string, sh *grid.Sheet, lay *layout, sst []string, 
 				}
 				lay.spills[[2]int{row, col}] = spill
 			}
+			if arrayRef != "" && c.Formula != "" {
+				if rg, err := grid.ParseRange(arrayRef); err == nil && rg.R1 == row && rg.C1 == col {
+					sh.Arrays = append(sh.Arrays, rg)
+				} else {
+					sh.Arrays = append(sh.Arrays, grid.Range{R1: row, C1: col, R2: row, C2: col})
+				}
+			}
 			if style != "" && style != "0" {
 				if i, err := strconv.Atoi(style); err == nil && i < len(xfFmt) {
 					c.Fmt = xfFmt[i]
@@ -670,6 +677,7 @@ loop:
 		// Stored formulas carry _xlfn./_xlpm. prefixes; show them as typed.
 		c.Formula = formula.FromFile(text)
 		c.Shared = fType == "shared" && text != ""
+		c.Unprefixed = len(formula.Unprefixed(text)) > 0
 	}
 	switch typ {
 	case "s":
@@ -701,7 +709,7 @@ loop:
 			}
 		}
 	}
-	if c.Formula != "" && !hasV {
+	if c.Formula != "" && !hasV || c.Unprefixed {
 		c.Pending = true
 	}
 	if fType != "array" {

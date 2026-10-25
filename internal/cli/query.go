@@ -45,6 +45,10 @@ dates are ISO text ('2026-07-01', so date(), strftime() and comparisons
 work), errors and blanks are NULL. Total rows are left out. Each table has
 a _row column holding the sheet row of the record.
 
+A report laid out in sections under one header (a heading row such as
+"West", its lines, a subtotal; then "North", ...) is one table holding the
+lines of every section, with a _section column naming each line's.
+
 --into Sheet writes the result there as a new table (replacing what the
 sheet held); --into Sheet!C5 writes it at that cell. Result columns named
 like a source column keep its number format.`,
@@ -132,11 +136,20 @@ func (a *app) printSchema(tables []*query.Table) error {
 	}
 	for _, t := range tables {
 		line := fmt.Sprintf("%s  %s · %s", query.Quote(t.Name), grid.QuoteSheet(t.Sheet)+"!"+t.Range, plural(t.Rows, "row"))
-		if t.Total {
+		switch {
+		case t.Total && len(t.Sections) > 0:
+			line += " (total rows left out)"
+		case t.Total:
 			line += " (total row left out)"
 		}
 		a.printf("%s\n", line)
+		if len(t.Sections) > 0 {
+			a.printf("  sections %s, named in %s\n", headerList(t.Sections, 8), query.SectionColumn)
+		}
 		cols := []string{query.RowColumn + " INTEGER"}
+		if len(t.Sections) > 0 {
+			cols = append(cols, query.SectionColumn+" TEXT")
+		}
 		for _, c := range t.Columns {
 			col := query.Quote(c.Name)
 			if c.Type != "" {
@@ -280,7 +293,7 @@ func (a *app) queryInto(file, into string, res *query.Result, tables []*query.Ta
 		return nil, fmt.Errorf("--into needs a sheet: --into Summary (replaces that sheet) or --into Summary!A1")
 	}
 	clear := r.Range == nil // a whole sheet: replace its contents
-	w, err := writeRows(ed, file, into, rows, clear && ed.Workbook().Sheet(r.Sheet) != nil, false)
+	w, err := writeRows(ed, file, into, rows, clear && ed.Workbook().Sheet(r.Sheet) != nil, false, true)
 	if err != nil {
 		return nil, err
 	}

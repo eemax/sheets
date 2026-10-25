@@ -53,7 +53,7 @@ func editCSV(path string, create bool) (Editor, error) {
 			return nil, err
 		}
 		c.dialect = c.orig.Dialect
-		wb = c.orig.Workbook(c.sheet)
+		wb = c.orig.Editing(c.sheet)
 	case errors.Is(err, fs.ErrNotExist) && create:
 		c.created = true
 		wb = &grid.Workbook{Format: "csv", Formats: []grid.Format{{}}, Sheets: []*grid.Sheet{grid.NewSheet(c.sheet)}}
@@ -71,6 +71,9 @@ func editCSV(path string, create bool) (Editor, error) {
 }
 
 func (c *csvEditor) Created() bool { return c.created }
+
+// HoldsValues is true: a CSV file holds no formulas.
+func (c *csvEditor) HoldsValues() bool { return true }
 
 // EnsureSheet accepts the file's one sheet.
 func (c *csvEditor) EnsureSheet(name string) (string, bool, error) {

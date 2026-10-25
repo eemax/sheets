@@ -60,6 +60,17 @@ The file and sheet are created when missing. An empty value clears a cell.`,
 			defer ed.Close()
 			res := setResult{File: args[0]}
 			var toEval []cellRef
+			// A CSV file holds values: formulas there compute them, all from
+			// the file as it stands before this command, so that one may
+			// read the cells it replaces (=ROUND(D{r}*1.05,2) over D).
+			vo, valuesOnly := ed.(book.ValuesOnly)
+			valuesOnly = valuesOnly && vo.HoldsValues()
+			type write struct {
+				sheet    string
+				row, col int
+				v        input.Value
+			}
+			var writes []write
 			for i := 1; i < len(args); i += 2 {
 				var sheet string
 				var rg *grid.Range
@@ -80,22 +91,49 @@ The file and sheet are created when missing. An empty value clears a cell.`,
 					return fmt.Errorf("%q: whole rows or columns cannot be set; give a bounded range", args[i])
 				}
 				v := input.Parse(args[i+1], raw)
+				if v.Formula != "" {
+					if v.Formula, err = sheetTableRefs(ed.Workbook(), v.Formula); err != nil {
+						return err
+					}
+				}
 				for r := rg.R1; r <= rg.R2; r++ {
 					for c := rg.C1; c <= rg.C2; c++ {
 						cv := v
 						if v.Formula != "" && formula.HasRowPlaceholder(v.Formula) {
 							cv.Formula = formula.FillRow(v.Formula, r)
-							toEval = append(toEval, cellRef{sheet, r, c, formula.Spills(cv.Formula)})
+							toEval = append(toEval, cellRef{sheet, r, c, spills(cv.Formula)})
 						} else if v.Formula != "" {
 							cv.Formula = formula.Shift(v.Formula, r-rg.R1, c-rg.C1)
-							toEval = append(toEval, cellRef{sheet, r, c, formula.Spills(cv.Formula)})
+							toEval = append(toEval, cellRef{sheet, r, c, spills(cv.Formula)})
 						}
-						if err := ed.Set(sheet, r, c, cv); err != nil {
-							return err
-						}
+						writes = append(writes, write{sheet, r, c, cv})
 					}
 				}
 				res.Cells = append(res.Cells, setCell{Ref: grid.FormatRef(sheet, *rg), Input: args[i+1], Cells: rg.Rows() * rg.Cols()})
+			}
+			var computed []string
+			if valuesOnly {
+				var unknown []string
+				for k, w := range writes {
+					if w.v.Formula == "" {
+						continue
+					}
+					v, why, ok := vo.EvalAt(w.sheet, w.row, w.col, w.v.Formula)
+					if !ok {
+						unknown = append(unknown, fmt.Sprintf("%s (%s)", grid.CellName(w.row, w.col), why))
+						continue
+					}
+					writes[k].v = input.Value{Kind: v.Kind, Num: v.Num, Text: v.Text, Bool: v.Bool}
+					computed = append(computed, grid.CellName(w.row, w.col))
+				}
+				if len(unknown) > 0 {
+					return fmt.Errorf("%s holds values only, and the sheets calculator cannot compute %s; nothing was saved", args[0], strings.Join(unknown[:min(5, len(unknown))], ", "))
+				}
+			}
+			for _, w := range writes {
+				if err := ed.Set(w.sheet, w.row, w.col, w.v); err != nil {
+					return err
+				}
 			}
 			if err := ed.Save(a.dryRun); err != nil {
 				return err
@@ -103,6 +141,14 @@ The file and sheet are created when missing. An empty value clears a cell.`,
 			// What the file now stores for them.
 			res.Formulas = evaluateFormulas(ed, toEval, true)
 			res.Warnings = ed.Warnings()
+			if len(computed) > 0 {
+				list := computed
+				if len(list) > 5 {
+					list = append(list[:5:5], fmt.Sprintf("and %d more", len(computed)-5))
+				}
+				res.Warnings = append(res.Warnings, fmt.Sprintf("%s is a CSV file, which holds values: %s saved as %s, computed from the values before this change (convert the file to .xlsx to keep formulas)",
+					args[0], strings.Join(list, ", "), map[bool]string{true: "its result", false: "their results"}[len(computed) == 1]))
+			}
 			if a.json {
 				return a.printJSON(res)
 			}

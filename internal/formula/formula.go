@@ -498,6 +498,49 @@ func ExtendRanges(f, home, target string, from, to int) string {
 	return ExtendRangesIn(f, home, target, from, to, 1, grid.MaxCols)
 }
 
+// GrowRanges grows the ranges on sheet target that cover a table's
+// column from its first data row r1 (or above) to its last, from, so that
+// they end at row to: what Excel does to references to a table's columns
+// when rows are added to it. Ranges covering part of the column stay, as
+// do running ranges, fixed at the top and relative at the end
+// (=SUM($B$2:B9), filled down): they reach the row of their formula, not
+// the end of the column. home is the sheet holding the formula.
+func GrowRanges(f, home, target string, r1, from, to, c1, c2 int) string {
+	if !strings.Contains(f, ":") {
+		return f
+	}
+	ps := tokenize(f)
+	changed := false
+	for i := 0; i+2 < len(ps); i++ {
+		a, sep, b := &ps[i], ps[i+1], &ps[i+2]
+		if !a.isRef || sep.isRef || sep.text != ":" || !b.isRef || a.kind != cellRef || b.kind != cellRef {
+			continue
+		}
+		sheet := home
+		if a.qualified {
+			sheet = a.sheet
+		}
+		running := a.rowAbs && !b.rowAbs
+		if strings.EqualFold(sheet, target) && b.row == from && a.row <= r1 && min(a.col, b.col) >= c1 && max(a.col, b.col) <= c2 && !running {
+			b.row = to
+			changed = true
+		}
+		i += 2
+	}
+	if !changed {
+		return f
+	}
+	var out strings.Builder
+	for _, p := range ps {
+		if p.isRef {
+			out.WriteString(p.render())
+		} else {
+			out.WriteString(p.text)
+		}
+	}
+	return out.String()
+}
+
 // ExtendRangesIn is ExtendRanges for the ranges within columns c1..c2 only.
 func ExtendRangesIn(f, home, target string, from, to, c1, c2 int) string {
 	ps := tokenize(f)

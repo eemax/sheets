@@ -1,0 +1,56 @@
+# A formula set on a CSV file computes from the values as they were, so a
+# column can be changed in place; the file keeps its dialect and each
+# value its style (1.249,00 stays 1.311,45, and 80,48 turns to 84,50, not
+# 84,5).
+exec sheets set prices.csv 'D2:D5' '=ROUND(D{r}*1.05,2)'
+stdout 'saved as their results, computed from the values before this change'
+cmp prices.csv want.csv
+
+# The same with points: a number written without thousands separators
+# gets none, and keeps its decimals.
+exec sheets set us.csv 'B2:B3' '=ROUND(B{r}*1.05,2)'
+cmp us.csv want-us.csv
+
+# Adding a column, through a helper and back, leaves the file as it was
+# but for the prices; no row reads as comma-separated afterwards.
+cp orig.csv batch.csv
+stdin batch.txt
+exec sheets do batch.csv
+cmp batch.csv want-batch.csv
+
+-- prices.csv --
+Nr;Name;Lieferant;Preis
+A-1;Kaffee, gemahlen;Müller;12,50
+A-2;"Tee ""Earl Grey""";Schäfer;1.249,00
+A-3;Zucker;Müller;0,89
+A-4;Kakao;Müller;80,48
+-- want.csv --
+Nr;Name;Lieferant;Preis
+A-1;Kaffee, gemahlen;Müller;13,13
+A-2;"Tee ""Earl Grey""";Schäfer;1.311,45
+A-3;Zucker;Müller;0,93
+A-4;Kakao;Müller;84,50
+-- us.csv --
+Item,Price
+Kettle,1000.00
+Cups,80.48
+-- want-us.csv --
+Item,Price
+Kettle,1050.00
+Cups,84.50
+-- orig.csv --
+Nr;Name;Lieferant;Preis
+A-1;Kaffee, gemahlen;Müller;12,50
+A-2;"Tee ""Earl Grey""";Schäfer;1.249,00
+A-3;Zucker;Müller;0,89
+A-4;Kakao;Müller;80,48
+-- batch.txt --
+set E2:E5 '=ROUND(D{r}*1.05,2)'
+copy E2:E5 D2 --values
+cols delete E
+-- want-batch.csv --
+Nr;Name;Lieferant;Preis
+A-1;Kaffee, gemahlen;Müller;13,13
+A-2;"Tee ""Earl Grey""";Schäfer;1.311,45
+A-3;Zucker;Müller;0,93
+A-4;Kakao;Müller;84,50

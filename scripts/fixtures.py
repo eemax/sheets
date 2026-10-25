@@ -15,7 +15,7 @@ from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Border, Font, PatternFill, Side
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.filters import AutoFilter
-from openpyxl.worksheet.table import Table, TableColumn, TableStyleInfo
+from openpyxl.worksheet.table import Table, TableColumn, TableFormula, TableStyleInfo
 
 out = sys.argv[1]
 
@@ -104,6 +104,42 @@ ws.add_table(table)
 ws["A8"] = "Source: CRM"
 ws["E2"] = "=SUM(SalesT[Units])"
 wb.save(f"{out}/tables.xlsx")
+
+# calccol.xlsx: an Excel table with a calculated column (Total, which Excel
+# fills into new rows) and a totals row, with a formula beside it reading a
+# column of the table.
+wb = Workbook()
+ws = wb.active
+ws.title = "Data"
+ws.append(["Rep", "Q1", "Q2", "Q3", "Q4", "Total"])
+for name, *q in [("Ann", 1, 2, 3, 4), ("Bob", 5, 6, 7, 8)]:
+    ws.append([name, *q, "=SUM(Sales[[#This Row],[Q1]:[Q4]])"])
+ws.append(["Total", None, None, None, None, "=SUBTOTAL(109,Sales[Total])"])
+table = Table(displayName="Sales", ref="A1:F4", totalsRowCount=1)
+columns = [TableColumn(id=i, name=n) for i, n in enumerate(["Rep", "Q1", "Q2", "Q3", "Q4", "Total"], 1)]
+columns[0].totalsRowLabel = "Total"
+columns[5].calculatedColumnFormula = TableFormula(attr_text="SUM(Sales[[#This Row],[Q1]:[Q4]])")
+columns[5].totalsRowFunction = "sum"
+table.tableColumns = columns
+ws.add_table(table)
+ws["H1"] = "Grand"
+ws["H2"] = "=SUM(Sales[Total])"
+wb.save(f"{out}/calccol.xlsx")
+
+# unprefixed.xlsx: functions added after Excel 2007 written as typed,
+# which openpyxl stores without the _xlfn. prefix Excel needs: Excel shows
+# #NAME? for them.
+wb = Workbook()
+ws = wb.active
+ws.title = "Data"
+ws.append(["Code", "Qty", "First PK", "Joined", "Max PK", "Total"])
+for code, qty in [("PK1", 10), ("XX2", 20), ("PK3", 30)]:
+    ws.append([code, qty])
+ws["C2"] = '=IFERROR(INDEX($A$2:$A$4,AGGREGATE(15,6,(ROW($A$2:$A$4)-1)/(LEFT($A$2:$A$4,2)="PK"),1)),"")'
+ws["D2"] = '=TEXTJOIN(",",TRUE,A2:A4)'
+ws["E2"] = '=MAXIFS(B2:B4,A2:A4,"PK*")'
+ws["F2"] = "=SUM(B2:B4)"
+wb.save(f"{out}/unprefixed.xlsx")
 
 # cached.xlsx: formulas with their results stored, as Excel saves them (no
 # recalculation flag); written with XlsxWriter, which can store results.

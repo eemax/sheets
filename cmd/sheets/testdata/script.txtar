@@ -1,0 +1,145 @@
+# sheets script runs Office Scripts (TypeScript) against a workbook. Reads
+# give what the cells hold now, the script's own writes computed; the file
+# is saved once, as one undo step.
+stdin sales.tsv
+exec sheets write book.xlsx Sales
+exec sheets script book.xlsx revenue.ts --arg 1.2
+cmp stdout revenue.out
+exec sheets read book.xlsx Sales --formulas
+cmp stdout sheet.out
+exec sheets undo book.xlsx --list
+stdout -count=1 'sheets script'
+
+# A script that throws saves nothing, and says where it stopped.
+! exec sheets script book.xlsx bad.ts
+stderr '^error: script error: getRange\("ZZZZ1"\): invalid cell or range "ZZZZ1" \(bad.ts line 4\); nothing was saved$'
+exec sheets read book.xlsx Sales!A1
+stdout 'Region'
+! exec sheets script book.xlsx -e 'function main(wb: ExcelScript.Workbook {'
+stderr 'script: line 1: Expected "\)" but found "\{"'
+! exec sheets script book.xlsx --timeout 200ms -e 'while (true) {}'
+stderr 'script stopped: the script ran longer than 200ms'
+! exec sheets script book.xlsx -e 'workbook.getWorksheet("Sales").getRange("A1:B2").setValues([[1, 2, 3]])'
+stderr 'setValues: Sales!A1:B2 has 2 rows, the values 1'
+
+# Plain code without main; formula errors read as their codes, results
+# the calculator cannot compute as null, with a warning.
+exec sheets script book.xlsx -e 'const ws = workbook.getWorksheet("Sales"); ws.getRange("I1:I2").setFormulas([["=1/0"], ["=FILTERXML(\"<a>1</a>\",\"//a\")"]]); console.log(JSON.stringify(ws.getRange("I1:I2").getValues()))'
+stdout '^\[\["#DIV/0!"\],\[null\]\]$'
+stdout 'warning: the script read 1 cell whose formula result the sheets calculator cannot compute, as null: Sales!I2'
+
+# Tables: addRows appends as write --append does, above a total row,
+# filling formula columns; sort and deleteRowsAt work on its data rows.
+exec sheets script book.xlsx tables.ts
+cmp stdout tables.out
+exec sheets read book.xlsx Sales!A1:G6 --formulas
+cmp stdout tables-sheet.out
+
+# CSV: values in, values out, in the file's own dialect and style.
+exec sheets script prices.csv -e 'const r = workbook.getActiveWorksheet().getRange("C2:C3"); r.setValues(r.getValues().map(v => [Math.round((v[0] as number) * 110) / 100]))'
+cmp prices.csv prices-want.csv
+
+# removeDuplicates (text without case, as Excel), find, borders, filters;
+# what sheets does with its own commands says so.
+stdin people.tsv
+exec sheets write people.xlsx Data
+exec sheets script people.xlsx dedupe.ts
+stdout '^result: \{"removed":2,"left":3,"hit":"Data!B3"\}$'
+stdout '2 rows removed as duplicates; styling on 1 range'
+exec sheets style people.xlsx Data!A1 --show
+stdout 'border=bottom:double'
+! exec sheets script people.xlsx -e 'workbook.getActiveWorksheet().addTable("A1:C4", true)'
+stderr 'addTable: sheets does not create Excel tables'
+
+# --dry-run and --json.
+exec sheets --dry-run script book.xlsx -e 'workbook.getWorksheet("Sales").getRange("A1").setValue("X")'
+stdout 'dry run: 1 cell written, nothing was saved'
+exec sheets read book.xlsx Sales!A1
+stdout 'Region'
+exec sheets script book.xlsx --json -e 'function main(wb) { console.log("hi"); return wb.getWorksheet("Sales").getRange("B2:B3").getValues(); }'
+stdout '"console":\["hi"\],"result":\[\[10\],\[7\]\]'
+
+-- sales.tsv --
+Region	Units	Price
+North	10	2.5
+South	4	3
+East	7	1.5
+-- revenue.ts --
+function main(workbook: ExcelScript.Workbook, rate: number) {
+  const ws = workbook.getWorksheet("Sales")!;
+  const values = ws.getUsedRange()!.getValues();
+  console.log("rows:", values.length);
+  ws.getRange("D1").setValue("Revenue");
+  ws.getRange("D2:D4").setFormula("=B2*C2");
+  const revenue = ws.getRange("D2:D4").getValues().map(r => r[0] as number);
+  ws.getRange("G1:G2").setValues([["Taxed"], ["=SUM(D2:D4)*" + rate]]);
+  ws.getRange("A1:D1").getFormat().getFont().setBold(true);
+  return { revenue, taxed: ws.getRange("G2").getValue() };
+}
+-- revenue.out --
+rows: 4
+result: {"revenue":[25,12,10.5],"taxed":57}
+saved book.xlsx: 6 cells written; styling on 1 range, one undo step
+formulas: Sales!D2 = 25, Sales!D3 = 12, Sales!D4 = 10.5, Sales!G2 = 57
+next: sheets diff book.xlsx
+-- sheet.out --
+Sales!A1:G4
+	A	B	C	D	E	F	G
+1	Region	Units	Price	Revenue			Taxed
+2	North	10	2.5	=B2*C2			=SUM(D2:D4)*1.2
+3	South	4	3	=B3*C3
+4	East	7	1.5	=B4*C4
+-- bad.ts --
+interface Row { name: string }
+function main(workbook: ExcelScript.Workbook) {
+  const ws = workbook.getWorksheet("Sales")!;
+  ws.getRange("ZZZZ1").setValue(1);
+}
+-- tables.ts --
+function main(workbook: ExcelScript.Workbook) {
+  const t = workbook.getTable("Sales")!;
+  console.log(t.getColumns().map(c => c.getName()).join(", "));
+  t.getSort().apply([{ key: 1, ascending: false }]);
+  t.deleteRowsAt(2, 1);
+  t.addRows(-1, [["West", 2, 4], ["Mid", 1, 1]]);
+  return t.getColumnByName("Revenue")!.getRangeBetweenHeaderAndTotal().getValues().map(r => r[0]);
+}
+-- tables.out --
+Region, Units, Price, Revenue
+result: [25,10.5,8,1]
+saved book.xlsx: 6 cells written; Sales!A2:D4 sorted; 1 row deleted from Sales; 2 rows added to Sales, filling D =B{r}*C{r}, one undo step
+formulas: Sales!D4 = 8, Sales!D5 = 1
+next: sheets diff book.xlsx
+-- tables-sheet.out --
+Sales!A1:G6
+	A	B	C	D	E	F	G
+1	Region	Units	Price	Revenue			Taxed
+2	North	10	2.5	=B2*C2			=SUM(D2:D5)*1.2
+3	East	7	1.5	=B3*C3
+4	West	2	4	=B4*C4
+5	Mid	1	1	=B5*C5
+6
+-- people.tsv --
+Name	City	Amt
+Ann	Oslo	1
+Bob	Rome	2
+ann	Oslo	3
+Cy	Rome	2
+Bob	Rome	9
+-- dedupe.ts --
+function main(workbook: ExcelScript.Workbook) {
+  const ws = workbook.getWorksheet("Data")!;
+  const res = ws.getUsedRange()!.removeDuplicates([0, 1], true);
+  const hit = ws.getUsedRange()!.find("rome", { completeMatch: true });
+  ws.getRange("A1:C1").getFormat().getRangeBorder(ExcelScript.BorderIndex.edgeBottom).setStyle(ExcelScript.BorderLineStyle.double);
+  ws.getAutoFilter().apply(ws.getUsedRange()!);
+  return { removed: res.getRemoved(), left: res.getUniqueRemaining(), hit: hit?.getAddress() };
+}
+-- prices.csv --
+Nr;Name;Preis
+A-1;Kaffee;12,50
+A-2;Tee;1.249,00
+-- prices-want.csv --
+Nr;Name;Preis
+A-1;Kaffee;13,75
+A-2;Tee;1.373,90

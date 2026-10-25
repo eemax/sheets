@@ -558,9 +558,9 @@ func TestRowSpans(t *testing.T) {
 	}
 }
 
-// Every formula reading an error the calculator cannot hold is left to
-// Excel, not only the first to read it.
-func TestStreamUnholdableErrorSharedRange(t *testing.T) {
+// Formulas reading a range that holds an error compute with it, in the
+// streaming editor as in the full one.
+func TestStreamErrorInRange(t *testing.T) {
 	path := writeBook(t, [][]string{{"v"}, {"1"}, {"x"}, {"3"}})
 	change(t, path, func(e *Editor) {
 		must(t, e.f.SetCellDefault("Data", "A3", "#REF!"))
@@ -580,10 +580,11 @@ func TestStreamUnholdableErrorSharedRange(t *testing.T) {
 	if !a.Streaming() {
 		t.Fatal("left the streaming editor")
 	}
+	// The engine holds the error like any value: COUNTBLANK reads it.
 	s := read(t, path).Sheet("Data")
-	for r := 1; r <= 2; r++ {
-		if c := s.Get(r, 3); !c.Pending {
-			t.Errorf("C%d = %+v, want no stored result (Excel computes it)", r, c)
+	for r, want := range map[int]float64{1: 1, 2: 2} {
+		if c := s.Get(r, 3); c.Pending || c.Num != want {
+			t.Errorf("C%d = %+v, want %v", r, c, want)
 		}
 	}
 }

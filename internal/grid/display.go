@@ -65,11 +65,36 @@ func Display(c *Cell, f Format, date1904 bool) string {
 		case Date, DateTime, Time:
 			return FormatTemporal(c.Num, f.Kind, date1904)
 		case Percent:
-			return FormatNumber(c.Num*100) + "%"
+			return ShowNumber(c.Num*100) + "%"
 		}
-		return FormatNumber(c.Num)
+		return ShowNumber(c.Num)
 	}
 	return ""
+}
+
+// ShowNumber is FormatNumber without the noise of binary arithmetic: a
+// number that needs all 15 digits only because of a run of nines or zeros
+// at its end (24836587.2099999, the sum of amounts in cents) shows as the
+// number the run rounds to (24836587.21). Values in files keep every digit.
+func ShowNumber(v float64) string {
+	t := FormatNumber(v)
+	whole, frac, ok := strings.Cut(strings.TrimPrefix(t, "-"), ".")
+	if !ok || strings.ContainsAny(t, "e") || len(strings.TrimLeft(whole, "0"))+len(frac) < 15 {
+		return t
+	}
+	// The run, in the fraction, then at most one last digit.
+	end := len(frac) - 1
+	for _, digit := range []byte{'9', '0'} {
+		i := end
+		for i > 0 && frac[i-1] == digit {
+			i--
+		}
+		if end-i >= 3 && frac[end] != digit || end+1-i >= 4 && frac[end] == digit {
+			p := math.Pow(10, float64(i))
+			return FormatNumber(math.Round(v*p) / p)
+		}
+	}
+	return t
 }
 
 // FormatTemporal renders a date/time serial in ISO style.

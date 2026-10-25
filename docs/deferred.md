@@ -20,6 +20,10 @@ from here when there is time; the reasons still apply unless noted.
     existing ones (we renumber them on save);
   - a value written into a merge's hidden cell lands on its first cell (we
     refuse it before excelize sees it).
+- **Prebuilt binaries.** Deferred by the user (2026-10-24): releases for
+  macOS, Linux and Windows (amd64 and arm64), a Homebrew tap, and `npx` or
+  `uvx` shims. A static Linux build already works (about 21 MB, no cgo).
+  Until then installing needs a Go toolchain.
 - **Better-looking charts.** Parked by the user (2026-10-23). The plan when
   it comes up: write the chart XML ourselves rather than use excelize's
   chart API, so the house dataviz style (thin marks, recessive axes, direct
@@ -27,16 +31,28 @@ from here when there is time; the reasons still apply unless noted.
 
 ## Larger pieces of work
 
-- **Our own calculation engine.** Results excelize cannot compute are left
-  for Excel (shown as `?`). An engine of our own that evaluates the common
-  functions straight from parsed data would remove the excelize round trip
-  on large files. sheets already computes SUM, COUNT, COUNTA, AVERAGE,
-  MIN and MAX of ranges itself; the rest goes through excelize. Until
-  then, LAMBDA and other uncomputed functions rely on Excel.
+- **The rest of Excel's functions.** The engine (`internal/engine`)
+  computes about 250; the others are unknown, so their results wait for
+  Excel. Missing are mostly statistical distributions (NORM.DIST, T.DIST,
+  BINOM.DIST, ...), engineering (BIN2DEC, IMSUM, BESSEL...), bond pricing
+  (PRICE, YIELD, COUP...), the database functions (DSUM, ...), regression
+  (LINEST, TREND), matrices (MINVERSE), REGEX*, and the LAMBDA family (MAP,
+  REDUCE, BYROW). Over 800 real workbooks they barely occur: CELL (15
+  formulas) and FILTERXML (8) are the only ones seen. Each new function
+  needs Excel's answers in `engine_test.go`.
+- **TEXT in Excel's language.** `TEXT(A2,"mmmm")` gives English month and
+  day names; Excel writes them in its own language (186 cells of the
+  corpus, mostly Spanish). The file does not say which language Excel
+  used, so the result stays English.
+- **Text read by Excel's language.** Text like `1,200` or `03/05/2026` is
+  read as a number or date differently by language, so a result
+  depending on it is unknown. A `--locale` setting could make it known.
 - **LibreOffice as a second calculator, and .xls/.ods through it (step
-  7).** Not built: LibreOffice is not installed on this machine, and code
-  driving it could not be checked against the real program. Installing it
-  (`brew install --cask libreoffice`, about 1 GB) is the user's call. The
+  7).** Not built. LibreOffice is installed now (2026-10-24, approved by
+  the user), and the evals use it to grade. As a calculator behind the
+  engine it adds little: the engine covers what real files use, and
+  LibreOffice computes some functions differently from Excel (dynamic
+  arrays do not spill). For .xls and .ods it is still the way. The
   design, ready to build:
   - Find `soffice` (`SHEETS_SOFFICE`, the PATH,
     `/Applications/LibreOffice.app/Contents/MacOS/soffice`); without it
@@ -120,8 +136,10 @@ from here when there is time; the reasons still apply unless noted.
   editor, which loads the workbook into excelize. Column edits are the
   next candidate: every formula, merge, rule and table column would move
   sideways, as rows already do.
-- Row edits on a sheet holding dynamic arrays (spills) and writes into a
-  spill area also go to the full editor, which knows the spill metadata.
+- Row edits on a sheet holding dynamic arrays (spills), and any write in
+  a workbook holding them, go to the full editor, which lays spilled
+  results out (spill.go). Streaming them would mean writing new cells
+  into rows as the sheet streams past.
 - The target was about 2 s and 300 MB for a one-cell edit on a
   200,000-row file. It takes 1.2 s with the parse cache warm and 3 s
   cold, in 0.7 GB: the parsed grid of the whole workbook is held in
@@ -135,18 +153,14 @@ from here when there is time; the reasons still apply unless noted.
 
 ## Evaluation
 
-- The `claude` CLI was not logged in on this machine, so the A/B runs used
-  Sonnet subagents reading each task's prompt. `evals/run.py run` drives the
-  CLI directly once it is logged in, and records cost too.
-- The plan was about 15 tasks; there are 12. Missing: a messy human-made
-  workbook to clean up, a range-operations task (sort, replace, move), and
-  a large-file edit.
-- Each phase should be followed by a rerun of both arms. Not rerun since
-  step 4: the agent skill's instructions (what the sheets arm reads) have
-  grown gotchas and a check before finishing since then.
-- The skill's description has not been tested for triggering:
-  `evals/triggers.json` holds the requests, and running them takes about
-  60 agent sessions (each request three times).
+- `evals/run.py` drives `claude -p` in four arms (sheets, plain Python,
+  Python with Anthropic's xlsx skill, and an Excel MCP server), isolated
+  from the user's settings. The 2026-10-24 assessment ran 200 sessions;
+  `evals/triggers.py` checked that the skill is chosen (20 of 20 requests,
+  also beside the xlsx skill).
+- The 18 tasks are too easy to separate the arms (plain Python passed all
+  of them). SpreadsheetBench Verified (400 tasks, graded by recomputing
+  the outputs in LibreOffice) is the harder test.
 
 ## Waiting on the user
 

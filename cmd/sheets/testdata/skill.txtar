@@ -8,7 +8,7 @@ stdout '\[references/ranges.md\]\(references/ranges.md\)'
 ! stdout '## Styling on request'
 
 exec sheets skill --install --dir skills
-stdout 'installed skills/sheets \(SKILL.md and 17 references\)'
+stdout 'installed skills/sheets \(SKILL.md and 18 references\)'
 exists skills/sheets/SKILL.md
 exists skills/sheets/references/style.md
 exists skills/sheets/references/addresses.md

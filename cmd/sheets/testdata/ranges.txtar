@@ -33,6 +33,17 @@ stdout 'copied Sales!A1:D6 to Archive!A1:D6 \(values\) \(new sheet\)'
 exec sheets read book.xlsx Archive!D2:D6 --formulas
 ! stdout '='
 
+# copy --values: a value pasted into a cell without a number format brings
+# its own (a date stays a date); a cell with one keeps it, as with Excel's
+# Paste Values.
+exec sheets set fmt.xlsx A1 2024-03-05 B1 '$1,200.50' C1 12%
+exec sheets copy fmt.xlsx A1 A3 --values
+exec sheets copy fmt.xlsx C1 B1 --values
+exec sheets read fmt.xlsx A3
+stdout '2024-03-05'
+exec sheets style fmt.xlsx B1 --show
+stdout 'format="\$"#,##0.00'
+
 # move: references follow, and pasted-over cells break as in Excel.
 exec sheets move book.xlsx Sales!F2:F5 Sales!H10
 stdout '^moved Sales!F2:F5 to Sales!H10:H13$'

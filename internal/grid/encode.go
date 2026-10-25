@@ -34,6 +34,7 @@ type sheetHeader struct {
 	Notes                  []Note
 	Links                  []Link
 	Spills                 []Range
+	Arrays                 []Range
 	Rows, Cells            int // stored rows, and cells in them
 	MaxCol                 int
 }
@@ -70,7 +71,7 @@ func (w *Workbook) MarshalBinary() ([]byte, error) {
 	put := func(v uint64) { cells = append(cells, tmp[:binary.PutUvarint(tmp[:], v)]...) }
 	for _, s := range w.Sheets {
 		sh := sheetHeader{Name: s.Name, Hidden: s.Hidden, Merges: s.Merges, Tables: s.Tables, Charts: s.Charts,
-			HiddenRows: s.HiddenRows, HiddenCols: s.HiddenCols, Filter: s.Filter, Notes: s.Notes, Links: s.Links, Spills: s.Spills, Rows: len(s.rows), MaxCol: s.maxCol}
+			HiddenRows: s.HiddenRows, HiddenCols: s.HiddenCols, Filter: s.Filter, Notes: s.Notes, Links: s.Links, Spills: s.Spills, Arrays: s.Arrays, Rows: len(s.rows), MaxCol: s.maxCol}
 		for _, row := range s.rows {
 			sh.Cells += len(row)
 			put(uint64(len(row)))
@@ -223,7 +224,7 @@ func (w *Workbook) UnmarshalBinary(data []byte) error {
 			return errCorrupt
 		}
 		s := &Sheet{Name: sh.Name, Hidden: sh.Hidden, Merges: sh.Merges, Tables: sh.Tables, Charts: sh.Charts,
-			HiddenRows: sh.HiddenRows, HiddenCols: sh.HiddenCols, Filter: sh.Filter, Notes: sh.Notes, Links: sh.Links, Spills: sh.Spills, maxCol: sh.MaxCol}
+			HiddenRows: sh.HiddenRows, HiddenCols: sh.HiddenCols, Filter: sh.Filter, Notes: sh.Notes, Links: sh.Links, Spills: sh.Spills, Arrays: sh.Arrays, maxCol: sh.MaxCol}
 		s.rows = make([][]Cell, sh.Rows)
 		cells := make([]Cell, sh.Cells)
 		for r := range s.rows {

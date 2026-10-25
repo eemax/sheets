@@ -29,8 +29,15 @@
 - `--append` adds rows to the sheet's last table: above its total row
   (whose sums then cover the new rows), or below it, moving any notes
   under it down. Charts of the table and its Excel table (if it is one)
-  take in the new rows. If the first input row (or the JSON keys) names
-  the table's headers, columns are matched by name, in any order.
+  take in the new rows, and so do formulas anywhere covering one of its
+  columns whole (`=SUM(Sales!$D$2:$D$61)`), as with an Excel table. If the
+  first input row (or the JSON keys) names the table's headers, columns
+  are matched by name, in any order.
+- Appended rows get the formulas of the columns that compute, as Excel
+  fills them: an Excel table's calculated column, or a column whose last
+  rows hold one formula filled down. Give only the input columns; a value
+  you give for a formula column is kept. The output names the columns it
+  filled.
 - `--clear` empties the sheet first.
 - In formulas, `{r}` stands for the row the value lands on. `=C{r}*D{r}`
   written to row 7 becomes `=C7*D7`. This is the notation `peek` prints,
@@ -43,9 +50,17 @@
   evaluate. Check it.
 - All Excel functions work, including XLOOKUP, IFS, TEXTJOIN, LET and
   LAMBDA. Functions that return several values (FILTER, UNIQUE, SORT,
-  SEQUENCE, ...) are stored as dynamic arrays and spill in Excel; keep the
-  cells below and to the right free. Writing into the spill area of an
-  existing dynamic array gives a warning (Excel would show #SPILL!).
+  SEQUENCE, ...) are stored as dynamic arrays and spill: the file holds the
+  whole result, as Excel saves it, so pandas and other readers see every
+  value. Keep the cells below and to the right free: a result that would
+  cover values is #SPILL!, as in Excel, and writing into a spill area gives
+  a warning.
+- Formulas computing over a range where one value goes
+  (`=SUM(IF(A2:A9>5,B2:B9))`, `=MAX(B2:B9-C2:C9)`, `=A2:A9*2`) are stored
+  as Excel 365 stores them, as dynamic array formulas, so Excel computes
+  them over the whole range; no Ctrl+Shift+Enter needed. `=A2:A9*2` spills.
+  A whole column in a result (`=B:B*2`) still means the formula's own row,
+  as written for older Excel.
 - A cell hidden inside merged cells (B1 of a merged A1:D1) takes no value:
   Excel shows only the first cell. Writing one is refused with the merge
   named; empty values there are skipped.

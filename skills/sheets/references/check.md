@@ -6,10 +6,16 @@
     sheets diff before.xlsx after.xlsx    # two versions of a workbook
 
 - `lint` finds error values, `#REF!` from deleted cells, unknown functions,
-  cells that break their column's formula pattern, totals that leave out
-  rows, numbers stored as text, and more. It exits 1 on errors
+  cells that break their column's formula pattern, rows a formula column
+  misses, totals that leave out rows, sums that add a total together with
+  the rows it totals (double counting), a line reading another line than
+  its label names (Summary "Marketing" reading the Events row), numbers
+  stored as text, references to Excel tables that do not exist, formulas
+  over ranges stored for older Excel (which shows them with `@`), and
+  functions stored without the prefix Excel needs (openpyxl leaves it
+  off; Excel shows `#NAME?`). It exits 1 on errors
   (`--fail-on warning|never` to change that). Run it before handing a
-  workbook over.
+  workbook over, and on any workbook a script wrote.
 - `diff` aligns rows and columns first, so an inserted row is one added
   row, not every row below it changing. It lists sheets added, removed or
   renamed, then rows, columns and cells. With one file it compares with

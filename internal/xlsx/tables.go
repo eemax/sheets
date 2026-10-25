@@ -50,6 +50,24 @@ func columnNames(data []byte) []string {
 	return out
 }
 
+// calculatedFormulas reads the formulas of a table part's calculated
+// columns, one per column ("" for the others); nil when there are none.
+func calculatedFormulas(data []byte) []string {
+	var out []string
+	found := false
+	for _, m := range tableColumnElem.FindAllSubmatch(data, -1) {
+		f := ""
+		if c := calculatedFormula.FindSubmatch(m[1]); c != nil {
+			f, found = strings.TrimPrefix(html.UnescapeString(string(c[1])), "="), true
+		}
+		out = append(out, f)
+	}
+	if !found {
+		return nil
+	}
+	return out
+}
+
 // formulaTable is the table as structured references see it.
 func (t tableNow) formulaTable() formula.Table {
 	return formula.Table{Name: t.name, Sheet: t.sheet, Ref: t.ref, Headers: t.headers, Totals: t.totals, Columns: t.columns}
@@ -102,6 +120,21 @@ func (e *Editor) ExtendTable(sheet string, body grid.Range, n int) {
 	e.patches.rangeRewrites = append(e.patches.rangeRewrites, func(f string) string {
 		return formula.ExtendRangesIn(f, "", sheet, body.R2, body.R2+n, body.C1, body.C2)
 	})
+	// Formulas reading a column of the table whole take in the new rows,
+	// as Excel's references to a table's columns do.
+	if all, err := e.formulasNow(); err == nil {
+		for _, f := range all {
+			grown := formula.GrowRanges(f.text, f.sheet, sheet, body.R1, body.R2, body.R2+n, body.C1, body.C2)
+			if grown == f.text {
+				continue
+			}
+			if err := e.setFormula(f.sheet, grid.CellName(f.row, f.col), grown); err != nil {
+				e.warnings = append(e.warnings, "could not extend "+grid.FormatRef(f.sheet, grid.Range{R1: f.row, C1: f.col, R2: f.row, C2: f.col})+": "+err.Error())
+				continue
+			}
+			e.touch(f.sheet, f.row, f.col)
+		}
+	}
 	if err := e.growRecords(sheet, body, n); err != nil {
 		e.warnings = append(e.warnings, "could not extend recorded styling: "+err.Error())
 	}
@@ -154,7 +187,10 @@ var (
 	refAttr     = regexp.MustCompile(`(\sref=")([^"]*)(")`)
 	totalsAttr  = regexp.MustCompile(`\stotalsRowCount="\d+"`)
 	tableColumn = regexp.MustCompile(`<tableColumn\b[^>]*>`)
-	nameAttr    = regexp.MustCompile(`(\sname=")([^"]*)(")`)
+	// A whole tableColumn element, with what it holds.
+	tableColumnElem   = regexp.MustCompile(`(?s)<tableColumn\b(?:[^>]*/>|[^>]*>(.*?)</tableColumn>)`)
+	calculatedFormula = regexp.MustCompile(`(?s)<calculatedColumnFormula\b[^>]*>([^<]*)</calculatedColumnFormula>`)
+	nameAttr          = regexp.MustCompile(`(\sname=")([^"]*)(")`)
 	// Formulas a table part keeps: of calculated columns and totals.
 	tableFormula = regexp.MustCompile(`(<(?:calculatedColumnFormula|totalsRowFormula)\b[^>]*>)([^<]*)(</[a-zA-Z]+>)`)
 )

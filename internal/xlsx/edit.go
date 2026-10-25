@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/eemax/sheets/internal/engine"
 	"github.com/eemax/sheets/internal/formula"
 	"github.com/eemax/sheets/internal/grid"
 	"github.com/eemax/sheets/internal/input"
@@ -45,6 +46,9 @@ type Editor struct {
 	changed   map[cellKey]string
 	recompute map[cellKey]bool
 	lines     []formulaAt
+	// unshared are the formulas unsharing rewrote: excelize marks each
+	// one's result as text, so their results are stored again.
+	unshared map[cellKey]bool
 	// wasEmpty are the cells written this session that were empty before
 	// it (where they are now), which recorded styling reaches (see
 	// restyleWritten).
@@ -58,6 +62,16 @@ type Editor struct {
 	// or what its error means.
 	dropped map[cellKey]string
 	st      *styler // for targeted styling (see styling.go)
+
+	// edits counts the session's changes to contents; res are the results
+	// worked out as of resAt changes, and calcWB the workbook they were
+	// worked out in.
+	edits       int
+	res         *calcResult
+	resAt       int
+	resFormulas map[cellKey]*formulaAt
+	calcWB      *grid.Workbook // the workbook as it stood after calcAt changes
+	calcAt      int
 }
 
 // OpenEditor opens path for editing, or starts a new workbook when the file
@@ -243,7 +257,7 @@ func (e *Editor) setFormula(sheet, cell, text string) error {
 	if err := e.f.SetCellDefault(sheet, cell, ""); err != nil {
 		return err
 	}
-	dynamic := formula.Spills(stored)
+	dynamic := dynamicFormula(stored)
 	var opts []excelize.FormulaOpts
 	if dynamic {
 		t, ref := excelize.STCellFormulaTypeArray, cell
@@ -256,6 +270,19 @@ func (e *Editor) setFormula(sheet, cell, text string) error {
 		e.patches.markCell(sheet, cell, dynamic)
 	}
 	return nil
+}
+
+// dynamicFormula tells whether a formula is stored as a dynamic array
+// formula, as Excel 365 stores it: one returning an array, which spills,
+// or one computing over a range where older Excel reads one cell of it
+// (=SUM(IF(A2:A9>5,B2:B9))), which Excel 365 would otherwise read as
+// theirs.
+func dynamicFormula(stored string) bool {
+	if formula.Spills(stored) {
+		return true
+	}
+	array, _ := engine.ArrayUse(stored)
+	return array
 }
 
 func (e *Editor) wasDynamic(sheet, cell string) bool {
@@ -351,6 +378,22 @@ func (e *Editor) applyNumFmt(sheet, cell, code string) error {
 	return e.f.SetCellStyle(sheet, cell, cell, id)
 }
 
+// generalNumFmt tells whether a cell shows numbers in the General format.
+func (e *Editor) generalNumFmt(sheet, cell string) (bool, error) {
+	id, err := e.f.GetCellStyle(sheet, cell)
+	if err != nil {
+		return false, err
+	}
+	st, err := e.f.GetStyle(id)
+	if err != nil {
+		return false, err
+	}
+	if st.CustomNumFmt != nil {
+		return *st.CustomNumFmt == "" || strings.EqualFold(*st.CustomNumFmt, "General"), nil
+	}
+	return st.NumFmt == 0, nil
+}
+
 // unshareFormulas rewrites a sheet's filled-down (shared) formulas as plain
 // formulas before the first edit that touches one. excelize drops every
 // formula of a shared group when its first cell is overwritten.
@@ -379,6 +422,7 @@ func (e *Editor) unshareSheet(sheet string) error {
 	s.Each(s.Used(), func(r, c int, cell *grid.Cell) {
 		if cell.Shared {
 			cells = append(cells, fc{r, c, cell.Formula})
+			cell.Unprefixed = false // rewritten as Excel stores it
 		}
 	})
 	// Children first: a group's anchor is its top-left cell, and rewriting
@@ -389,10 +433,14 @@ func (e *Editor) unshareSheet(sheet string) error {
 		}
 		return cells[i].col > cells[j].col
 	})
+	if e.unshared == nil {
+		e.unshared = map[cellKey]bool{}
+	}
 	for _, c := range cells {
 		if err := e.f.SetCellFormula(sheet, grid.CellName(c.row, c.col), formula.ToFile(c.f)); err != nil {
 			return err
 		}
+		e.unshared[keyOf(sheet, c.row, c.col)] = true
 	}
 	return nil
 }
@@ -439,21 +487,53 @@ func (e *Editor) Clear(sheet string) error {
 	return nil
 }
 
-// Evaluate calculates the current value of a cell after edits. Formula
-// errors are Error cells. ok is false when the calculator cannot evaluate
-// the formula; note then says why.
-//
-// After saving, it is the result stored in the file, or why there is none.
+// whenExcel completes why a formula has no stored result with when Excel
+// gives it one: on open, as sheets tells it to recalculate, but for a
+// link to another workbook only once that workbook is at hand.
+func whenExcel(note string) string {
+	switch {
+	case strings.HasPrefix(note, "circular reference") || strings.Contains(note, "Excel computes it") || strings.Contains(note, "Excel updates it") || strings.Contains(note, "#NAME?"):
+		return note
+	case strings.Contains(note, "another workbook"):
+		return note + "; Excel updates it when that workbook is at hand and links are allowed (Data › Edit Links)"
+	}
+	return note + "; Excel computes it on open"
+}
+
+// Evaluate is the value a cell holds after this session's edits: for a
+// formula, the result saving would store. Formula errors are Error cells.
+// ok is false when there is none; note then says why.
 func (e *Editor) Evaluate(sheet string, row, col int) (v grid.Cell, note string, ok bool) {
-	if v, ok := e.patches.results[strings.ToLower(sheet)][grid.CellName(row, col)]; ok {
-		note := e.dropped[keyOf(sheet, row, col)]
-		if v.Kind == grid.Empty && !strings.HasPrefix(note, "circular reference") && !strings.Contains(note, "Excel computes it") {
-			note += "; Excel computes it on open"
+	res, err := e.results()
+	if err != nil {
+		return grid.Cell{}, err.Error(), false
+	}
+	if v, ok := res.results[strings.ToLower(sheet)][grid.CellName(row, col)]; ok {
+		note := res.dropped[keyOf(sheet, row, col)]
+		if v.Kind == grid.Empty {
+			note = whenExcel(note)
 		}
 		return v, note, v.Kind != grid.Empty
 	}
-	v, note, err := evaluate(e.f, sheet, grid.CellName(row, col))
-	return v, note, err == nil || errors.Is(err, errUncertain)
+	// A formula not reached by this session's changes: the result the
+	// file stores, if it holds one.
+	if f := e.resFormulas[keyOf(sheet, row, col)]; f != nil {
+		if f.unprefixed {
+			return grid.Cell{}, unprefixedNote(f.text), false
+		}
+		if f.pending || f.stored.Kind == grid.Empty {
+			return grid.Cell{}, "Excel computes it on open", false
+		}
+		return f.stored, "", true
+	}
+	// A value.
+	if e.calcWB != nil {
+		if s := e.calcWB.Sheet(sheet); s != nil {
+			c := s.Get(row, col)
+			return grid.Cell{Kind: c.Kind, Num: c.Num, Text: c.Text, Bool: c.Bool}, "", true
+		}
+	}
+	return grid.Cell{}, "no such sheet", false
 }
 
 // Save writes the workbook atomically, or with dryRun only works out what

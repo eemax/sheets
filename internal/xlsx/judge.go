@@ -1,34 +1,31 @@
 package xlsx
 
 import (
-	"errors"
 	"math"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/eemax/sheets/internal/engine"
 	"github.com/eemax/sheets/internal/formula"
 	"github.com/eemax/sheets/internal/grid"
-	"github.com/xuri/excelize/v2"
 )
 
-// The calculator answers for a formula by computing everything it reads,
-// silently: a formula it cannot compute on the way reads as nothing, a
-// circular reference as an old result, and where it disagrees with Excel
-// the error carries on downstream. So its answer for a formula holds only
-// when it holds for everything the formula reads, and the judge checks
-// that, through the graph of what reads what:
+// The engine's answer for a formula holds only when it holds for
+// everything the formula reads, and the judge checks that, through the
+// graph of what reads what:
 //
-//   - the formula is computable at all (see computable) and the calculator
-//     computes it without failing;
+//   - the formula is computable at all (see computable) and the engine
+//     computes it without meeting anything it cannot (a function it does
+//     not have, a link to another workbook, a date written in a way only
+//     Excel's language setting decides);
 //   - it is not in, and does not read, a circular reference;
-//   - where Excel stored a result the calculator recomputes on the way,
-//     the calculator agrees with it;
+//   - where Excel stored a result the engine recomputes on the way, the
+//     engine agrees with it;
 //   - the same holds for everything it reads.
 
 type judge struct {
-	f        *excelize.File
-	names    func(string) bool
+	eng      *engine.Engine
 	g        *cycleGraph
 	cycle    map[*formulaAt]bool // in or reading a circular reference
 	members  []*formulaAt        // in one
@@ -40,60 +37,86 @@ type judge struct {
 	native   func(j *judge, f *formulaAt) (grid.Cell, bool)
 	stored   func(f *formulaAt) (grid.Cell, bool)
 	deadline time.Time
+	at       map[cellKey]*formulaAt
 
 	evals map[*formulaAt]*judged
 	state []int8   // per node: 0 not seen, 1 holds, 2 does not, 3 working
 	why   []string // per node that does not hold: why
 }
 
-// judged is the calculator's answer for a formula.
+// judged is the engine's answer for a formula: a value, or err with a
+// note saying why there is none.
 type judged struct {
 	v    grid.Cell
-	raw  string
 	note string
 	err  error
 }
 
-func newJudge(f *excelize.File, g *cycleGraph, rs *resolver, ty *typer, fresh map[*formulaAt]bool, plan calcPlan,
+// newJudge judges the engine's answers for the formulas of g. The engine
+// takes formulas the plan freezes at their stored results, and computes
+// aggregates of long ranges natively (see nativeAggregates).
+func newJudge(eng *engine.Engine, g *cycleGraph, rs *resolver, ty *typer, fresh map[*formulaAt]bool, plan calcPlan,
 	stored func(*formulaAt) (grid.Cell, bool), deadline time.Time) *judge {
 	cycle, members := g.cycles()
-	return &judge{f: f, names: definedNames(f), g: g, cycle: cycle, members: members, rs: rs, ty: ty, fresh: fresh, frozen: plan.frozen, veto: plan.veto, native: plan.native, stored: stored,
-		deadline: deadline, evals: map[*formulaAt]*judged{}, state: make([]int8, len(g.edges)), why: make([]string, len(g.edges))}
+	j := &judge{eng: eng, g: g, cycle: cycle, members: members, rs: rs, ty: ty, fresh: fresh, frozen: plan.frozen, veto: plan.veto, native: plan.native, stored: stored,
+		deadline: deadline, at: map[cellKey]*formulaAt{}, evals: map[*formulaAt]*judged{}, state: make([]int8, len(g.edges)), why: make([]string, len(g.edges))}
+	for _, f := range g.fs {
+		j.at[keyOf(f.sheet, f.row, f.col)] = f
+	}
+	eng.Override = func(sheet string, row, col int) (engine.Value, bool) {
+		f := j.at[keyOf(sheet, row, col)]
+		if f == nil {
+			return engine.Value{}, false
+		}
+		if j.frozen[f] {
+			return cellToCalc(f.stored), true
+		}
+		if j.native != nil {
+			if v, ok := j.native(j, f); ok {
+				return cellToCalc(v), true
+			}
+		}
+		return engine.Value{}, false
+	}
+	return j
 }
 
-// result is the calculator's answer for f, computed once.
+// result is the engine's answer for f, computed once.
 func (j *judge) result(f *formulaAt) *judged {
 	if r, ok := j.evals[f]; ok {
 		return r
 	}
+	var r *judged
 	if j.frozen[f] {
-		r := &judged{v: f.stored, raw: rawOf(f.stored)}
-		j.evals[f] = r
-		return r
-	}
-	if j.native != nil {
-		if v, ok := j.native(j, f); ok {
-			r := &judged{v: v, raw: rawOf(v)}
-			j.evals[f] = r
-			return r
+		r = &judged{v: f.stored}
+	} else {
+		r = judgedOf(j.eng.Compute(f.sheet, f.row, f.col))
+		if r.err == nil && r.v.Kind == grid.Error && r.v.Text == "#NAME?" {
+			// Say which name Excel does not know.
+			isName := func(n string) bool { return j.rs.lookup(n, f.sheet) != nil }
+			if unknown := formula.UnknownFunctions(f.text, isName); len(unknown) > 0 {
+				r.note = "unknown function " + strings.Join(unknown, ", ")
+			}
 		}
 	}
-	v, raw, note, err := evaluateWith(j.f, j.names, f.sheet, grid.CellName(f.row, f.col))
-	if errors.Is(err, errUncertain) || err == nil && v.Kind == grid.Error && v.Text == "#VALUE!" {
-		if formula.InputKinds(calcOf(f), &sheetTyper{j.ty, f.sheet})&formula.KNumText == 0 {
-			// #VALUE! from text no one reads as a number ("abc"*2):
-			// Excel's answer too.
-			v, err, note = grid.Cell{Kind: grid.Error, Text: "#VALUE!"}, nil, ""
-		} else {
-			err, note = errUncertain, "#VALUE! from the sheets calculator, which Excel may not give: it reads text as a number where it can"
-		}
-	}
-	r := &judged{v: v, raw: raw, note: note, err: err}
 	j.evals[f] = r
 	return r
 }
 
-// holds reports whether the calculator's answer for f can be trusted;
+// judgedOf reads an engine value: unknown ones carry why.
+func judgedOf(v engine.Value) *judged {
+	if v.Kind == engine.Error {
+		switch v.Str {
+		case engine.ErrUnsupported:
+			return &judged{note: v.Why(), err: errUnsupported}
+		case engine.ErrCycle:
+			return &judged{note: "it reads a circular reference", err: errUnsupported}
+		}
+	}
+	return &judged{v: calcToCell(v)}
+}
+
+// holds reports whether the engine's answer for f can be trusted;
 // reason says why not.
 func (j *judge) holds(f *formulaAt) (bool, string) {
 	i, ok := j.g.id[f]
@@ -119,7 +142,7 @@ func (j *judge) node(v int) bool {
 	}
 	j.state[v] = 3
 	// What it reads first: a failure there is the cause, and the
-	// calculator's answer for this formula would be built on it.
+	// engine's answer for this formula would be built on it.
 	why := j.static(v)
 	if why == "" {
 		for _, w := range j.g.edges[v] {
@@ -146,7 +169,7 @@ func (j *judge) node(v int) bool {
 }
 
 // static judges a formula by its text (nothing for a tree node); "" when
-// the calculator can compute it.
+// the engine can compute it.
 func (j *judge) static(v int) string {
 	if v >= j.g.n {
 		return ""
@@ -155,16 +178,26 @@ func (j *judge) static(v int) string {
 	if j.cycle[f] {
 		return "circular reference: Excel cannot compute it"
 	}
-	if why := j.veto[f]; why != "" {
-		return why
+	if f.unprefixed {
+		return unprefixedNote(f.text)
 	}
+	// What the calculator cannot do at all says more than why it is not
+	// trusted here.
 	if ok, why := computable(calcOf(f), j.rs, f.sheet); !ok {
 		return why
 	}
-	return ""
+	return j.veto[f]
 }
 
-// calcOf is the text the calculator computes for f.
+// unprefixedNote says why a formula stored without a function's prefix
+// has no result.
+func unprefixedNote(text string) string {
+	fns := formula.Unprefixed(text)
+	return strings.Join(fns, ", ") + map[bool]string{true: " is", false: " are"}[len(fns) == 1] +
+		" stored without the _xlfn. prefix Excel needs, so Excel shows #NAME? until the formula is entered again (sheets set adds it)"
+}
+
+// calcOf is the text the engine computes for f.
 func calcOf(f *formulaAt) string {
 	if f.calc != "" {
 		return f.calc
@@ -172,20 +205,7 @@ func calcOf(f *formulaAt) string {
 	return f.text
 }
 
-// rawOf writes a value as the calculator gives results, as text.
-func rawOf(v grid.Cell) string {
-	switch v.Kind {
-	case grid.Number:
-		return strconv.FormatFloat(v.Num, 'g', -1, 64)
-	case grid.Text, grid.Error:
-		return v.Text
-	case grid.Bool:
-		return strings.ToUpper(strconv.FormatBool(v.Bool))
-	}
-	return ""
-}
-
-// check judges the calculator's answer for a formula whose inputs hold
+// check judges the engine's answer for a formula whose inputs hold
 // (nothing for a tree node); "" when it holds.
 func (j *judge) check(v int) string {
 	if v >= j.g.n {
@@ -197,36 +217,33 @@ func (j *judge) check(v int) string {
 	}
 	r := j.result(f)
 	if r.err != nil {
-		return strings.TrimSuffix(strings.TrimSuffix(r.note, " (Excel computes it on open)"), "; Excel computes it on open")
+		return r.note
 	}
 	if j.fresh[f] || formula.DepsOf(f.text).Volatile {
 		return ""
 	}
-	if want, ok := j.stored(f); ok && !agrees(r, want) {
+	if want, ok := j.stored(f); ok && !agreesCell(r.v, want) {
 		return "the sheets calculator gets " + show(r.v) + " where Excel stored " + show(want)
 	}
 	return ""
 }
 
-// agrees tells whether the calculator's answer matches a result Excel
+// agreesCell tells whether the engine's value matches a result Excel
 // stored, allowing for the last digits of a float.
-func agrees(r *judged, want grid.Cell) bool {
+func agreesCell(got, want grid.Cell) bool {
+	if got.Kind != want.Kind {
+		return false
+	}
 	switch want.Kind {
 	case grid.Number:
-		n, err := strconv.ParseFloat(r.raw, 64)
-		if r.v.Kind == grid.Bool || err != nil {
-			return false
-		}
-		return n == want.Num || math.Abs(n-want.Num) <= 1e-9*math.Max(1, math.Max(math.Abs(n), math.Abs(want.Num)))
-	case grid.Text:
-		return r.v.Kind != grid.Error && r.raw == want.Text
+		a, b := got.Num, want.Num
+		return a == b || math.Abs(a-b) <= 1e-9*math.Max(1, math.Max(math.Abs(a), math.Abs(b)))
+	case grid.Text, grid.Error:
+		return got.Text == want.Text
 	case grid.Bool:
-		u := strings.ToUpper(r.raw)
-		return (u == "TRUE" || r.raw == "1") == want.Bool && (u == "TRUE" || u == "FALSE" || r.raw == "1" || r.raw == "0")
-	case grid.Error:
-		return r.v.Kind == grid.Error && r.v.Text == want.Text
+		return got.Bool == want.Bool
 	}
-	return false
+	return true
 }
 
 func show(c grid.Cell) string {

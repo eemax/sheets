@@ -30,7 +30,7 @@ cmp eu.csv eu.out
 
 # Formulas are saved as their results.
 exec sheets set sales.csv F1 Value F2 '=B2*C2'
-stdout 'warning: sales.csv is a CSV file, which holds values: F2 saved as its result, not as a formula'
+stdout 'warning: sales.csv is a CSV file, which holds values: F2 saved as its result, computed from the values before this change'
 exec sheets read sales.csv F2
 stdout '^2	6600$'
 

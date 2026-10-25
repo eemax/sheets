@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/rogpeppe/go-internal/testscript"
@@ -25,6 +26,17 @@ func TestScripts(t *testing.T) {
 				env.Setenv("SHEETS_STREAM", v)
 			}
 			return nil
+		},
+		Cmds: map[string]func(ts *testscript.TestScript, neg bool, args []string){
+			// fixture copies workbooks from internal/xlsx/testdata into the
+			// work directory.
+			"fixture": func(ts *testscript.TestScript, neg bool, args []string) {
+				for _, name := range args {
+					data, err := os.ReadFile(filepath.Join("..", "..", "internal", "xlsx", "testdata", name))
+					ts.Check(err)
+					ts.Check(os.WriteFile(ts.MkAbs(name), data, 0o644))
+				}
+			},
 		},
 	})
 }

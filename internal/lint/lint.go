@@ -56,8 +56,14 @@ var Rules = []struct{ Name, Severity, What string }{
 	{"broken-reference", "error", "a formula or name refers to deleted cells (#REF!)"},
 	{"unknown-function", "error", "a formula calls a function Excel does not have (#NAME?)"},
 	{"inconsistent-formula", "warning", "a cell breaks the formula pattern of its column, or holds a typed-in value where the column computes"},
+	{"missing-formula", "warning", "a row of a formula column has data but no formula (rows added without it)"},
 	{"total-range", "warning", "a total row formula leaves out rows of its table"},
-	{"number-as-text", "warning", "numbers or dates stored as text in a number or date column (SUM ignores them)"},
+	{"double-count", "warning", "a SUM adds a total together with the rows that total adds"},
+	{"label-mismatch", "warning", "a formula reads another line (or column) than its label names, where the line its label names exists"},
+	{"unprefixed-function", "error", "a formula calls a function added after Excel 2007 stored without the _xlfn. prefix Excel needs, as openpyxl writes it (#NAME? in Excel)"},
+	{"unknown-table", "error", "a structured reference names an Excel table the workbook does not have"},
+	{"implicit-intersection", "warning", "a formula computes over a range where one value goes but is stored for older Excel, which reads one cell of the range (Excel 365 shows it with @)"},
+	{"number-as-text", "warning", "numbers or dates stored as text in a number or date column, or between numbers (SUM ignores them)"},
 	{"duplicate-header", "warning", "two columns of a table share a header"},
 	{"merged-in-table", "warning", "merged cells inside a table's data (sorting and filtering break)"},
 	{"mixed-types", "note", "a number column also holds text"},
@@ -76,18 +82,34 @@ type Options struct {
 func Check(wb *grid.Workbook, opts Options) []Finding {
 	var out []Finding
 	isName := names(wb)
+	only := func(s *grid.Sheet) bool { return len(opts.Sheets) == 0 || nameIn(s.Name, opts.Sheets) }
+	regionsOf := map[*grid.Sheet][]analyze.Region{}
+	regions := func(s *grid.Sheet) []analyze.Region {
+		if r, ok := regionsOf[s]; ok {
+			return r
+		}
+		regionsOf[s] = analyze.Regions(wb, s)
+		return regionsOf[s]
+	}
 	for _, s := range wb.Sheets {
-		if len(opts.Sheets) > 0 && !nameIn(s.Name, opts.Sheets) {
+		if !only(s) {
 			continue
 		}
 		out = append(out, cells(wb, s, isName)...)
-		for _, reg := range analyze.Regions(wb, s) {
-			if reg.IsTable() {
-				out = append(out, table(wb, s, reg)...)
+		for _, reg := range regions(s) {
+			if reg.IsTable() || reg.Continues > 0 && !reg.Body.Empty() {
+				out = append(out, table(wb, s, reg.Headed())...)
 			}
 		}
+		out = append(out, textNumbers(wb, s, regions(s))...)
 		out = append(out, constants(s)...)
 	}
+	formulas := allFormulas(wb)
+	out = append(out, doubleCounts(wb, formulas, only)...)
+	out = append(out, labelMismatches(wb, formulas, regions, only)...)
+	out = append(out, unknownTables(wb, formulas, only)...)
+	out = append(out, legacyArrays(formulas, only)...)
+	out = append(out, unprefixedFunctions(formulas, only)...)
 	for _, n := range wb.Names {
 		if strings.Contains(n.Ref, "#REF!") {
 			out = append(out, Finding{Rule: "broken-reference", Severity: Error, Message: fmt.Sprintf("name %s refers to deleted cells: %s", n.Name, n.Ref), row: math.MaxInt})
@@ -237,10 +259,14 @@ func table(wb *grid.Workbook, s *grid.Sheet, reg analyze.Region) []Finding {
 	var out []Finding
 	cols := analyze.Profile(wb, s, reg)
 
-	// Duplicate headers.
+	// Duplicate headers, once: not again for the sections continuing the
+	// table.
 	seen := map[string][]string{}
 	var order []string
 	for _, c := range cols {
+		if reg.Continues > 0 {
+			break
+		}
 		key := strings.ToLower(strings.TrimSpace(c.Header))
 		if key == "" {
 			continue
@@ -279,6 +305,8 @@ func columnFormulas(s *grid.Sheet, reg analyze.Region, c analyze.Column) []Findi
 	type pat struct {
 		display string
 		n       int
+		text    string // one formula of the pattern, and its row
+		row     int
 	}
 	pats := map[string]*pat{}
 	formulas := 0
@@ -290,7 +318,7 @@ func columnFormulas(s *grid.Sheet, reg analyze.Region, c analyze.Column) []Findi
 		formulas++
 		key, disp := formula.Pattern(cell.Formula, r, c.Col)
 		if pats[key] == nil {
-			pats[key] = &pat{display: disp}
+			pats[key] = &pat{display: disp, text: cell.Formula, row: r}
 		}
 		pats[key].n++
 	}
@@ -315,9 +343,13 @@ func columnFormulas(s *grid.Sheet, reg analyze.Region, c analyze.Column) []Findi
 		return nil
 	}
 	var out []Finding
+	var missing []string
 	for r := reg.Body.R1; r <= reg.Body.R2; r++ {
 		cell := s.At(r, c.Col)
 		if cell == nil || cell.IsEmpty() {
+			if valuesIn(s, reg.Range, r) > 1 && readsData(s, formula.Shift(dom.text, r-dom.row, 0), r, c.Col) {
+				missing = append(missing, ref(r, c.Col))
+			}
 			continue
 		}
 		if cell.Formula == "" {
@@ -334,7 +366,44 @@ func columnFormulas(s *grid.Sheet, reg analyze.Region, c analyze.Column) []Findi
 				Message: fmt.Sprintf("=%s breaks the column pattern =%s", cell.Formula, dom.display)})
 		}
 	}
+	// Formulas missing from a few rows; a column computing for some rows
+	// only (a top ten beside the data) is left be.
+	if len(missing) > 0 && len(missing) < dom.n {
+		r, _, _ := grid.ParseCell(missing[0])
+		out = append(out, Finding{Rule: "missing-formula", Severity: Warning, Sheet: s.Name, Cells: missing, row: r, col: c.Col,
+			Message: fmt.Sprintf("%s empty in rows that have data, where the column computes =%s", countOf(len(missing), "cell"), dom.display) + "; fill them with sheets set"})
+	}
 	return out
+}
+
+// valuesIn counts the values in row r of a block; a label alone heads a
+// section.
+func valuesIn(s *grid.Sheet, block grid.Range, r int) int {
+	n := 0
+	s.Each(grid.Range{R1: r, C1: block.C1, R2: r, C2: block.C2}, func(_, _ int, c *grid.Cell) {
+		if !c.IsEmpty() {
+			n++
+		}
+	})
+	return n
+}
+
+// readsData tells whether a formula written in row r would read values of
+// that row: what it would compute from is there.
+func readsData(s *grid.Sheet, f string, r, col int) bool {
+	for _, c := range formula.SameRowColumns(f, r) {
+		if cell := s.At(r, c); c != col && cell != nil && !cell.IsEmpty() {
+			return true
+		}
+	}
+	return false
+}
+
+// indent reports whether the spaces of a label are indentation: leading
+// spaces in the first column of a report laid out in sections, which
+// indents the lines under each heading.
+func indent(text string, sections, first bool) bool {
+	return sections && first && strings.TrimRight(text, " ") == text
 }
 
 func quoteValue(v string) string {
@@ -347,6 +416,7 @@ func quoteValue(v string) string {
 // columnValues checks the values of a column: numbers stored as text,
 // text among numbers, stray spaces.
 func columnValues(wb *grid.Workbook, s *grid.Sheet, reg analyze.Region, c analyze.Column) []Finding {
+	sections := reg.Heading > 0 || reg.Continues > 0
 	var asText, otherText, spaced []string
 	var firstText, firstOther, firstSpace int
 	numbers := 0
@@ -359,7 +429,7 @@ func columnValues(wb *grid.Workbook, s *grid.Sheet, reg analyze.Region, c analyz
 		case grid.Number:
 			numbers++
 		case grid.Text:
-			if cell.Text != strings.TrimSpace(cell.Text) && strings.TrimSpace(cell.Text) != "" {
+			if cell.Text != strings.TrimSpace(cell.Text) && strings.TrimSpace(cell.Text) != "" && !indent(cell.Text, sections, c.Col == reg.Range.C1) {
 				if len(spaced) == 0 {
 					firstSpace = r
 				}

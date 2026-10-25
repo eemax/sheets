@@ -266,7 +266,7 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 		if err := e.f.SetCellFormula(f.sheet, grid.CellName(f.row, f.col), ""); err != nil {
 			return err
 		}
-		m := formulaAt{sheet: f.sheet, row: f.row, col: f.col, text: rewrite(f.text, f.sheet), pending: f.pending, stored: f.stored}
+		m := formulaAt{sheet: f.sheet, row: f.row, col: f.col, text: rewrite(f.text, f.sheet), pending: f.pending, stored: f.stored, unprefixed: f.unprefixed}
 		if strings.EqualFold(f.sheet, target) {
 			var ok bool
 			if m.row, m.col, ok = move(f.row, f.col); !ok {
@@ -418,6 +418,7 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 	}
 	e.lines, e.recompute, e.changed, e.wasEmpty = keep, recompute, changed, fresh
 	e.structural = true
+	e.edits++
 	e.forgetPositions()
 	return nil
 }
@@ -428,6 +429,7 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 // cells written.
 func (e *Editor) sheetEdit(from, to string, copy bool, rewrite func(string) string) {
 	e.sheetsChanged = true
+	e.edits++
 	e.dropMerges()
 	if e.lines != nil {
 		lines := []formulaAt{}

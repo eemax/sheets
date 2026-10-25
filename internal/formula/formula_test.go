@@ -1,6 +1,7 @@
 package formula
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/eemax/sheets/internal/grid"
@@ -205,6 +206,71 @@ func TestCheck(t *testing.T) {
 	} {
 		if err := Check(f); (err == nil) != ok {
 			t.Errorf("Check(%q) = %v, want ok=%v", f, err, ok)
+		}
+	}
+}
+
+func TestGrowRanges(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"SUM(Sales!$B$2:$B$4)", "SUM(Sales!$B$2:$B$6)"},
+		{"SUMIFS(Sales!B2:B4,Sales!A1:A4,\"x\")", "SUMIFS(Sales!B2:B6,Sales!A1:A6,\"x\")"},
+		{"SUM(Sales!B3:B4)", "SUM(Sales!B3:B4)"}, // part of the column
+		{"SUM(Sales!B2:B3)", "SUM(Sales!B2:B3)"}, // does not reach the end
+		{"SUM(Sales!D2:D4)", "SUM(Sales!D2:D4)"}, // outside the table
+		{"SUM(Other!B2:B4)", "SUM(Other!B2:B4)"}, // another sheet
+		{"Sales!B2*2", "Sales!B2*2"},
+		{"SUM(Sales!$B$2:B4)", "SUM(Sales!$B$2:B4)"}, // a running total
+		{"SUM(Sales!B$2:$B4)", "SUM(Sales!B$2:$B4)"}, // a running total
+		{"SUM(Sales!B2:$B$4)", "SUM(Sales!B2:$B$6)"}, // fixed at the end
+	} {
+		if got := GrowRanges(c.in, "Summary", "Sales", 2, 4, 6, 1, 3); got != c.want {
+			t.Errorf("%s: got %s, want %s", c.in, got, c.want)
+		}
+	}
+	// Unqualified ranges are the formula's own sheet's.
+	if got := GrowRanges("SUM(B2:B4)", "Sales", "Sales", 2, 4, 6, 1, 3); got != "SUM(B2:B6)" {
+		t.Errorf("own sheet: %s", got)
+	}
+}
+
+// The spill operator is stored as Excel stores it.
+func TestSpillRefs(t *testing.T) {
+	for in, want := range map[string]string{
+		"COUNTA(D2#)":         "COUNTA(_xlfn.ANCHORARRAY(D2))",
+		"SUM(Sheet1!$D$2#)*2": "SUM(_xlfn.ANCHORARRAY(Sheet1!$D$2))*2",
+		"SUM('My Sheet'!D2#)": "SUM(_xlfn.ANCHORARRAY('My Sheet'!D2))",
+		`IF(A1="x#",D2#,0)`:   `IF(A1="x#",_xlfn.ANCHORARRAY(D2),0)`,
+		"IFERROR(A1,#N/A)":    "IFERROR(A1,#N/A)",
+	} {
+		got := ToFile(in)
+		if got != want {
+			t.Errorf("ToFile(%s) = %s, want %s", in, got, want)
+		}
+		if back := FromFile(got); back != in {
+			t.Errorf("FromFile(%s) = %s, want %s", got, back, in)
+		}
+	}
+}
+
+// Functions added after Excel 2007 stored without their prefix, as
+// openpyxl writes them, are found; prefixed ones, names in strings,
+// sheet names and structured references are not.
+func TestUnprefixed(t *testing.T) {
+	for _, tt := range []struct {
+		stored string
+		want   []string
+	}{
+		{`IFERROR(INDEX(A1:A4,AGGREGATE(15,6,ROW(A1:A4)/(A1:A4="x"),1)),"")`, []string{"AGGREGATE"}},
+		{`textjoin(",",TRUE,A1:A4)&MAXIFS(B:B,A:A,"x")&TEXTJOIN("-",1,C1)`, []string{"TEXTJOIN", "MAXIFS"}},
+		{`_xlfn.AGGREGATE(9,6,A1:A4)+_xlfn._xlws.FILTER(A1:A4,B1:B4)`, nil},
+		{`SUM(A1:A4)&"TEXTJOIN(x)"`, nil},
+		{`'IFS(1)'!A1+XLOOKUP!B2`, nil},
+		{`SUM(Table1[[#This Row],[MAXIFS(]])`, nil},
+		{`_xlfn.LET(_xlpm.x,1,_xlpm.x+IFS(TRUE,1))`, []string{"IFS"}},
+		{`FILTER(A1:A4,B1:B4>1)`, []string{"FILTER"}},
+	} {
+		if got := Unprefixed(tt.stored); !slices.Equal(got, tt.want) {
+			t.Errorf("Unprefixed(%s) = %v, want %v", tt.stored, got, tt.want)
 		}
 	}
 }

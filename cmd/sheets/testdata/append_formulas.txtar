@@ -1,0 +1,66 @@
+# Appended rows get the formulas of the columns that compute, as Excel
+# fills them: a column whose last rows hold one formula filled down.
+stdin data.tsv
+exec sheets write book.xlsx
+stdin more.tsv
+exec sheets write book.xlsx --append
+stdout '^filled formula columns in the new rows, as Excel does: D =B\{r\}\*C\{r\}, E =SUM\(\$D\$2:D\{r\}\)$'
+stdout '^next: sheets peek book.xlsx$'
+exec sheets read book.xlsx A5:F7 --formulas
+cmp stdout grown.out
+
+# A value given for the column is kept; a header row maps the columns.
+stdin mapped.tsv
+exec sheets write book.xlsx --append
+exec sheets read book.xlsx A8:E9 --formulas
+cmp stdout mapped.out
+
+# lint finds rows of a formula column left without the formula.
+exec sheets set book.xlsx A9 Late B9 1 C9 1
+exec sheets lint book.xlsx
+stdout 'D9.*1 cell empty in rows that have data, where the column computes =B\{r\}\*C\{r\}; fill them with sheets set'
+
+# An Excel table's calculated column fills in, above its totals row,
+# whose total then covers the new row.
+fixture calccol.xlsx
+stdin dee.tsv
+exec sheets write calccol.xlsx Data --append
+stdout 'inserted above the total row'
+stdout 'F =SUM\(Sales\[\[#This Row\],\[Q1\]:\[Q4\]\]\)'
+stdout 'formulas: F4 = 4'
+exec sheets read calccol.xlsx Data!A4:F5 --formulas
+cmp stdout calccol.out
+exec sheets read calccol.xlsx Data!F5
+stdout '40'
+
+-- data.tsv --
+Item	Units	Price	Amount	Running
+A	10	2.5	=B{r}*C{r}	=SUM($D$2:D{r})
+B	4	3	=B{r}*C{r}	=SUM($D$2:D{r})
+C	7	1.5	=B{r}*C{r}	=SUM($D$2:D{r})
+D	3	2	=B{r}*C{r}	=SUM($D$2:D{r})
+-- more.tsv --
+E	5	2
+F	1	9
+-- grown.out --
+Sheet1!A5:F7
+	A	B	C	D	E	F
+5	D	3	2	=B5*C5	=SUM($D$2:D5)
+6	E	5	2	=B6*C6	=SUM($D$2:D6)
+7	F	1	9	=B7*C7	=SUM($D$2:D7)
+-- mapped.tsv --
+Item	Price	Units	Amount
+G	2	3	100
+-- mapped.out --
+Sheet1!A8:E9
+	A	B	C	D	E
+8	G	3	2	100	=SUM($D$2:D8)
+9
+-- dee.tsv --
+Rep	Q1	Q3
+Dee	2	2
+-- calccol.out --
+Data!A4:F5
+	A	B	C	D	E	F
+4	Dee	2		2		=SUM(Sales[[#This Row],[Q1]:[Q4]])
+5	Total					=SUBTOTAL(109,Sales[Total])

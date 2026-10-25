@@ -101,7 +101,7 @@ it), and 'sheets skill --install' to install the skill.`,
 	root.PersistentFlags().BoolVar(&a.json, "json", false, "print JSON instead of text")
 	root.PersistentFlags().BoolVar(&a.dryRun, "dry-run", false, "show what a change would do without saving it")
 	root.AddCommand(a.infoCmd(), a.peekCmd(), a.readCmd(), a.findCmd(), a.queryCmd(), a.lintCmd(), a.diffCmd(), a.chartCmd(), a.renderCmd(), a.writeCmd(), a.setCmd(), a.fmtCmd(), a.styleCmd(), a.condCmd(), a.validateCmd(), a.viewCmd(),
-		a.clearCmd(), a.copyCmd(), a.moveCmd(), a.sortCmd(), a.replaceCmd(), a.noteCmd(), a.linkCmd(), a.convertCmd(), a.doCmd(),
+		a.clearCmd(), a.copyCmd(), a.moveCmd(), a.sortCmd(), a.replaceCmd(), a.noteCmd(), a.linkCmd(), a.convertCmd(), a.doCmd(), a.scriptCmd(),
 		a.linesCmd(false), a.linesCmd(true), a.sheetCmd(), a.undoCmd(), a.docsCmd(), a.skillCmd())
 	root.CompletionOptions.HiddenDefaultCmd = true
 	return root

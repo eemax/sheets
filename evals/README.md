@@ -22,7 +22,9 @@ evals/run.py check OUT                                # grade OUT/*/*/work, writ
 `run` builds `sheets` into `OUT/bin`, puts it on the `sheets` arm's PATH
 (and keeps it off the others'), and runs each agent in its own folder with
 a spending cap (`--budget`, USD per run) and a model (`--model`, default
-`sonnet`). Agents run without user or project settings, skills or MCP
+`sonnet`). An agent still running after 20 minutes is stopped, with its
+tools, and counts as failed (an MCP server once hung for three hours).
+Agents run without user or project settings, skills or MCP
 servers, so each arm gets only what it is given. Each agent's transcript
 is kept in `transcript.jsonl` beside its work, and `meta.json` counts its
 tool calls (shell commands by program).
@@ -86,3 +88,30 @@ agent is stopped at its first skill, or after four tool calls without
 one, so a run costs a few cents. `OUT/triggers.md` gives, per request, how
 often each skill was loaded first.
 
+
+## SpreadsheetBench Verified
+
+`ssb.py` runs the same arms on [SpreadsheetBench Verified](https://huggingface.co/datasets/KAKA22/SpreadsheetBench)
+(400 tasks taken from real spreadsheet questions, CC BY-SA 4.0), graded
+the way the benchmark's own `evaluation.py` grades:
+
+    curl -L -o ssb.tar.gz https://huggingface.co/datasets/KAKA22/SpreadsheetBench/resolve/main/spreadsheetbench_verified_400.tar.gz
+    mkdir ssb && tar -xzf ssb.tar.gz -C ssb
+    evals/ssb.py run OUT --data ssb/spreadsheetbench_verified_400 --sample 40 --arms sheets python skill mcp --jobs 6
+
+- Each agent gets the task's starting workbook as `workbook.xlsx`, the
+  user's question, and where the answer belongs (`answer_position`), and
+  changes the workbook in place.
+- Grading recalculates the result in LibreOffice (`soffice` on the PATH),
+  with a profile that recomputes every formula on load, then compares the
+  answer's cells with the golden file's values: numbers rounded to two
+  decimals, dates as day numbers, blanks equal to empty text.
+- 23 tasks are left out: their own golden file fails that grading, because
+  LibreOffice computes them otherwise than Excel or cannot open them
+  (`ssb.UNGRADABLE`).
+- The sample is drawn with a fixed seed (`--seed`), in proportion to the
+  instruction types, so arms and models are graded on the same tasks.
+- The agents see no LibreOffice: `soffice` is a stand-in that reports it
+  missing, as on most machines.
+- Each conversion takes a LibreOffice profile of its own from a pool, one
+  per job: two conversions sharing one fail without saying so.

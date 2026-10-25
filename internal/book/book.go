@@ -14,6 +14,15 @@ import (
 )
 
 // Editor changes a workbook: cells, rows and columns, and sheets.
+// ValuesOnly is an editor of a file that holds values only (CSV): a
+// formula written to it is a way to compute the values it stores.
+type ValuesOnly interface {
+	HoldsValues() bool
+	// EvalAt computes a formula as if it stood in a cell, over the file as
+	// it stands.
+	EvalAt(sheet string, row, col int, text string) (v grid.Cell, why string, ok bool)
+}
+
 type Editor interface {
 	Workbook() *grid.Workbook
 	Created() bool

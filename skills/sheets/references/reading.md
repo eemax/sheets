@@ -23,15 +23,27 @@
   `--format tsv|csv|json` gives plain data; `--json` works on every command.
 - Values print plainly: ISO dates (2026-07-01), percentages with % (12.5%),
   numbers without thousands separators, TRUE/FALSE, error codes like
-  #DIV/0!.
+  #DIV/0!. Numbers show up to 15 significant digits, without the noise of
+  binary arithmetic (24836587.21, not 24836587.2099999); the file keeps
+  every digit.
 - Formula results come from the file. When `sheets` saves, it recomputes
-  every formula the change reaches and stores the result, so pandas,
-  previews and other tools read current numbers, never stale ones. Table
-  references (`Sales[Units]`, `[@Price]`) and LET are computed. `?` marks a
-  formula the calculator cannot evaluate (LAMBDA, FILTER, XMATCH, OFFSET,
-  array arithmetic such as `SUMPRODUCT((A2:A9="East")*B2:B9)`, and a few
-  others), or one that reads such a formula: it has no stored result until
-  Excel computes it on open, and the output of the change lists it with the
-  reason. Prefer forms it computes (`SUMIFS`, `COUNTIFS`, `SUMPRODUCT` of
-  plain ranges) so you can check the result. Circular references are
-  reported and get no result.
+  every formula the change reaches with its own calculator and stores the
+  result, so pandas, previews and other tools read current numbers, never
+  stale ones. The calculator follows Excel: tested on 68,000 formulas of
+  800 workbooks Excel saved, it gives Excel's result for 99.8% of those it
+  computes. It does about 250 functions, among them XLOOKUP, FILTER, SORT,
+  UNIQUE, LET, the financial ones (NPV, IRR, PMT, XIRR), table references
+  (`Sales[Units]`, `[@Price]`) and array arithmetic
+  (`SUMPRODUCT((A2:A9="East")*B2:B9)`).
+- `?` marks a formula with no result yet, with the reason: a link to
+  another workbook, a function the calculator lacks (LAMBDA, CELL,
+  statistical distributions such as NORM.DIST, bond pricing), or a
+  formula reading one. Excel computes it on open. A result that depends
+  on Excel's language is not guessed either: text such as `1,200`,
+  `1.5`, `03/05/2026` or `May 2026` reads as a number or date differently
+  in other languages, so a formula computing with it is left to Excel.
+  Write numbers and ISO dates as values, and the calculator computes.
+  Circular references are reported and get no result.
+- A report laid out in sections under one header (a heading row such as
+  `West`, its lines, a subtotal; then `North`, ...) reads as one table:
+  `info` lists the sections, and `query` and `lint` take in all of them.

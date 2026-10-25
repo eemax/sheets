@@ -35,6 +35,7 @@ var docTopics = []struct {
 	{"addresses", []string{"references", "refs"}, "References"},
 	{"writing", []string{"write", "set"}, "Writing"},
 	{"do", []string{"batch"}, "Many changes at once: do"},
+	{"script", []string{"scripts", "office-scripts", "js", "ts", "typescript", "javascript"}, "Scripts: Office Scripts"},
 	{"structure", []string{"rows", "cols", "columns", "sheet", "sheets"}, "Rows, columns and sheets"},
 	{"ranges", []string{"clear", "copy", "move", "sort", "replace"}, "Moving data: clear, copy, move, sort, replace"},
 	{"notes", []string{"note", "link", "links"}, "Notes and links"},

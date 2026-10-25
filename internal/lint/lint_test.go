@@ -11,7 +11,12 @@ import (
 // (value given after |, e.g. "=A1/0|#DIV/0!"), other strings text, ints and
 // floats numbers.
 func book(rows ...[]any) *grid.Workbook {
-	s := grid.NewSheet("S")
+	return &grid.Workbook{Sheets: []*grid.Sheet{sheet("S", rows...)}, Formats: []grid.Format{{}}}
+}
+
+// sheet builds a sheet from rows, as book does.
+func sheet(name string, rows ...[]any) *grid.Sheet {
+	s := grid.NewSheet(name)
 	for r, row := range rows {
 		for c, v := range row {
 			var cell grid.Cell
@@ -36,7 +41,7 @@ func book(rows ...[]any) *grid.Workbook {
 			s.Set(r+1, c+1, cell)
 		}
 	}
-	return &grid.Workbook{Sheets: []*grid.Sheet{s}, Formats: []grid.Format{{}}}
+	return s
 }
 
 func rules(fs []Finding) map[string][]Finding {
@@ -124,5 +129,94 @@ func TestReferencesAndFunctions(t *testing.T) {
 	}
 	if f := got["repeated-constant"]; len(f) != 1 || !strings.HasPrefix(f[0].Message, "1.21 is typed into 3 formulas") {
 		t.Errorf("repeated-constant = %+v", f)
+	}
+}
+
+// A budget's mistakes that read across blocks: a Summary total adding the
+// total row too, a Summary line reading the wrong line, a reference to an
+// Excel table that does not exist, and a figure typed in as text in a block
+// without a header.
+func TestAcrossBlocks(t *testing.T) {
+	data := sheet("Budget",
+		[]any{"Line", "Jan", "Feb", "Annual"},
+		[]any{"Rent", 10, 10, "=SUM(B2:C2)"},
+		[]any{"Power", 3, 4, "=SUM(B3:C3)"},
+		[]any{"Travel", 5, 6, "=SUM(B4:C4)"},
+		[]any{"Total", "=SUM(B2:B4)", "=SUM(C2:C4)", "=SUM(D2:D4)"},
+		[]any{nil},
+		[]any{nil},
+		[]any{"Q1", 4, "5", 6},
+		[]any{"Q2", 7, 8, 9},
+	)
+	summary := sheet("Summary",
+		[]any{"Rent", "=Budget!D3"},
+		[]any{"Travel", "=Budget!D4"},
+		[]any{"Everything", "=SUM(Budget!D2:D5)"},
+		[]any{"Subtotalled", "=SUBTOTAL(9,Budget!D2:D5)"},
+		[]any{"Revenue", "=SUM(Sales[Revenue])"},
+	)
+	wb := &grid.Workbook{Sheets: []*grid.Sheet{data, summary}, Formats: []grid.Format{{}}}
+	got := rules(Check(wb, Options{}))
+	if f := got["double-count"]; len(f) != 1 || f[0].Cells[0] != "B3" || !strings.Contains(f[0].Message, "adds Budget!D5, a total of Budget!D2:D4 it already adds") {
+		t.Errorf("double-count = %+v", f)
+	}
+	if f := got["label-mismatch"]; len(f) != 1 || f[0].Cells[0] != "B1" || !strings.Contains(f[0].Message, `labelled "Rent" but reads Budget!D3, the "Power" line; the Rent line is Budget!D2`) {
+		t.Errorf("label-mismatch = %+v", f)
+	}
+	if f := got["unknown-table"]; len(f) != 1 || f[0].Cells[0] != "B5" || !strings.Contains(f[0].Message, "names table Sales, which does not exist (the workbook has no Excel tables)") {
+		t.Errorf("unknown-table = %+v", f)
+	}
+	if f := got["number-as-text"]; len(f) != 1 || f[0].Sheet != "Budget" || f[0].Cells[0] != "C8" {
+		t.Errorf("number-as-text = %+v", f)
+	}
+}
+
+// A report in sections under one header: the heading rows are not data,
+// so subtotals covering the lines under them are whole; the second
+// section is checked as the table's; indented labels are not stray spaces.
+func TestSections(t *testing.T) {
+	wb := book(
+		[]any{"Product", "Units", "Sales"},
+		[]any{"West"},
+		[]any{"  Alpha", 1, 10},
+		[]any{"  Bravo", 2, 20},
+		[]any{"West total", "=SUM(B3:B4)", "=SUM(C3:C4)"},
+		[]any{nil},
+		[]any{"East"},
+		[]any{"  Alpha", 3, "30"},
+		[]any{"  Bravo", 4, 40},
+		[]any{"East total", "=SUM(B8:B9)", "=SUM(C8:C9)"},
+		[]any{nil},
+		[]any{"Grand total", "=B5+B10", "=C5+C10"},
+	)
+	got := rules(Check(wb, Options{}))
+	if f := got["total-range"]; len(f) != 0 {
+		t.Errorf("total-range = %+v", f)
+	}
+	if f := got["stray-whitespace"]; len(f) != 0 {
+		t.Errorf("stray-whitespace = %+v", f)
+	}
+	if f := got["number-as-text"]; len(f) != 1 || f[0].Cells[0] != "C8" || !strings.Contains(f[0].Message, "in Sales") {
+		t.Errorf("number-as-text = %+v", f)
+	}
+}
+
+// A function added after Excel 2007 stored without its prefix, as openpyxl
+// writes it, is an error: Excel shows #NAME?.
+func TestUnprefixedFunctions(t *testing.T) {
+	wb := book([]any{1, "=MAXIFS(A1:A3,A1:A3,\">0\")", "=SUM(A1:A3)"}, []any{2, "=MAXIFS(A1:A3,A1:A3,\">1\")"})
+	s := wb.Sheets[0]
+	for _, cell := range [][2]int{{1, 2}, {2, 2}} {
+		c := s.At(cell[0], cell[1])
+		c.Unprefixed, c.Pending = true, true
+	}
+	var got []Finding
+	for _, f := range Check(wb, Options{}) {
+		if f.Rule == "unprefixed-function" {
+			got = append(got, f)
+		}
+	}
+	if len(got) != 1 || strings.Join(got[0].Cells, ",") != "B1,B2" || got[0].Severity != Error || !strings.Contains(got[0].Message, "MAXIFS without the _xlfn. prefix") {
+		t.Fatalf("findings: %+v", got)
 	}
 }

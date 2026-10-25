@@ -18,11 +18,11 @@ stdin more.tsv
 exec sheets write book.xlsx --append
 exec sheets diff book.xlsx
 stdout '^Data: 1 row added, 2 cells changed$'
-stdout '^  \+ row 5: "z", 9, 1$'
+stdout '^  \+ row 5: "z", 9, 1, =B5\*C5$'
 stdout '^  B6 \(was B5\)  =SUM\(B2:B4\) → =SUM\(B2:B5\)$'
 
 exec sheets diff book.xlsx --since 2 --json
-stdout '"rows_added":\[\{"from":5,"to":5,"content":"\\"z\\", 9, 1"\}\]'
+stdout '"rows_added":\[\{"from":5,"to":5,"content":"\\"z\\", 9, 1, =B5\*C5"\}\]'
 
 cp book.xlsx copy.xlsx
 exec sheets sheet rename copy.xlsx Data Stock

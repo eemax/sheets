@@ -18,20 +18,31 @@ import (
 
 // Table is a block of a sheet exposed to SQL.
 type Table struct {
-	Name    string   `json:"name"`
-	Sheet   string   `json:"sheet"`
-	Range   string   `json:"range"` // the whole table, header included
-	Rows    int      `json:"rows"`
-	Total   bool     `json:"total_row_excluded,omitempty"`
-	Columns []Column `json:"columns"`
+	Name  string `json:"name"`
+	Sheet string `json:"sheet"`
+	Range string `json:"range"` // the whole table, header included
+	Rows  int    `json:"rows"`
+	Total bool   `json:"total_row_excluded,omitempty"`
+	// Sections are the headings of a report's sections, when the table
+	// runs on in blocks under its header; a _section column names each
+	// record's.
+	Sections []string `json:"sections,omitempty"`
+	Columns  []Column `json:"columns"`
 
 	sheet  *grid.Sheet
-	body   grid.Range
+	parts  []part // the blocks of data rows, the table's own first
 	header int
 }
 
-// Body is the table's data rows (header and total row excluded).
-func (t *Table) Body() grid.Range { return t.body }
+// part is a block of a table's data rows, under its section heading.
+type part struct {
+	body    grid.Range
+	heading string
+}
+
+// Body is the data rows of the table's first block (header and total row
+// excluded).
+func (t *Table) Body() grid.Range { return t.parts[0].body }
 
 // HeaderRow is the row holding the column labels.
 func (t *Table) HeaderRow() int { return t.header }
@@ -48,8 +59,12 @@ type Column struct {
 	col    int
 }
 
-// RowColumn holds the sheet row of each record.
-const RowColumn = "_row"
+// RowColumn holds the sheet row of each record; SectionColumn the heading
+// of its section, in reports laid out in sections.
+const (
+	RowColumn     = "_row"
+	SectionColumn = "_section"
+)
 
 // Extra defines a table by range, for blocks sheets does not detect as
 // tables. The first row of the range is the header.
@@ -88,7 +103,8 @@ func Tables(wb *grid.Workbook, extras []Extra) ([]*Table, error) {
 	}
 	for _, s := range wb.Sheets {
 		n := 0
-		for _, reg := range analyze.Regions(wb, s) {
+		regs := analyze.Regions(wb, s)
+		for i, reg := range regs {
 			if !reg.IsTable() {
 				continue
 			}
@@ -99,16 +115,41 @@ func Tables(wb *grid.Workbook, extras []Extra) ([]*Table, error) {
 				name = fmt.Sprintf("%s_%d", s.Name, n+1)
 			}
 			n++
-			out = append(out, build(wb, s, reg, unique(name)))
+			// The sections carrying the table on below it.
+			var more []analyze.Region
+			for _, c := range regs[i+1:] {
+				if c.Continues == reg.HeaderRow && c.Range.C1 == reg.Range.C1 {
+					more = append(more, c)
+				}
+			}
+			out = append(out, build(wb, s, reg, unique(name), more...))
 		}
 	}
 	return out, nil
 }
 
-func build(wb *grid.Workbook, s *grid.Sheet, reg analyze.Region, name string) *Table {
-	t := &Table{Name: name, Sheet: s.Name, Range: reg.Range.String(), Rows: max(reg.Body.Rows(), 0), Total: reg.TotalRow > 0, sheet: s, body: reg.Body, header: reg.HeaderRow}
+func build(wb *grid.Workbook, s *grid.Sheet, reg analyze.Region, name string, more ...analyze.Region) *Table {
+	t := &Table{Name: name, Sheet: s.Name, Range: reg.Range.String(), Total: reg.TotalRow > 0, sheet: s, header: reg.HeaderRow}
+	whole := reg.Range
+	for _, r := range append([]analyze.Region{reg}, more...) {
+		whole = whole.Union(r.Range)
+		t.Total = t.Total || r.TotalRow > 0
+		if r.Body.Empty() {
+			continue // a grand total
+		}
+		p := part{body: r.Body, heading: analyze.HeadingText(s, r)}
+		t.parts = append(t.parts, p)
+		t.Rows += r.Body.Rows()
+		if p.heading != "" {
+			t.Sections = append(t.Sections, p.heading)
+		}
+	}
+	t.Range = whole.String()
+	if len(t.Sections) == 0 {
+		t.Sections = nil
+	}
 	cols := analyze.Profile(wb, s, reg)
-	seen := map[string]bool{strings.ToLower(RowColumn): true}
+	seen := map[string]bool{strings.ToLower(RowColumn): true, strings.ToLower(SectionColumn): t.Sections != nil}
 	for _, c := range cols {
 		base := strings.TrimSpace(c.Header)
 		if base == "" {
@@ -231,6 +272,11 @@ func Run(wb *grid.Workbook, tables []*Table, q string, limit int) (*Result, erro
 func load(db *sql.DB, wb *grid.Workbook, t *Table) error {
 	defs := []string{Quote(RowColumn) + " INTEGER"}
 	marks := []string{"?"}
+	sections := t.Sections != nil
+	if sections {
+		defs = append(defs, Quote(SectionColumn)+" TEXT")
+		marks = append(marks, "?")
+	}
 	for _, c := range t.Columns {
 		defs = append(defs, strings.TrimSpace(Quote(c.Name)+" "+c.Type))
 		marks = append(marks, "?")
@@ -248,14 +294,23 @@ func load(db *sql.DB, wb *grid.Workbook, t *Table) error {
 		return err
 	}
 	defer stmt.Close()
-	args := make([]any, len(t.Columns)+1)
-	for r := t.body.R1; r <= t.body.R2; r++ {
-		args[0] = int64(r)
-		for i, c := range t.Columns {
-			args[i+1] = value(wb, t.sheet, r, c)
-		}
-		if _, err := stmt.Exec(args...); err != nil {
-			return err
+	args := make([]any, len(marks))
+	first := 1 // the first value column
+	if sections {
+		first = 2
+	}
+	for _, p := range t.parts {
+		for r := p.body.R1; r <= p.body.R2; r++ {
+			args[0] = int64(r)
+			if sections {
+				args[1] = p.heading
+			}
+			for i, c := range t.Columns {
+				args[first+i] = value(wb, t.sheet, r, c)
+			}
+			if _, err := stmt.Exec(args...); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()

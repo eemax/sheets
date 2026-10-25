@@ -88,6 +88,12 @@ func (s *StreamEditor) Render() ([]byte, error) {
 		}
 	}
 	rowsMoved := len(moved) > 0
+	// Formulas change when rows move, or when a table grows (references
+	// to its columns grow with it).
+	rewrite := rowsMoved
+	for _, op := range s.ops {
+		rewrite = rewrite || op.kind == 'x'
+	}
 	// Parts attached to sheets whose rows moved: notes, their drawings,
 	// comment threads.
 	attached := map[string]func([]byte) []byte{}
@@ -161,7 +167,7 @@ func (s *StreamEditor) Render() ([]byte, error) {
 		if sheet, ok := partSheet[name]; ok {
 			k := strings.ToLower(sheet)
 			job := &sheetJob{sheet: sheet, edits: s.edits[k], styles: newStyle[k], results: s.res.results[k], expand: s.expand[k]}
-			if rowsMoved {
+			if rewrite {
 				job.rewrite = func(f string) string { return s.rewrite(f, sheet) }
 			}
 			if rowsMoved || s.extends(sheet) {

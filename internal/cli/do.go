@@ -44,7 +44,7 @@ type doEntry struct {
 // notInBatch are the commands a batch does not run: they work on other
 // files, or on the file's history.
 var notInBatch = map[string]string{
-	"do": "a batch cannot run another", "undo": "run it after the batch",
+	"do": "a batch cannot run another", "script": "a script is a batch itself; run it on its own", "undo": "run it after the batch",
 	"diff": "it compares two files", "render": "run it after the batch",
 	"convert":    "it writes another file; run it after the batch",
 	"agent-docs": "it is not about the file", "skill": "it is not about the file",

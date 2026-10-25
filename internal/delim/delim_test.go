@@ -245,3 +245,12 @@ func TestEncodeUnrepresentable(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// A column of decimal commas added to a semicolon file must not turn it
+// into a comma file: the header has no commas.
+func TestSniffAddedDecimalColumn(t *testing.T) {
+	text := "A;B;C\r\n" + strings.Repeat("x;4,03;y;4,23\r\n", 9)
+	if c := sniff(text, "f.csv"); c != ';' {
+		t.Errorf("sniffed %q", c)
+	}
+}

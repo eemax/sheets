@@ -1,6 +1,8 @@
 package formula
 
 import (
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/eemax/sheets/internal/grid"
@@ -130,6 +132,7 @@ func bare(w string) string {
 // format stores: future functions get their _xlfn. prefix and LET/LAMBDA
 // parameter names their _xlpm. prefix. Already-prefixed text is kept.
 func ToFile(f string) string {
+	f = spillRefsToFile(f)
 	ts := lex(f)
 	params := lambdaParams(ts)
 	changed := false
@@ -152,11 +155,99 @@ func ToFile(f string) string {
 	return join(ts)
 }
 
+// Unprefixed lists the functions a stored formula calls without the
+// prefix Excel needs (as openpyxl writes them): Excel shows #NAME? for
+// the formula until it is entered again. It runs on every formula read,
+// so it scans without allocating.
+func Unprefixed(stored string) []string {
+	var out []string
+	for i := 0; i < len(stored); {
+		c := stored[i]
+		switch {
+		case c == '"' || c == '\'':
+			i = skipQuoted(stored, i, c)
+		case c == '[':
+			// Structured references and links hold no calls.
+			depth := 0
+			for ; i < len(stored); i++ {
+				if stored[i] == '[' {
+					depth++
+				} else if stored[i] == ']' {
+					if depth--; depth == 0 {
+						i++
+						break
+					}
+				}
+			}
+		case isWordChar(c) || c == '$' || c == '\\':
+			j := i
+			for j < len(stored) && (isWordChar(stored[j]) || stored[j] == '$' || stored[j] == '\\') {
+				j++
+			}
+			if j < len(stored) && stored[j] == '(' && (i == 0 || stored[i-1] != '!') {
+				name := stored[i:j]
+				if _, ok := future[name]; !ok {
+					name = strings.ToUpper(name)
+				}
+				if _, ok := future[name]; ok && !slices.Contains(out, name) {
+					out = append(out, name)
+				}
+			}
+			i = j
+		default:
+			i++
+		}
+	}
+	return out
+}
+
+// spillRef is a reference with the spill operator, D2# or Sheet1!$D$2#,
+// outside strings (which lex keeps apart).
+var spillRef = regexp.MustCompile(`^((?:'(?:[^']|'')+'|[A-Za-z0-9_.]+)!)?\$?[A-Za-z]{1,3}\$?[0-9]+$`)
+
+// spillRefsToFile writes D2# as the file format stores it,
+// _xlfn.ANCHORARRAY(D2).
+func spillRefsToFile(f string) string {
+	if !strings.Contains(f, "#") {
+		return f
+	}
+	ts := lex(f)
+	changed := false
+	for i := 0; i+1 < len(ts); i++ {
+		if ts[i+1].text != "#" || !ts[i].word {
+			continue
+		}
+		// The reference may carry its sheet: Sheet1 ! D2, or 'My Sheet' ! D2.
+		start := i
+		if i >= 2 && ts[i-1].text == "!" {
+			start = i - 2
+		}
+		ref := join(ts[start : i+1])
+		if !spillRef.MatchString(ref) {
+			continue
+		}
+		ts[start].text = xlfn + "ANCHORARRAY(" + ref + ")"
+		for k := start + 1; k <= i+1; k++ {
+			ts[k].text = ""
+		}
+		changed = true
+		i++
+	}
+	if !changed {
+		return f
+	}
+	return join(ts)
+}
+
+// anchorArray is a spill reference as stored: _xlfn.ANCHORARRAY(D2).
+var anchorArray = regexp.MustCompile(`(?i)_xlfn\.ANCHORARRAY\(((?:'(?:[^']|'')+'|[A-Za-z0-9_.]+)?!?\$?[A-Za-z]{1,3}\$?[0-9]+)\)`)
+
 // FromFile removes storage prefixes so formulas read as typed in Excel.
 func FromFile(f string) string {
 	if !strings.Contains(f, "_xl") {
 		return f
 	}
+	f = anchorArray.ReplaceAllString(f, "$1#")
 	ts := lex(f)
 	for i, t := range ts {
 		if t.word {

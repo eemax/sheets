@@ -1,6 +1,7 @@
 package analyze
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -194,5 +195,71 @@ func TestExcelTotalsRow(t *testing.T) {
 	s.Tables = []grid.NamedTable{{Name: "T", Range: grid.Range{R1: 1, C1: 1, R2: 4, C2: 2}, Totals: 1}}
 	if reg := Regions(wb, s)[0]; reg.TotalRow != 4 || reg.Body.String() != "A2:B3" {
 		t.Errorf("table = %+v", reg)
+	}
+}
+
+// An Excel table is a block of its own: a label beside it does not join it.
+func TestExcelTableBlock(t *testing.T) {
+	wb, s := sheet(
+		[]any{"Region", "Q1", "Trend"},
+		[]any{"North", 10},
+		[]any{"South", 20},
+	)
+	s.Tables = []grid.NamedTable{{Name: "Sales", Range: grid.Range{R1: 1, C1: 1, R2: 3, C2: 2}, Columns: []string{"Region", "Q1"}}}
+	var got []string
+	for _, r := range Regions(wb, s) {
+		got = append(got, r.Range.String())
+	}
+	if strings.Join(got, " ") != "A1:B3 C1" {
+		t.Errorf("regions = %v", got)
+	}
+}
+
+// A report in sections: heading rows are not data, and the blocks below
+// the header carry its table on, a grand total last.
+func TestSections(t *testing.T) {
+	wb, s := sheet(
+		[]any{"Product", "Units"},
+		[]any{"West"},
+		[]any{"  Alpha", 1},
+		[]any{"West total", "=SUM(B3:B3)"},
+		nil,
+		[]any{"East"},
+		[]any{"  Alpha", 3},
+		[]any{"  Bravo", 4},
+		[]any{"East total", "=SUM(B7:B8)"},
+		nil,
+		[]any{"Grand total", "=B4+B9"},
+		nil,
+		[]any{"Figures in $000."},
+	)
+	regs := Regions(wb, s)
+	var got []string
+	for _, r := range regs {
+		got = append(got, fmt.Sprintf("%s h%d c%d body %s total %d %q", r.Range, r.Heading, r.Continues, r.Body, r.TotalRow, HeadingText(s, r)))
+	}
+	want := []string{
+		`A1:B4 h2 c0 body A3:B3 total 4 "West"`,
+		`A6:B9 h6 c1 body A7:B8 total 9 "East"`,
+		`A11:B11 h0 c1 body A11:B10 total 11 ""`,
+		`A13 h0 c0 body A13 total 0 ""`,
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("regions:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A note below a table is not a section of it.
+func TestNoteBelowTable(t *testing.T) {
+	wb, s := sheet(
+		[]any{"Product", "Units", "Sales", "Margin"},
+		[]any{"Alpha", 1, 10, 0.1},
+		[]any{"Bravo", 2, 20, 0.2},
+		nil,
+		[]any{"Source:", "CRM"},
+	)
+	regs := Regions(wb, s)
+	if len(regs) != 2 || regs[1].Continues != 0 || regs[1].Range.String() != "A5:B5" {
+		t.Errorf("regions = %+v", regs)
 	}
 }

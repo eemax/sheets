@@ -1,0 +1,43 @@
+# A formula naming a sheet's table the way sheets commands do
+# (Sales[Revenue]) is written as the range it stands for: Excel reads that
+# syntax only for Excel tables. A name that is neither is refused.
+stdin sales.tsv
+exec sheets write book.xlsx Sales
+stdin summary.tsv
+exec sheets write book.xlsx Summary
+stdin batch.txt
+exec sheets do book.xlsx
+stdout 'formulas: Summary!B2 = 15, Summary!B3 = 20'
+exec sheets read book.xlsx Summary --formulas
+stdout 'SUMIFS\(Sales!\$B\$2:\$B\$4,Sales!\$A\$2:\$A\$4,A2\)'
+! stdout 'Sales\[Revenue\]'
+
+! exec sheets set book.xlsx Summary!C2 '=SUM(Nope[Revenue])'
+stderr 'Nope\[Revenue\] is not a column of an Excel table'
+
+# Rows appended to the table grow the ranges that cover its columns whole;
+# a range over part of a column stays.
+exec sheets set book.xlsx Summary!C2 '=SUM(Sales!B3:B4)'
+stdin more.tsv
+exec sheets write book.xlsx Sales --append
+exec sheets read book.xlsx Summary --formulas
+stdout 'SUMIFS\(Sales!\$B\$2:\$B\$5,Sales!\$A\$2:\$A\$5,A2\)'
+stdout 'SUM\(Sales!B3:B4\)'
+exec sheets read book.xlsx Summary
+stdout '^2\tEast\t115\t25$'
+
+-- sales.tsv --
+Region	Revenue
+East	10
+West	20
+East	5
+-- summary.tsv --
+Region
+East
+West
+-- batch.txt --
+set Summary!B1 Revenue
+set 'Summary[Revenue]' '=SUMIFS(Sales[Revenue],Sales[Region],A{r})'
+-- more.tsv --
+Region	Revenue
+East	100

@@ -1,0 +1,20 @@
+# A workbook a script wrote with openpyxl, which stores functions added
+# after Excel 2007 without the prefix Excel needs. Excel shows #NAME? for
+# them, so sheets does not compute them and lint reports them; entering one
+# again stores it as Excel does.
+fixture unprefixed.xlsx
+exec sheets read unprefixed.xlsx C2:F2
+stdout '^2	\?	\?	\?	60$'
+! exec sheets lint unprefixed.xlsx
+stdout 'error  Data!C2, D2, E2  3 formulas like =IFERROR.* call AGGREGATE, TEXTJOIN, MAXIFS without the _xlfn. prefix Excel needs'
+
+# Only E2 reads what changed.
+exec sheets set unprefixed.xlsx B2 40
+stdout 'warning: 1 formula that this change reaches calls functions stored without the _xlfn. prefix Excel needs, so Excel shows #NAME\? for it until it is entered again \(sheets set adds it\): Data!E2$'
+
+exec sheets set unprefixed.xlsx E2 '=MAXIFS(B2:B4,A2:A4,"PK*")'
+stdout 'formulas: Data!E2 = 40'
+exec sheets read unprefixed.xlsx E2:F2
+stdout '^2	40	90$'
+! exec sheets lint unprefixed.xlsx
+stdout 'Data!C2, D2  2 formulas like =IFERROR.* call AGGREGATE, TEXTJOIN without'

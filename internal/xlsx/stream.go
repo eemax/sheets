@@ -35,8 +35,9 @@ type streamOp struct {
 	kind  byte // 'i' insert, 'd' delete, 'x' extend a table's ranges
 	sheet string
 	// insert: n rows before at. delete: rows from..to. extend: ranges
-	// within columns c1..c2 ending at row from now end at row to.
-	at, n, from, to, c1, c2 int
+	// within columns c1..c2 ending at row from now end at row to (in
+	// formulas, those starting at the table's first data row r1 or above).
+	at, n, r1, from, to, c1, c2 int
 }
 
 // streamCell is a cell written.
@@ -246,6 +247,8 @@ func (op streamOp) formula(f, home string) string {
 		return formula.InsertLines(f, home, op.sheet, false, op.at, op.n)
 	case 'd':
 		return formula.DeleteLines(f, home, op.sheet, false, op.from, op.to)
+	case 'x':
+		return formula.GrowRanges(f, home, op.sheet, op.r1, op.from, op.to, op.c1, op.c2)
 	}
 	return f
 }
@@ -341,7 +344,7 @@ func (s *StreamEditor) formulasNow() map[cellKey]*formulaAt {
 			if len(s.ops) > 0 {
 				text = s.rewrite(text, sh.Name)
 			}
-			all[keyOf(sh.Name, now, c)] = &formulaAt{sheet: sh.Name, row: now, col: c, text: text, pending: cell.Pending, stored: valueOf(*cell)}
+			all[keyOf(sh.Name, now, c)] = &formulaAt{sheet: sh.Name, row: now, col: c, text: text, pending: cell.Pending, stored: valueOf(*cell), unprefixed: cell.Unprefixed}
 		})
 	}
 	for _, sh := range s.wb.Sheets {
@@ -364,6 +367,16 @@ func (s *StreamEditor) tablesNow(sheet string) []tableNow {
 		}
 	}
 	return out
+}
+
+// anySpills tells whether the workbook holds dynamic arrays.
+func (s *StreamEditor) anySpills() bool {
+	for _, sh := range s.wb.Sheets {
+		if len(sh.Spills) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // spilling tells whether a cell is a dynamic array formula's, or holds
@@ -430,7 +443,7 @@ func (s *StreamEditor) Set(sheet string, row, col int, v input.Value) error {
 		if err := formula.Check(v.Formula); err != nil {
 			return fmt.Errorf("%s: =%s is not a valid formula: %v", grid.FormatRef(sheet, grid.Range{R1: row, C1: col, R2: row, C2: col}), strings.TrimPrefix(v.Formula, "="), err)
 		}
-		if formula.Spills(formula.ToFile(v.Formula)) {
+		if dynamicFormula(formula.ToFile(v.Formula)) {
 			return errUpgrade // a dynamic array: cell metadata
 		}
 	}
@@ -444,7 +457,9 @@ func (s *StreamEditor) Set(sheet string, row, col int, v input.Value) error {
 		}
 		return hiddenByMerge(name, row, col, m)
 	}
-	if s.spilling(name, row, col) {
+	if s.spilling(name, row, col) || s.anySpills() {
+		// A dynamic array a write reaches spills anew: the full editor
+		// lays its result out (see spill.go).
 		return errUpgrade
 	}
 	for _, t := range s.tablesNow(name) {
@@ -635,7 +650,7 @@ func (s *StreamEditor) ExtendTable(sheet string, body grid.Range, n int) {
 	if err != nil {
 		return
 	}
-	s.ops = append(s.ops, streamOp{kind: 'x', sheet: name, from: body.R2, to: body.R2 + n, c1: body.C1, c2: body.C2})
+	s.ops = append(s.ops, streamOp{kind: 'x', sheet: name, r1: body.R1, from: body.R2, to: body.R2 + n, c1: body.C1, c2: body.C2})
 }
 
 // References lists the formula cells on other sheets that refer to sheet,
@@ -710,12 +725,15 @@ func (s *StreamEditor) Evaluate(sheet string, row, col int) (grid.Cell, string, 
 	}
 	if v, ok := s.res.results[strings.ToLower(sheet)][grid.CellName(row, col)]; ok {
 		note := s.res.dropped[keyOf(sheet, row, col)]
-		if v.Kind == grid.Empty && !strings.HasPrefix(note, "circular reference") && !strings.Contains(note, "Excel computes it") {
-			note += "; Excel computes it on open"
+		if v.Kind == grid.Empty {
+			note = whenExcel(note)
 		}
 		return v, note, v.Kind != grid.Empty
 	}
 	c := s.cellNow(sheet, row, col)
+	if c.Unprefixed {
+		return grid.Cell{}, unprefixedNote(c.Formula), false
+	}
 	if c.Pending {
 		return grid.Cell{}, "Excel computes it on open", false
 	}

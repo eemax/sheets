@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -34,6 +35,142 @@ func stored(t *testing.T, path, part, cell string) string {
 
 const dataPart, summaryPart = "xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml"
 
+// A function added after Excel 2007 stored without its prefix, as
+// openpyxl writes it, is #NAME? in Excel: its value, and what reads it,
+// is unknown rather than computed, until the formula is entered again.
+func TestUnprefixedFunction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "py.xlsx")
+	f := excelize.NewFile()
+	for r := 1; r <= 3; r++ {
+		must(t, f.SetCellValue("Sheet1", grid.CellName(r, 1), r))
+	}
+	must(t, f.SetCellFormula("Sheet1", "D1", "AGGREGATE(9,6,A1:A3)"))
+	must(t, f.SetCellFormula("Sheet1", "D2", "D1*2"))
+	must(t, f.SetCellFormula("Sheet1", "D3", "_xlfn.AGGREGATE(9,6,A1:A3)"))
+	must(t, f.SaveAs(path))
+
+	wb := read(t, path)
+	s := wb.Sheet("Sheet1")
+	if c := wb.Value(s, 1, 4); !c.Unprefixed || !c.Pending {
+		t.Errorf("D1 reads as %+v", c)
+	}
+	if c := wb.Value(s, 2, 4); !c.Pending {
+		t.Errorf("D2, reading D1, = %+v", c)
+	}
+	if c := wb.Value(s, 3, 4); c.Unprefixed || c.Pending || c.Num != 6 {
+		t.Errorf("D3, prefixed, = %+v", c)
+	}
+
+	e := edit(t, path, func(e *Editor) error { return e.Set("Sheet1", 1, 1, input.Parse("10", false)) })
+	if w := strings.Join(e.Warnings(), "\n"); !strings.Contains(w, "#NAME?") || !strings.Contains(w, "Sheet1!D1") {
+		t.Errorf("warnings: %s", w)
+	}
+	if _, note, ok := e.Evaluate("Sheet1", 1, 4); ok || !strings.Contains(note, "AGGREGATE is stored without the _xlfn. prefix") {
+		t.Errorf("D1: %q", note)
+	}
+	for cell, want := range map[string]string{"D1": "", "D2": "", "D3": "15"} {
+		if got := stored(t, path, dataPart, cell); got != want {
+			t.Errorf("%s stores %q, want %q", cell, got, want)
+		}
+	}
+
+	// Entered again, it is stored as Excel stores it, and computed.
+	edit(t, path, func(e *Editor) error { return e.Set("Sheet1", 1, 4, input.Parse("=AGGREGATE(9,6,A1:A3)", false)) })
+	if x := sheetXML(t, path, dataPart); !strings.Contains(x, "<f>_xlfn.AGGREGATE(9,6,A1:A3)</f>") {
+		t.Errorf("D1 stored as %s", x)
+	}
+	for cell, want := range map[string]string{"D1": "15", "D2": "30"} {
+		if got := stored(t, path, dataPart, cell); got != want {
+			t.Errorf("after entering D1 again, %s stores %q, want %q", cell, got, want)
+		}
+	}
+}
+
+// Unsharing filled-down formulas, as editing one of their cells or
+// sorting does, keeps the results of the others as they were stored:
+// excelize marks every formula it rewrites as giving text, which pandas,
+// and the next command of a batch, read as text ("3.7" sorted as text).
+func TestUnshareKeepsResults(t *testing.T) {
+	groups := []struct{ ref, text string }{
+		{"C1:C4", "A1+B1"}, {"D1:D4", `A1&"x"`}, {"E1:E4", "A1>2"}, {"F1:F4", "A1/0"},
+		{"G1:G4", `_xlfn.FILTERXML("<a>1</a>","//a")`}, // not computed: no result
+	}
+	shared := func(t *testing.T) string {
+		path := filepath.Join(t.TempDir(), "shared.xlsx")
+		f := excelize.NewFile()
+		for r := 1; r <= 4; r++ {
+			must(t, f.SetSheetRow("Sheet1", grid.CellName(r, 1), &[]any{r, r * 10}))
+		}
+		for _, g := range groups {
+			typ, ref := excelize.STCellFormulaTypeShared, g.ref
+			must(t, f.SetCellFormula("Sheet1", strings.Split(g.ref, ":")[0], g.text, excelize.FormulaOpts{Type: &typ, Ref: &ref}))
+		}
+		must(t, f.SaveAs(path))
+		// A first session stores the results it computes; the formulas
+		// stay shared.
+		edit(t, path, func(e *Editor) error { return e.Set("Sheet1", 1, 9, input.Parse("x", false)) })
+		if x := sheetXML(t, path, dataPart); strings.Count(x, `t="shared" ref=`) != len(groups) {
+			t.Fatalf("formulas not shared: %s", x)
+		}
+		return path
+	}
+	cellAt := regexp.MustCompile(`<c r="([A-Z]+[0-9]+)"[^>]*>`)
+	check := func(t *testing.T, path string, row int) {
+		t.Helper()
+		x := sheetXML(t, path, dataPart)
+		heads := map[string]string{}
+		for _, m := range cellAt.FindAllStringSubmatch(x, -1) {
+			heads[m[1]] = m[0]
+		}
+		n := strconv.Itoa(row)
+		for _, tt := range []struct{ cell, typ, value string }{
+			{"C" + n, "", strconv.Itoa(row * 11)},
+			{"D" + n, ` t="str"`, n + "x"},
+			{"E" + n, ` t="b"`, map[bool]string{true: "1", false: "0"}[row > 2]},
+			{"F" + n, ` t="e"`, "#DIV/0!"},
+			{"G" + n, "", ""},
+		} {
+			typ := ""
+			if m := regexp.MustCompile(` t="\w+"`).FindString(heads[tt.cell]); m != "" {
+				typ = m
+			}
+			if typ != tt.typ || stored(t, path, dataPart, tt.cell) != tt.value {
+				t.Errorf("%s: type %q value %q, want %q %q", tt.cell, typ, stored(t, path, dataPart, tt.cell), tt.typ, tt.value)
+			}
+		}
+		s := read(t, path).Sheet("Sheet1")
+		if c := s.At(row, 3); c.Kind != grid.Number || c.Pending {
+			t.Errorf("C%d reads as %+v", row, c)
+		}
+		if c := s.At(row, 7); !c.Pending {
+			t.Errorf("G%d reads as %+v, want no result", row, c)
+		}
+	}
+	t.Run("edit", func(t *testing.T) {
+		path := shared(t)
+		edit(t, path, func(e *Editor) error { return e.Set("Sheet1", 2, 3, input.Parse("=A2*B2", false)) })
+		if x := sheetXML(t, path, dataPart); strings.Contains(x, `t="shared"`) {
+			t.Fatal("still shared")
+		}
+		for _, row := range []int{1, 3, 4} {
+			check(t, path, row)
+		}
+	})
+	t.Run("sort", func(t *testing.T) {
+		// Sorting rows 1 and 2 unshares the sheet; rows 3 and 4 stay.
+		path := shared(t)
+		edit(t, path, func(e *Editor) error {
+			_, err := e.SortRange("Sheet1", grid.Range{R1: 1, C1: 1, R2: 2, C2: 7}, []SortKey{{Col: 1, Desc: true}})
+			return err
+		})
+		check(t, path, 3)
+		check(t, path, 4)
+		if got := stored(t, path, dataPart, "C1"); got != "22" {
+			t.Errorf("C1 = %q after the sort, want 22", got)
+		}
+	})
+}
+
 // Changing an input stores new results for everything that reads it,
 // through totals, other sheets and names; what it cannot compute loses
 // its result; what does not read it keeps its result as Excel stored it.
@@ -46,18 +183,17 @@ func TestStoredResultsFollowEdits(t *testing.T) {
 		{summaryPart, "A2", "1000"}, // LET, computed inlined
 		{summaryPart, "A3", "8"},    // reads B3 only: kept
 		{summaryPart, "A4", "3"},
-		{summaryPart, "A5", ""}, // XMATCH: the calculator cannot, Excel will
+		{summaryPart, "A5", "#N/A"}, // XMATCH(5,...): no 5 left
 	} {
 		if got := stored(t, path, tt.part, tt.cell); got != tt.want {
 			t.Errorf("%s %s stores %q, want %q", tt.part, tt.cell, got, tt.want)
 		}
 	}
-	if w := strings.Join(e.Warnings(), "\n"); !strings.Contains(w, "Summary!A5 (XMATCH is not supported") {
-		t.Errorf("warnings do not name the result left to Excel: %s", w)
+	if w := strings.Join(e.Warnings(), "\n"); w != "" {
+		t.Errorf("warnings: %s", w)
 	}
 
-	// Read back, the stored results are trusted; the missing one is
-	// computed on demand.
+	// Read back, the stored results are trusted.
 	wb, err := Read(path)
 	if err != nil {
 		t.Fatal(err)
@@ -66,8 +202,23 @@ func TestStoredResultsFollowEdits(t *testing.T) {
 	if c := s.At(1, 1); c.Pending || c.Num != 220 {
 		t.Errorf("Summary!A1 read back as %+v", c)
 	}
-	if c := s.At(5, 1); !c.Pending {
-		t.Errorf("Summary!A5 read back as %+v, want no stored result", c)
+	if c := s.At(5, 1); c.Pending || c.Kind != grid.Error || c.Text != "#N/A" {
+		t.Errorf("Summary!A5 read back as %+v", c)
+	}
+}
+
+// What the engine cannot compute loses its stored result, and the warning
+// says so; what reads it does too.
+func TestUncomputableNotStored(t *testing.T) {
+	path := writeBook(t, [][]string{{"Value", "Twice"}, {"5", `=FILTERXML("<a><b>"&A2&"</b></a>","//b")`}, {"", "=B2*2"}})
+	e := edit(t, path, func(e *Editor) error { return e.Set("Data", 2, 1, input.Parse("6", false)) })
+	for _, cell := range []string{"B2", "B3"} {
+		if got := stored(t, path, dataPart, cell); got != "" {
+			t.Errorf("%s stores %q, want no result", cell, got)
+		}
+	}
+	if w := strings.Join(e.Warnings(), "\n"); !strings.Contains(w, "Data!B2 (FILTERXML is not supported by the sheets calculator)") {
+		t.Errorf("warnings do not name the result left to Excel: %s", w)
 	}
 }
 
@@ -227,8 +378,8 @@ func TestFreshCaches(t *testing.T) {
 	}
 }
 
-// Results are stored with the type Excel gives them, as far as can be
-// told; circular references and the calculator's #VALUE! are not stored.
+// Results are stored with the type Excel gives them; circular references
+// are not stored.
 func TestStoredTypes(t *testing.T) {
 	path := writeBook(t, [][]string{
 		{"Code", "Qty", "Text", "Flag", "Lookup", "Loop", "Value"},
@@ -239,9 +390,9 @@ func TestStoredTypes(t *testing.T) {
 	for cell, want := range map[string]string{
 		"C2": `t="str"><f>TEXT(B2,&#34;000&#34;)</f><v>004</v>`,
 		"D2": `t="b"><f>IF(B2&gt;3,TRUE)</f><v>1</v>`,
-		"E2": `<f>INDEX(A2:B2,1)</f></c>`, // "007" or 7: left to Excel
-		"F2": `<f>F2+1</f></c>`,           // refers to itself
-		"G2": `<f>VALUE(&#34; 42 &#34;)</f></c>`,
+		"E2": `t="str"><f>INDEX(A2:B2,1)</f><v>007</v>`, // the text, as read
+		"F2": `<f>F2+1</f></c>`,                         // refers to itself
+		"G2": `<f>VALUE(&#34; 42 &#34;)</f><v>42</v>`,
 		"C3": `t="str"><f>B3&amp;&#34;&#34;</f><v>6</v>`,
 		"E3": `<f>INDEX(B2:B3,2)</f><v>6</v>`,
 	} {
@@ -291,7 +442,7 @@ func TestReadComputedTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := wb.Sheets[0]
-	for col, want := range map[int]string{2: "?", 3: "?", 4: `"005"`, 5: "TRUE", 6: "?", 7: "10"} {
+	for col, want := range map[int]string{2: "?", 3: "?", 4: `"005"`, 5: "TRUE", 6: "#REF!", 7: "10"} {
 		v := wb.Value(s, 1, col)
 		got := "?"
 		switch {
@@ -308,12 +459,12 @@ func TestReadComputedTypes(t *testing.T) {
 }
 
 // A result counts only when everything it reads does: a formula reading
-// one the calculator cannot compute gets no result.
+// one the engine cannot compute gets no result.
 func TestTaintedResults(t *testing.T) {
 	path := t.TempDir() + "/dep.xlsx"
 	e, _ := OpenEditor(path, true)
 	e.EnsureSheet("Data")
-	for cell, f := range map[[2]int]string{{1, 1}: "=XMATCH(2,{1,2,3})", {1, 2}: "=A1+1", {1, 3}: "=SUM(A1:A2)*2", {1, 4}: "=B1*10", {2, 5}: "=5*2"} {
+	for cell, f := range map[[2]int]string{{1, 1}: `=FILTERXML("<a><b>2</b></a>","//b")`, {1, 2}: "=A1+1", {1, 3}: "=SUM(A1:A2)*2", {1, 4}: "=B1*10", {2, 5}: "=5*2"} {
 		if err := e.Set("Data", cell[0], cell[1], input.Parse(f, false)); err != nil {
 			t.Fatal(err)
 		}
@@ -441,15 +592,16 @@ func TestResultsAfterSheetEdits(t *testing.T) {
 	}
 }
 
-// Array arithmetic over ranges is left to Excel: the calculator gets it
-// wrong (an agent found SUMPRODUCT((A="East")*B*C) stored as nonsense).
-func TestArrayArithmeticNotStored(t *testing.T) {
+// Array arithmetic over ranges is computed as Excel does (an agent once
+// found SUMPRODUCT((A="East")*B*C) stored as nonsense by the old
+// calculator).
+func TestArrayArithmetic(t *testing.T) {
 	path := writeBook(t, [][]string{
 		{"Region", "Units", "Price", "", "=SUMPRODUCT((A2:A4=\"East\")*B2:B4*C2:C4)", "=SUMPRODUCT(B2:B4,C2:C4)"},
 		{"East", "2", "3"}, {"West", "4", "5"}, {"East", "1", "10"},
 	})
-	if got := stored(t, path, dataPart, "E1"); got != "" {
-		t.Errorf("E1 stores %q from array arithmetic", got)
+	if got := stored(t, path, dataPart, "E1"); got != "16" {
+		t.Errorf("E1 stores %q, want 16", got)
 	}
 	if got := stored(t, path, dataPart, "F1"); got != "36" {
 		t.Errorf("F1 stores %q, want 36", got)

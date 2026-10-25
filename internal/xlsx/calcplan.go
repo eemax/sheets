@@ -1,35 +1,30 @@
 package xlsx
 
 import (
-	"sort"
 	"strings"
 
 	"github.com/eemax/sheets/internal/formula"
 	"github.com/eemax/sheets/internal/grid"
-	"github.com/xuri/excelize/v2"
 )
 
-// A calculation plan sets the calculator up for a workbook's formulas,
-// in a copy of it: never in the file being saved.
+// A calculation plan sets the engine up for a workbook's formulas:
 //
-//   - Formulas with table references or LET are computed in translated
-//     form (formula.ExpandTables, formula.InlineLet), which it can
-//     evaluate.
+//   - Formulas with table references are computed in translated form
+//     (formula.ExpandTables), with the table's cells.
 //   - A formula it cannot compute even so, whose stored result holds (it
 //     is not being recomputed), is taken at that result: what reads it
 //     can then be computed, from Excel's own answer.
 type calcPlan struct {
-	translated []*formulaAt
-	frozen     map[*formulaAt]bool
-	// veto are formulas the calculator is not to be trusted with here,
-	// and why.
+	frozen map[*formulaAt]bool
+	// veto are formulas the engine is not to be trusted with here, and
+	// why.
 	veto map[*formulaAt]string
-	// native computes a formula without the calculator, where it can
-	// (see nativeAggregates).
+	// native computes aggregates of long ranges incrementally (see
+	// nativeAggregates).
 	native func(j *judge, f *formulaAt) (grid.Cell, bool)
 }
 
-// calcText is the text the calculator is to compute for f.
+// calcText is the text the engine is to compute for f.
 func (rs *resolver) calcText(f *formulaAt) string {
 	text := f.text
 	if strings.Contains(strings.ToUpper(text), "LET(") {
@@ -97,9 +92,6 @@ func newPlan(fs []*formulaAt, rs *resolver, fresh map[*formulaAt]bool) calcPlan 
 		if f.calc == "" {
 			f.calc = rs.calcText(f)
 		}
-		if f.calc != f.text {
-			p.translated = append(p.translated, f)
-		}
 		if !fresh[f] && !f.pending && freezable(f.stored) {
 			if ok, _ := computable(f.calc, rs, f.sheet); !ok {
 				p.frozen[f] = true
@@ -109,84 +101,8 @@ func newPlan(fs []*formulaAt, rs *resolver, fresh map[*formulaAt]bool) calcPlan 
 	return p
 }
 
-func (p calcPlan) needed() bool { return len(p.translated) > 0 || len(p.frozen) > 0 }
-
-// freezable tells whether a stored result can stand in for its formula in
-// the calculator: a value, or an error it can produce.
+// freezable tells whether a stored result can stand in for its formula: a
+// value, or an error.
 func freezable(v grid.Cell) bool {
-	switch v.Kind {
-	case grid.Number, grid.Text, grid.Bool:
-		return true
-	case grid.Error:
-		_, ok := errorFormula[v.Text]
-		return ok
-	}
-	return false
-}
-
-// errorFormula gives each error a formula the calculator answers with it.
-var errorFormula = map[string]string{"#N/A": "NA()", "#DIV/0!": "1/0", "#NUM!": "SQRT(-1)"}
-
-// apply sets the calculator up in f, a copy of the workbook. Every formula
-// on a sheet the plan changes is rewritten as a formula of its own first,
-// so that no formula filled down from a changed cell (a shared formula)
-// changes with it.
-func (p calcPlan) apply(f *excelize.File, fs []*formulaAt) error {
-	sheets := map[string]bool{}
-	for _, x := range p.translated {
-		sheets[strings.ToLower(x.sheet)] = true
-	}
-	for x := range p.frozen {
-		sheets[strings.ToLower(x.sheet)] = true
-	}
-	var on []*formulaAt
-	for _, x := range fs {
-		if sheets[strings.ToLower(x.sheet)] {
-			on = append(on, x)
-		}
-	}
-	sort.Slice(on, func(i, j int) bool {
-		a, b := on[i], on[j]
-		if a.sheet != b.sheet {
-			return a.sheet < b.sheet
-		}
-		if a.row != b.row {
-			return a.row > b.row
-		}
-		return a.col > b.col
-	})
-	for _, x := range on {
-		cell := grid.CellName(x.row, x.col)
-		if p.frozen[x] {
-			var err error
-			switch v := x.stored; v.Kind {
-			case grid.Number:
-				err = f.SetCellFloat(x.sheet, cell, v.Num, -1, 64)
-			case grid.Text:
-				err = setText(f, x.sheet, cell, v.Text)
-			case grid.Bool:
-				err = f.SetCellBool(x.sheet, cell, v.Bool)
-			case grid.Error:
-				err = f.SetCellFormula(x.sheet, cell, errorFormula[v.Text])
-			}
-			if err != nil {
-				return err
-			}
-			continue
-		}
-		text := x.text
-		if x.calc != "" {
-			text = x.calc
-		}
-		stored := formula.ToFile(text)
-		var opts []excelize.FormulaOpts
-		if formula.Spills(stored) {
-			t, ref := excelize.STCellFormulaTypeArray, cell
-			opts = append(opts, excelize.FormulaOpts{Type: &t, Ref: &ref})
-		}
-		if err := f.SetCellFormula(x.sheet, cell, stored, opts...); err != nil {
-			return err
-		}
-	}
-	return nil
+	return v.Kind != grid.Empty
 }

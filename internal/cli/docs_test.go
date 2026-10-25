@@ -180,7 +180,7 @@ func TestInstallSkill(t *testing.T) {
 	if code := Main([]string{"skill", "--install", "--dir", dir}, nil, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
-	if !strings.Contains(out.String(), "installed "+root+" (SKILL.md and 17 references)") {
+	if !strings.Contains(out.String(), "installed "+root+" (SKILL.md and 18 references)") {
 		t.Errorf("output: %s", out.String())
 	}
 	for name, text := range skillFiles() {

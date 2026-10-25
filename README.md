@@ -26,6 +26,26 @@ I    Revenue   decimal     20000   =F{r}*G{r}*(1-H{r}) · 6.1625 … 60000 · su
 next: sheets read q3.xlsx 'Orders!A1:I20'
 ```
 
+## How well it works
+
+**SpreadsheetBench Verified.** On 90 tasks from it, with Sonnet:
+
+- **Pass rates:** sheets 81, the Excel MCP server 80, Python with
+  Anthropic's xlsx skill 72, and plain Python (openpyxl, pandas) 71.
+- **Cost:** sheets used about half the MCP server's cost and 40% of its
+  turns.
+- **Where Python lost:** openpyxl stores newer functions such as
+  AGGREGATE without the prefix Excel needs, so Excel shows `#NAME?`.
+  That cost the two Python setups 7 and 9 tasks; `sheets lint` now flags
+  it in files a script wrote.
+
+**Our own 18 tasks.** On Sonnet, Haiku and Opus, every tool passes
+nearly all of them. sheets is the only one that leaves its files with
+formula results stored (45 of 45, against 0–4), so pandas and previews
+read values instead of blanks.
+
+See [evals/results](evals/results).
+
 ## Install
 
 ```bash
@@ -95,6 +115,7 @@ instructions, and `sheets agent-docs TOPIC` for a topic.
 | `note`, `link` | Notes and hyperlinks on cells; `--list` |
 | `convert <from> <to>` | Between .xlsx and .csv/.tsv |
 | `do <file>` | Runs a script of commands against one file: one save, one undo step, nothing saved on an error |
+| `script <file> [script.ts]` | Runs an Office Script (TypeScript or JavaScript, Excel's ExcelScript API) against the file: reads give computed values, one save, one undo step |
 | `undo <file>` | Restores the file to before the last change sheets made; `--list` |
 | `agent-docs` | Prints the guide for agents: the skill's instructions, a topic (`agent-docs style`), or `all` ([agent-docs.md](internal/cli/agent-docs.md)) |
 | `skill` | Prints the agent skill's `SKILL.md`, or installs the skill folder (`--install`; see [The agent skill](#the-agent-skill)) |
@@ -127,12 +148,21 @@ EOF
   LET, LAMBDA, ...) are stored with the prefixes Excel's file format needs;
   without them Excel shows `#NAME?`.
 - **Dynamic arrays:** functions that return arrays (FILTER, UNIQUE, SORT,
-  SEQUENCE, ...) are stored as dynamic arrays and spill.
+  SEQUENCE, ...) are stored as dynamic arrays and spill, their whole
+  result saved in the cells they fill, as Excel saves it (`#SPILL!` when
+  values are in the way). So are formulas
+  computing over a range where one value goes (`=SUM(IF(A2:A9>5,B2:B9))`),
+  as Excel 365 stores them, so Excel computes them over the whole range
+  rather than one cell of it.
 - **Feedback:** after a write, `sheets` reports what each formula evaluates
   to:
   - a few sample values
   - every error, with the cell
   - formulas its calculator cannot evaluate, which Excel computes on open
+- **Table syntax:** `Sales[Revenue]` in a formula, naming a sheet's table
+  rather than an Excel table, is written as the range it stands for, which
+  Excel can read. Appending rows fills the table's formula columns and
+  grows formulas covering a table column whole, as an Excel table does.
 - **Row placeholder:** `{r}` stands for "this row" in written formulas, the
   same notation `peek` uses for formula patterns. So
   `write --append` with `=C{r}*D{r}` lands right whatever row it ends up on.
@@ -142,13 +172,18 @@ EOF
 - **`query`** turns every detected table into a SQLite table named after
   its sheet (or Excel table name), with header labels as columns. Numbers
   stay numbers, dates become ISO text, total rows are left out, and `_row`
-  points back at the sheet row. `--into` writes the result as a new table
-  keeping the source columns' number formats.
+  points back at the sheet row. A report in sections under one header is
+  one table, with a `_section` column naming each line's section. `--into`
+  writes the result as a new table keeping the source columns' number
+  formats.
 - **`lint`** checks for error values, `#REF!`, unknown functions, cells
-  that break their column's formula pattern, total rows whose ranges miss
-  rows, numbers stored as text, duplicate headers, merged cells in tables,
-  hard-coded constants repeated in formulas, external links and volatile
-  functions. `--fail-on` sets the severity that exits 1.
+  that break their column's formula pattern, rows a formula column misses,
+  total rows whose ranges miss rows, sums that count a total twice, lines
+  reading another line than their label names, numbers stored as text,
+  references to Excel tables that don't exist, array formulas stored for
+  older Excel, duplicate headers, merged cells in tables, hard-coded
+  constants repeated in formulas, external links and volatile functions.
+  `--fail-on` sets the severity that exits 1.
 - **`diff`** aligns rows (patience diff over row contents) and columns
   before comparing cells, and detects renamed sheets, so an inserted row
   is one change. `sheets diff book.xlsx` compares with the undo history.
@@ -299,40 +334,42 @@ differences stay plain numbers.
   - a value written into a cell that merged cells hide is refused, where
     excelize would write it over the merge's first cell
   - dynamic arrays get the cell metadata Excel 365 expects
-- Formula results: a file `sheets` saves never stores a stale result.
-  When saving, it follows the dependencies from every changed cell, and
-  from rows, columns or sheets that moved. It recomputes each formula
-  reached with excelize's calculator and stores the result, so pandas,
+- Formula results: a file `sheets` saves never stores a stale result, or
+  a wrong one. When saving, it follows the dependencies from every changed
+  cell, and from rows, columns or sheets that moved, and recomputes each
+  formula reached with its own calculator (`internal/engine`), so pandas,
   previews and other tools read what Excel would show.
-  - Table references and LET are computed by translating them for the
-    calculator (into cell ranges, and LET's names inlined), in a copy of the
-    workbook.
-  - SUM, COUNT, COUNTA, AVERAGE, MIN and MAX of plain ranges are computed
-    by `sheets` itself, as Excel computes them (excelize's SUM skips an
-    error Excel would give), and fast: a column of running totals is summed
-    in one pass.
-  - A formula the calculator can't evaluate (LAMBDA, FILTER, XMATCH, ...;
-    array arithmetic over ranges, such as `SUMPRODUCT((A2:A9="East")*B2:B9)`,
-    which it gets wrong; or one holding an error like `#REF!`, which it
-    misreads) loses its stored result instead of keeping a wrong one, and
-    Excel computes it on open.
-  - The calculator recomputes everything a formula reads, silently: so a
-    result is trusted only when everything under it is computable, free of
-    circular references, and agrees with every result Excel stored on the
-    way. A formula the calculator can't evaluate, whose stored result
-    still holds, stands at that result for what reads it.
-  - excelize gives every result as text, so a small type checker works out
-    whether "005" is text (`TEXT(...)`) or a number, and whether "1" is
-    TRUE; a result it can't type is left to Excel.
-  - Results that only Excel can update, from links to other workbooks, are
-    kept.
+  - The engine follows Excel's rules: typed values (numbers, text, logical
+    values, errors, references, arrays), Excel's coercions and operator
+    precedence, implicit intersection in plain formulas and array
+    evaluation in array formulas, Excel's quirks (DATEDIF, 1900 as a leap
+    year, SUBTOTAL skipping subtotals). It computes about 250 functions,
+    table references and LET.
+  - It is checked against Excel itself: over the 68,281 formulas of 800
+    Excel-saved workbooks from SpreadsheetBench, it gives the result Excel
+    stored for 99.8% of those it computes. Most of the rest are TEXT
+    writing month names, which Excel writes in its own language.
+    `SHEETS_CALC_CORPUS=dir go test ./internal/xlsx -run TestEngineCorpus`
+    runs the comparison.
+  - What it cannot compute is unknown, never guessed, and so is everything
+    reading it: links to other workbooks, the functions it lacks (LAMBDA,
+    CELL, statistical distributions, ...), and results depending on
+    Excel's language setting. Text reads as a number or date only when
+    every Excel language reads it alike (digits, `12%`, `1E3`, ISO dates
+    and times); `1,200`, `03/05/2026` or `May 2026` make the result
+    unknown. Such a formula loses its stored result, and Excel computes it
+    on open.
+  - A result is trusted only when it is free of circular references and
+    agrees with every result Excel stored on the way; a formula the engine
+    can't evaluate, whose stored result still holds, stands at that result
+    for what reads it. Links to other workbooks keep their results.
   - Charts drawing changed cells drop their cached copy of the data. The
     file is still flagged for Excel to recalculate. A fingerprint stamp
     tells `sheets` itself that the stored results are current; an edit by
-    another tool voids the stamp. Calls to functions that don't exist show
-    `#NAME?`.
+    another tool voids the stamp.
 - `internal/analyze` finds the structure: blocks of cells, titles, header
-  and total rows, column profiles, and formula patterns
+  and total rows, sections of reports (heading rows, and blocks carrying a
+  table on under its header), column profiles, and formula patterns
   (`=D{r}-E{r}`).
 
 ## Limitations

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -161,7 +162,9 @@ func encoder(d Dialect) *encoding.Encoder {
 
 // sniff picks the delimiter: tabs for .tsv, and otherwise the candidate
 // that splits the first lines into the same number of fields, most of
-// them.
+// them. One the first line lacks counts for less: a header rarely holds
+// numbers, so it tells semicolons from the decimal commas of a column of
+// numbers.
 func sniff(text, path string) rune {
 	if strings.EqualFold(filepath.Ext(path), ".tsv") {
 		return '\t'
@@ -187,7 +190,11 @@ func sniff(text, path string) rune {
 				n, most = k, v
 			}
 		}
-		if score := most * 100 / max(len(lines), 1); n > 0 && score > bestScore {
+		score := most * 100 / max(len(lines), 1)
+		if len(lines) > 1 && countOutsideQuotes(lines[0], c) == 0 {
+			score /= 2
+		}
+		if n > 0 && score > bestScore {
 			best, bestScore = c, score
 		}
 	}
@@ -277,7 +284,14 @@ func swapMarks(field string) string {
 }
 
 // Workbook is the file as a workbook of one sheet, named sheet.
-func (f *File) Workbook(sheet string) *grid.Workbook {
+func (f *File) Workbook(sheet string) *grid.Workbook { return f.workbook(sheet, false) }
+
+// Editing is the file as a workbook to change and write back: a plain
+// number also carries the decimals it was written with, which a new value
+// in its cell keeps (see look).
+func (f *File) Editing(sheet string) *grid.Workbook { return f.workbook(sheet, true) }
+
+func (f *File) workbook(sheet string, decimals bool) *grid.Workbook {
 	wb := &grid.Workbook{Format: "csv", Formats: []grid.Format{{}}}
 	formats := map[grid.Format]uint16{{}: 0}
 	s := grid.NewSheet(sheet)
@@ -288,12 +302,16 @@ func (f *File) Workbook(sheet string) *grid.Workbook {
 			}
 			v := f.Dialect.Value(field)
 			cell := grid.Cell{Kind: v.Kind, Text: v.Text, Num: v.Num, Bool: v.Bool}
-			if v.Kind == grid.Number && v.Fmt.Kind != grid.General {
-				i, ok := formats[v.Fmt]
+			fm := v.Fmt
+			if decimals {
+				fm = look(v)
+			}
+			if v.Kind == grid.Number && fm.Kind != grid.General {
+				i, ok := formats[fm]
 				if !ok {
 					i = uint16(len(wb.Formats))
-					formats[v.Fmt] = i
-					wb.Formats = append(wb.Formats, v.Fmt)
+					formats[fm] = i
+					wb.Formats = append(wb.Formats, fm)
 				}
 				cell.Fmt = i
 			}
@@ -304,6 +322,16 @@ func (f *File) Workbook(sheet string) *grid.Workbook {
 	}
 	wb.Sheets = []*grid.Sheet{s}
 	return wb
+}
+
+// look is the format a field shows its number in: as typed (1,200,
+// $5.50, 12%), and a plain number with the decimals it was written with,
+// so that a new value there keeps them (80,48 raised to 84,50, not 84,5).
+func look(v input.Value) grid.Format {
+	if v.Kind == grid.Number && v.Fmt.Kind == grid.General && v.Fmt.Decimals > 0 {
+		return grid.ClassifyFormat("0." + strings.Repeat("0", v.Fmt.Decimals))
+	}
+	return v.Fmt
 }
 
 // SheetName names the sheet of a file after it, as Excel does: its name
@@ -369,6 +397,7 @@ func Encode(rows, cols int, value func(row, col int) (grid.Cell, grid.Format, er
 	// when its columns did not change (a file can end each row with an
 	// empty field).
 	width := cols
+	origUsed := cols // columns the original file used
 	if orig != nil {
 		used := 0
 		for _, row := range orig.Rows {
@@ -382,6 +411,7 @@ func Encode(rows, cols int, value func(row, col int) (grid.Cell, grid.Format, er
 		if used == cols {
 			width = max(cols, orig.width)
 		}
+		origUsed = used
 		for i, row := range orig.Rows {
 			keys := make([]string, len(row))
 			for c, field := range row {
@@ -421,12 +451,17 @@ func Encode(rows, cols int, value func(row, col int) (grid.Cell, grid.Format, er
 			}
 			k := key(v)
 			keys[c-1] = k
+			// A value the file held keeps the text it had, when that text
+			// shows the value as the cell now does.
+			shows := func(t string, ok bool) bool {
+				return ok && sameLook(look(orig.Dialect.Value(t)), f, v.Kind)
+			}
 			switch t, ok := textByCol[[2]string{strconv.Itoa(c - 1), k}]; {
 			case k == "":
-			case ok:
+			case shows(t, ok):
 				fields[c-1] = t
 			default:
-				if t, ok := textByKey[k]; ok {
+				if t, ok := textByKey[k]; shows(t, ok) {
 					fields[c-1] = t
 				} else {
 					fields[c-1] = Text(v, f, d, date1904)
@@ -436,7 +471,20 @@ func Encode(rows, cols int, value func(row, col int) (grid.Cell, grid.Format, er
 		if q := byKey[rowKey(keys)]; len(q) > 0 {
 			raw := orig.raw[q[0]]
 			byKey[rowKey(keys)] = q[1:]
-			out.Write(bytes.TrimRight(raw, "\r\n"))
+			line := string(bytes.TrimRight(raw, "\r\n"))
+			n := len(orig.Rows[q[0]])
+			switch {
+			case cols > origUsed && n > 0 && n < width:
+				// The file gained columns: the row as it was, with empty
+				// fields for them.
+				line += strings.Repeat(string(d.Comma), width-n)
+			case cols < origUsed && n > width:
+				// It lost them: the empty fields at the end go.
+				for k := 0; k < n-width && strings.HasSuffix(line, string(d.Comma)); k++ {
+					line = line[:len(line)-len(string(d.Comma))]
+				}
+			}
+			out.WriteString(line)
 			out.WriteString(nl)
 			continue
 		}
@@ -509,6 +557,9 @@ func numberText(n float64, f grid.Format, date1904 bool) string {
 	case grid.Percent:
 		return grid.FormatNumber(n*100) + "%"
 	case grid.Integer, grid.Decimal:
+		if !groups(f) {
+			return fixed(n, f.Decimals)
+		}
 		return grouped(n, f.Decimals)
 	case grid.Currency:
 		sym := f.Symbol
@@ -527,6 +578,41 @@ func numberText(n float64, f grid.Format, date1904 bool) string {
 		return t
 	}
 	return grid.FormatNumber(n)
+}
+
+// sameLook tells whether a field read as format a shows a value the way
+// format b does.
+func sameLook(a, b grid.Format, kind grid.Kind) bool {
+	if kind != grid.Number {
+		return true
+	}
+	return a.Kind == b.Kind && a.Decimals == b.Decimals && a.Symbol == b.Symbol && groups(a) == groups(b)
+}
+
+// groupMark is a thousands separator in a number format code.
+var groupMark = regexp.MustCompile(`[0#?],[0#?]`)
+
+// groups tells whether a format writes thousands separators: one typed
+// with them (1,200), or whose code has them (#,##0.00, not 0.00).
+func groups(f grid.Format) bool {
+	return f.Code == "" || groupMark.MatchString(f.Code)
+}
+
+// fixed writes a number without thousands separators, with at least the
+// given decimals (more when it has them).
+func fixed(n float64, decimals int) string {
+	s := grid.FormatNumber(n)
+	if strings.ContainsAny(s, "eE") {
+		return s
+	}
+	whole, frac, _ := strings.Cut(s, ".")
+	for len(frac) < decimals {
+		frac += "0"
+	}
+	if frac != "" {
+		whole += "." + frac
+	}
+	return whole
 }
 
 // prefixSymbol are the currency symbols written before the number.

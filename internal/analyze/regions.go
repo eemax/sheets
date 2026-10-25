@@ -22,10 +22,37 @@ type Region struct {
 	Body      grid.Range // data rows: excludes title, group, header and total rows
 	// IsTitle marks a lone text cell that captions the table just below it.
 	IsTitle bool
+	// Heading is a row naming the block's section ("West") above its
+	// data, as reports head each section; 0 when there is none. It is not
+	// part of Body.
+	Heading int
+	// Continues is set on a block of data without a header of its own
+	// that carries on the table above it, as reports lay sections out
+	// under one header: it holds that table's header row, and
+	// ContinuesGroup its group row. Such a block is not a table by
+	// itself; Headed reads it with that header.
+	Continues, ContinuesGroup int
 }
 
 // IsTable reports whether the region has a header and at least one data row.
 func (r Region) IsTable() bool { return r.HeaderRow > 0 && !r.Body.Empty() }
+
+// Headed returns a block that continues a table with that table's header,
+// so that its columns read as the table's.
+func (r Region) Headed() Region {
+	if r.Continues > 0 {
+		r.HeaderRow, r.GroupRow = r.Continues, r.ContinuesGroup
+	}
+	return r
+}
+
+// HeadingText returns the text of a block's section heading.
+func HeadingText(s *grid.Sheet, r Region) string {
+	if r.Heading == 0 {
+		return ""
+	}
+	return strings.TrimSpace(s.Get(r.Heading, r.Range.C1).Text)
+}
 
 // Regions finds the blocks of data on a sheet, top to bottom, left to right.
 func Regions(wb *grid.Workbook, s *grid.Sheet) []Region {
@@ -34,6 +61,7 @@ func Regions(wb *grid.Workbook, s *grid.Sheet) []Region {
 	for _, b := range boxes {
 		out = append(out, Classify(wb, s, b))
 	}
+	continuations(wb, s, out)
 	// A single text cell up to two blank rows above a table, within its
 	// columns, is that table's title.
 	for i := range out {
@@ -54,14 +82,99 @@ func Regions(wb *grid.Workbook, s *grid.Sheet) []Region {
 	return out
 }
 
+// continuations marks the blocks that carry on a table above them: no
+// header of their own, starting in the table's first column and within its
+// columns, up to two blank rows below it (or below another block carrying
+// it on), with some row of several values. Reports lay out sections so,
+// each with its heading and subtotal, and a grand total at the end.
+func continuations(wb *grid.Workbook, s *grid.Sheet, regs []Region) {
+	for i := range regs {
+		reg := &regs[i]
+		if reg.HeaderRow > 0 || s.TableAt(reg.Range) != nil || !severalValues(s, reg.Range) {
+			continue
+		}
+		// The block just above, in these columns.
+		var above *Region
+		for j := range regs {
+			o := &regs[j]
+			if o.Range.R2 < reg.Range.R1 && o.Range.C1 <= reg.Range.C2 && o.Range.C2 >= reg.Range.C1 && (above == nil || o.Range.R2 > above.Range.R2) {
+				above = o
+			}
+		}
+		if above == nil || reg.Range.R1-above.Range.R2 > 3 {
+			continue
+		}
+		header, group, c1, c2 := above.HeaderRow, above.GroupRow, above.Range.C1, above.Range.C2
+		if above.Continues > 0 {
+			header, group = above.Continues, above.ContinuesGroup
+		}
+		if header == 0 || above.Continues == 0 && !above.IsTable() || reg.Range.C1 != c1 || reg.Range.C2 > c2 {
+			continue
+		}
+		// The table's columns, from its first row; its heading leads.
+		was := reg.Range.C2
+		reg.Continues, reg.ContinuesGroup = header, group
+		reg.Range.C2 = c2
+		if reg.TitleRows == 1 && reg.Heading == 0 {
+			reg.TitleRows = 0
+			reg.Heading = reg.Range.R1
+		}
+		reg.Body = grid.Range{R1: reg.Range.R1, C1: reg.Range.C1, R2: reg.Range.R2, C2: reg.Range.C2}
+		if reg.Heading > 0 {
+			reg.Body.R1 = reg.Heading + 1
+		}
+		reg.TotalRow = 0
+		if isTotal(s, reg.Range.R2, reg.Range) && (reg.Body.Rows() >= 2 || reg.Range.Rows() == 1) {
+			reg.TotalRow = reg.Range.R2
+			reg.Body.R2--
+		}
+		// A section closes with its subtotal, or holds lines like the
+		// table's; a note below a table ("Source: | CRM") does neither.
+		if reg.TotalRow == 0 && !dataRows(s, reg.Body, c2-c1+1) {
+			*reg = Classify(wb, s, grid.Range{R1: reg.Range.R1, C1: reg.Range.C1, R2: reg.Range.R2, C2: was})
+		}
+	}
+}
+
+// dataRows reports whether a block holds two rows or more with values in at
+// least half of a table's columns.
+func dataRows(s *grid.Sheet, body grid.Range, cols int) bool {
+	n := 0
+	for r := body.R1; r <= body.R2; r++ {
+		if filled(s, r, body)*2 >= cols {
+			n++
+		}
+	}
+	return n >= 2
+}
+
+// severalValues reports whether some row of b holds two values or more.
+func severalValues(s *grid.Sheet, b grid.Range) bool {
+	for r := b.R1; r <= b.R2; r++ {
+		if filled(s, r, b) >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
 type run struct{ c1, c2, id int }
 
 // components groups non-empty cells that touch (including diagonally) and
-// returns the bounding boxes, merged until none overlap.
+// returns the bounding boxes, merged until none overlap. An Excel table is
+// a block of its own, whatever touches it.
 func components(s *grid.Sheet) []grid.Range {
 	used := s.Used()
 	if used.Empty() {
 		return nil
+	}
+	inTable := func(row, col int) bool {
+		for _, t := range s.Tables {
+			if t.Range.Contains(row, col) {
+				return true
+			}
+		}
+		return false
 	}
 	parent := []int{}
 	find := func(x int) int {
@@ -82,7 +195,7 @@ func components(s *grid.Sheet) []grid.Range {
 		var cur []run
 		n := s.RowLen(row)
 		for col := 1; col <= n; col++ {
-			if c := s.At(row, col); c == nil || c.IsEmpty() {
+			if c := s.At(row, col); c == nil || c.IsEmpty() || len(s.Tables) > 0 && inTable(row, col) {
 				continue
 			}
 			if len(cur) > 0 && cur[len(cur)-1].c2 == col-1 {
@@ -118,7 +231,7 @@ func components(s *grid.Sheet) []grid.Range {
 			boxes[root] = b
 		}
 	}
-	list := make([]grid.Range, 0, len(boxes))
+	list := make([]grid.Range, 0, len(boxes)+len(s.Tables))
 	for _, b := range boxes {
 		list = append(list, b)
 	}
@@ -135,6 +248,9 @@ func components(s *grid.Sheet) []grid.Range {
 				}
 			}
 		}
+	}
+	for _, t := range s.Tables {
+		list = append(list, t.Range)
 	}
 	sort.Slice(list, func(i, j int) bool {
 		if list[i].R1 != list[j].R1 {
@@ -193,7 +309,28 @@ func Classify(wb *grid.Workbook, s *grid.Sheet, b grid.Range) Region {
 		reg.TotalRow = b.R2
 		reg.Body.R2--
 	}
+	if reg.HeaderRow > 0 && isHeading(s, reg, reg.Body.R1) {
+		reg.Heading = reg.Body.R1
+		reg.Body.R1++
+	}
 	return reg
+}
+
+// isHeading reports whether row r, the first of a block's data, names a
+// section rather than holding data: its first cell alone holds text, and
+// the block closes with a total, or the labels below are indented.
+func isHeading(s *grid.Sheet, reg Region, r int) bool {
+	b := reg.Range
+	if r >= reg.Body.R2 || s.TableAt(b) != nil || filled(s, r, b) != 1 || filled(s, r+1, b) < 2 {
+		return false
+	}
+	c := s.At(r, b.C1)
+	if c == nil || c.Kind != grid.Text || c.Formula != "" || strings.TrimSpace(c.Text) == "" || totalLabel.MatchString(c.Text) {
+		return false
+	}
+	next := s.Get(r+1, b.C1)
+	indented := next.Kind == grid.Text && strings.HasPrefix(next.Text, " ") && !strings.HasPrefix(c.Text, " ")
+	return reg.TotalRow > 0 || indented
 }
 
 // isGroupRow reports whether row h groups the labels of the row below:

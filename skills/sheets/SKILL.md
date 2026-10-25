@@ -54,12 +54,25 @@ one undo step, and nothing is saved if a line fails:
     cond 'Sales[Margin]' '< 0' color=red
     EOF
 
+For logic commands do not express (loops, conditions, reshaping), run an
+Office Script (TypeScript, Excel's ExcelScript API) against the file:
+reads give computed values, and it saves once, as one undo step.
+
+    sheets script book.xlsx -e 'function main(workbook: ExcelScript.Workbook) {
+      const ws = workbook.getWorksheet("Sales")!;
+      const v = ws.getUsedRange()!.getValues();
+      return v.slice(1).filter(r => (r[3] as number) > 100).length;
+    }'
+
 ## Check before you finish
 
 1. Read each command's output. It lists formula errors with their cells,
    and formulas only Excel can compute (shown as `?`), with the reason.
 2. Run `sheets lint book.xlsx`: errors, `#REF!`, formulas that break their
-   column's pattern, totals that leave out rows, numbers stored as text.
+   column's pattern or are missing from rows, totals that leave out rows
+   or count a total twice, lines that read another line than their label
+   names, numbers stored as text, functions a script stored without the
+   prefix Excel needs (`#NAME?` in Excel).
 3. `sheets diff book.xlsx` shows what the last command changed, and
    `sheets undo book.xlsx` takes it back.
 4. After formatting a sheet or adding a chart, look at it:
@@ -81,13 +94,17 @@ one undo step, and nothing is saved if a line fails:
   the empty rows.
 - References follow every edit as in Excel. A formula that loses its cells
   becomes `#REF!`, and the output lists it.
-- Results are stored for formulas the sheets calculator computes. LAMBDA,
-  FILTER, XMATCH, OFFSET and array arithmetic such as
-  `SUMPRODUCT((A2:A9="East")*B2:B9)` get theirs when Excel opens the file.
-  When you need to check a number, prefer SUMIFS, COUNTIFS, or SUMPRODUCT
-  of plain ranges.
-- `--append` adds rows above a total row, whose sums then take them in:
-  do not add the new rows to the totals yourself.
+- The sheets calculator computes and stores formula results as Excel
+  would (about 250 functions, array formulas included). Links to other
+  workbooks, LAMBDA and a few rare functions get theirs when Excel opens
+  the file (`?`, with the reason). So does a formula reading text that
+  only some languages read as a number or date (`1,200`, `03/05/2026`):
+  write numbers and ISO dates as values.
+- `--append` adds rows above a total row, whose sums then take them in,
+  and fills the table's formula columns in the new rows: give only the
+  input columns, and do not add the new rows to the totals yourself.
+- In formulas, `Sales[Revenue]` naming a sheet's table is written as its
+  range, since Excel knows only Excel tables by name.
 - `fmt` replaces the look of a whole sheet with the house style, keeping
   what `style`, `cond` and `view` set. Use it on sheets you build or when
   asked for a consistent look, not after a small edit to someone's
@@ -113,6 +130,7 @@ Before a task, read its part of the guide:
 | Naming cells, ranges and parts of tables (`Sales[#Totals]`) | [references/addresses.md](references/addresses.md) |
 | Writing data and formulas, input formats, `--append` | [references/writing.md](references/writing.md) |
 | Batches (`do`) | [references/do.md](references/do.md) |
+| Scripts in TypeScript or JavaScript (Office Scripts) | [references/script.md](references/script.md) |
 | Inserting or deleting rows, columns and sheets | [references/structure.md](references/structure.md) |
 | Clearing, copying, moving, sorting, find and replace | [references/ranges.md](references/ranges.md) |
 | Notes and hyperlinks | [references/notes.md](references/notes.md) |

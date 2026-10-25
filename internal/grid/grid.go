@@ -36,11 +36,15 @@ type Cell struct {
 	// from the file (or an attempt to, when Pending is still set).
 	Computed bool
 	// Shared marks a formula stored as part of a filled-down group.
-	Shared  bool
-	Fmt     uint16  // index into Workbook.Formats
-	Num     float64 // Number value
-	Text    string  // Text value, or the error code for Error
-	Formula string  // without the leading '='; empty for constants
+	Shared bool
+	// Unprefixed marks a formula stored calling a function added after
+	// Excel 2007 without the prefix Excel needs (as openpyxl writes it):
+	// Excel shows #NAME? for it, so its value is unknown.
+	Unprefixed bool
+	Fmt        uint16  // index into Workbook.Formats
+	Num        float64 // Number value
+	Text       string  // Text value, or the error code for Error
+	Formula    string  // without the leading '='; empty for constants
 }
 
 // IsEmpty reports whether the cell has neither value nor formula.
@@ -70,6 +74,10 @@ type Sheet struct {
 	// Spills are the ranges dynamic array formulas fill, each starting at
 	// its formula's cell.
 	Spills []Range
+	// Arrays are the ranges of all array formulas, dynamic ones and those
+	// entered with Ctrl+Shift+Enter, each starting at its formula's cell:
+	// Excel evaluates them as arrays.
+	Arrays []Range
 	rows   [][]Cell
 	maxCol int
 }
@@ -167,6 +175,9 @@ type NamedTable struct {
 	Totals  int      // totals rows at the bottom of Range
 	Filter  bool     // its header row shows filter buttons
 	Columns []string // column names, left to right
+	// Calculated holds, per column, the formula Excel fills into its new
+	// rows (a calculated column); "" for columns without one.
+	Calculated []string
 }
 
 // TableAt returns the named table overlapping r, if any.

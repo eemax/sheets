@@ -30,18 +30,30 @@ command.
   `--format tsv|csv|json` gives plain data; `--json` works on every command.
 - Values print plainly: ISO dates (2026-07-01), percentages with % (12.5%),
   numbers without thousands separators, TRUE/FALSE, error codes like
-  #DIV/0!.
+  #DIV/0!. Numbers show up to 15 significant digits, without the noise of
+  binary arithmetic (24836587.21, not 24836587.2099999); the file keeps
+  every digit.
 - Formula results come from the file. When `sheets` saves, it recomputes
-  every formula the change reaches and stores the result, so pandas,
-  previews and other tools read current numbers, never stale ones. Table
-  references (`Sales[Units]`, `[@Price]`) and LET are computed. `?` marks a
-  formula the calculator cannot evaluate (LAMBDA, FILTER, XMATCH, OFFSET,
-  array arithmetic such as `SUMPRODUCT((A2:A9="East")*B2:B9)`, and a few
-  others), or one that reads such a formula: it has no stored result until
-  Excel computes it on open, and the output of the change lists it with the
-  reason. Prefer forms it computes (`SUMIFS`, `COUNTIFS`, `SUMPRODUCT` of
-  plain ranges) so you can check the result. Circular references are
-  reported and get no result.
+  every formula the change reaches with its own calculator and stores the
+  result, so pandas, previews and other tools read current numbers, never
+  stale ones. The calculator follows Excel: tested on 68,000 formulas of
+  800 workbooks Excel saved, it gives Excel's result for 99.8% of those it
+  computes. It does about 250 functions, among them XLOOKUP, FILTER, SORT,
+  UNIQUE, LET, the financial ones (NPV, IRR, PMT, XIRR), table references
+  (`Sales[Units]`, `[@Price]`) and array arithmetic
+  (`SUMPRODUCT((A2:A9="East")*B2:B9)`).
+- `?` marks a formula with no result yet, with the reason: a link to
+  another workbook, a function the calculator lacks (LAMBDA, CELL,
+  statistical distributions such as NORM.DIST, bond pricing), or a
+  formula reading one. Excel computes it on open. A result that depends
+  on Excel's language is not guessed either: text such as `1,200`,
+  `1.5`, `03/05/2026` or `May 2026` reads as a number or date differently
+  in other languages, so a formula computing with it is left to Excel.
+  Write numbers and ISO dates as values, and the calculator computes.
+  Circular references are reported and get no result.
+- A report laid out in sections under one header (a heading row such as
+  `West`, its lines, a subtotal; then `North`, ...) reads as one table:
+  `info` lists the sections, and `query` and `lint` take in all of them.
 
 ## SQL queries
 
@@ -54,6 +66,10 @@ command.
   its sheet (`Sales`; a second table on that sheet is `Sales_2`) or its
   Excel table name. Columns are the header labels; quote names with
   spaces: `"Order ID"`. `--schema` lists tables and columns with types.
+- A report in sections is one table of every section's lines, with a
+  `_section` column holding each line's heading (`West`), so
+  `WHERE _section = 'West'` or `GROUP BY _section` work. Subtotals and the
+  grand total are left out.
 - Numbers are numbers (percentages as fractions: 12.5% is 0.125). Dates
   are ISO text, so `date()`, `strftime()` and comparisons work. Errors and
   blanks are NULL. Total rows are left out. `_row` is the sheet row of a
@@ -76,6 +92,12 @@ syntax, named by a sheet holding one table or by an Excel table, so you
 need no column letters: `Sales[Revenue]` (the column's data rows),
 `Sales[[Units]:[Revenue]]`, `Sales[#Headers]`, `Sales[#Totals]`,
 `Sales[#All]`, `Sales[[#Totals],[Units]]`.
+
+Inside formulas, Excel reads `Sales[Revenue]` only as a column of an Excel
+table (Insert › Table). So when `Sales` is a sheet's table rather than an
+Excel table, `set` and `write` write the range it stands for:
+`=SUM(Sales[Revenue])` is stored as `=SUM(Sales!$D$2:$D$61)`. A formula
+naming a table that does not exist is refused.
 
 ## Writing
 
@@ -108,8 +130,15 @@ need no column letters: `Sales[Revenue]` (the column's data rows),
 - `--append` adds rows to the sheet's last table: above its total row
   (whose sums then cover the new rows), or below it, moving any notes
   under it down. Charts of the table and its Excel table (if it is one)
-  take in the new rows. If the first input row (or the JSON keys) names
-  the table's headers, columns are matched by name, in any order.
+  take in the new rows, and so do formulas anywhere covering one of its
+  columns whole (`=SUM(Sales!$D$2:$D$61)`), as with an Excel table. If the
+  first input row (or the JSON keys) names the table's headers, columns
+  are matched by name, in any order.
+- Appended rows get the formulas of the columns that compute, as Excel
+  fills them: an Excel table's calculated column, or a column whose last
+  rows hold one formula filled down. Give only the input columns; a value
+  you give for a formula column is kept. The output names the columns it
+  filled.
 - `--clear` empties the sheet first.
 - In formulas, `{r}` stands for the row the value lands on. `=C{r}*D{r}`
   written to row 7 becomes `=C7*D7`. This is the notation `peek` prints,
@@ -122,9 +151,17 @@ need no column letters: `Sales[Revenue]` (the column's data rows),
   evaluate. Check it.
 - All Excel functions work, including XLOOKUP, IFS, TEXTJOIN, LET and
   LAMBDA. Functions that return several values (FILTER, UNIQUE, SORT,
-  SEQUENCE, ...) are stored as dynamic arrays and spill in Excel; keep the
-  cells below and to the right free. Writing into the spill area of an
-  existing dynamic array gives a warning (Excel would show #SPILL!).
+  SEQUENCE, ...) are stored as dynamic arrays and spill: the file holds the
+  whole result, as Excel saves it, so pandas and other readers see every
+  value. Keep the cells below and to the right free: a result that would
+  cover values is #SPILL!, as in Excel, and writing into a spill area gives
+  a warning.
+- Formulas computing over a range where one value goes
+  (`=SUM(IF(A2:A9>5,B2:B9))`, `=MAX(B2:B9-C2:C9)`, `=A2:A9*2`) are stored
+  as Excel 365 stores them, as dynamic array formulas, so Excel computes
+  them over the whole range; no Ctrl+Shift+Enter needed. `=A2:A9*2` spills.
+  A whole column in a result (`=B:B*2`) still means the formula's own row,
+  as written for older Excel.
 - A cell hidden inside merged cells (B1 of a merged A1:D1) takes no value:
   Excel shows only the first cell. Writing one is refused with the merge
   named; empty values there are skipped.
@@ -149,6 +186,55 @@ need no column letters: `Sales[Revenue]` (the column's data rows),
 - Data for `write` comes from `-i file`, `< file`, or a here-document in
   the script (`write Sales!A1 <<END`, the rows, `END`).
 - Use it whenever a change takes more than two or three commands.
+
+## Scripts: Office Scripts
+
+    sheets script book.xlsx report.ts               # also .js, -e 'code', or stdin
+    sheets script book.xlsx report.ts --arg 2026     # main(workbook, 2026)
+
+    function main(workbook: ExcelScript.Workbook) {
+      const ws = workbook.getWorksheet("Sales")!;
+      const rows = ws.getUsedRange()!.getValues();          // computed values
+      const late = rows.slice(1).filter(r => (r[4] as number) > 30);
+      ws.getRange("H1").setValue("Late");
+      ws.getRange("H2").setFormula("=COUNTIF(E:E,\">30\")");
+      return { late: late.length, check: ws.getRange("H2").getValue() };
+    }
+
+- For logic that commands do not express: loops, conditions, reshaping,
+  reconciling. TypeScript or JavaScript, in Office Scripts' API
+  (ExcelScript), as in Excel's Automate tab. Without `main`, plain code
+  runs with the global `workbook`. `console.log` prints; what `main`
+  returns is printed as JSON.
+- Reads give what the cells hold now: values, and formula results the
+  sheets calculator computes, the script's own changes included (null,
+  with a warning, for a result it cannot compute). Dates read as serial
+  numbers, as in Excel; `getTexts` gives what Excel shows. Writes take
+  values as typed input: `"=SUM(A1:A9)"` is a formula, `"2026-07-01"` a
+  date; a Date is written as its UTC date and time; null leaves a cell as
+  it is.
+- Saved once at the end, as one undo step, like `do`; a script that
+  throws saves nothing and the error names its line. A read after writes
+  costs a save in memory, so read what you need first, then write.
+- What it has: `workbook.getWorksheet(s)`, `getActiveWorksheet`,
+  `addWorksheet`, `getTable(s)`, `getNamedItem`; on a sheet `getRange`
+  ("A1:C9", "B:B"), `getRangeByIndexes`, `getCell`, `getUsedRange`,
+  `getFreezePanes`, `getAutoFilter`, `setName`, `copy`, `delete`; on a
+  range values, formulas, texts, number formats and value types (get and
+  set), `getCell`, `getRow`, `getColumn`, `getOffsetRange`,
+  `getResizedRange`, `getEntireRow`, `getSurroundingRegion`, `clear`,
+  `delete` and `insert` of whole rows or columns, `copyFrom`, `moveTo`,
+  `getSort().apply`, `removeDuplicates`, `find`, `setHyperlink`, and
+  `getFormat()` with font, fill, alignment, wrap, borders, widths. Tables
+  are Excel tables, or a sheet's tables named as `query` names them
+  (`Sales`, `Sales_2`): `getRange`, `getHeaderRowRange`,
+  `getRangeBetweenHeaderAndTotal`, `getColumns`, `getColumnByName`,
+  `addRows` (at the end, as `write --append`: above the total row,
+  formula columns filled), `deleteRowsAt`, `getSort`.
+- Not there: creating Excel tables, charts, conditional formats and
+  validation (use `chart add`, `cond`, `validate` after the script), and
+  filtering rows by criteria. Positions count from 0, as in Office Scripts.
+- No files or network; `--timeout` (default 1m) stops a runaway loop.
 
 ## Rows, columns and sheets
 
@@ -196,7 +282,9 @@ need no column letters: `Sales[Revenue]` (the column's data rows),
     sheets replace book.xlsx 'N/A' '' Sales --exact  # empties those cells
 
 - These behave as in Excel. `copy` shifts relative references (A2 becomes
-  A12 ten rows down); `--values` pastes results with their number formats.
+  A12 ten rows down); `--values` pastes results: a cell without a number
+  format takes the source's (a date stays a date), one with a format keeps
+  it, as with Paste Values.
   `move` keeps moved formulas reading the same cells, and formulas, names
   and charts anywhere follow the moved cells; references to the cells it
   pastes over become #REF! and are listed.
@@ -233,6 +321,10 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   and line breaks are kept, and rows no edit touched stay byte for byte.
 - A CSV file holds values only: formulas are saved as their results, and
   formatting, charts or more sheets need `convert` to .xlsx first.
+- So `set` on a CSV computes from the values as they were, and a column
+  can change in place: `sheets set prices.csv 'D2:D41' '=ROUND(D{r}*1.05,2)'`
+  raises every price by 5%. New values take the style of their column
+  (`1.311,45` in a `1.249,00` column).
 - `convert` to CSV writes plain values (1200, 2026-03-01, 12%); `--bom`
   helps Excel read accented letters.
 
@@ -244,10 +336,16 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     sheets diff before.xlsx after.xlsx    # two versions of a workbook
 
 - `lint` finds error values, `#REF!` from deleted cells, unknown functions,
-  cells that break their column's formula pattern, totals that leave out
-  rows, numbers stored as text, and more. It exits 1 on errors
+  cells that break their column's formula pattern, rows a formula column
+  misses, totals that leave out rows, sums that add a total together with
+  the rows it totals (double counting), a line reading another line than
+  its label names (Summary "Marketing" reading the Events row), numbers
+  stored as text, references to Excel tables that do not exist, formulas
+  over ranges stored for older Excel (which shows them with `@`), and
+  functions stored without the prefix Excel needs (openpyxl leaves it
+  off; Excel shows `#NAME?`). It exits 1 on errors
   (`--fail-on warning|never` to change that). Run it before handing a
-  workbook over.
+  workbook over, and on any workbook a script wrote.
 - `diff` aligns rows and columns first, so an inserted row is one added
   row, not every row below it changing. It lists sheets added, removed or
   renamed, then rows, columns and cells. With one file it compares with

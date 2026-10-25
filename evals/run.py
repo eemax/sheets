@@ -25,6 +25,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -33,6 +34,9 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(ROOT)
 TASKS = os.path.join(ROOT, "tasks")
 ARMS = ["sheets", "python", "skill", "mcp"]
+# The longest an agent may run, in seconds; the slowest finished run so far
+# took about 8 minutes.
+TIMEOUT = 1200
 MCP_SERVER = ["uvx", "--from", "excel-mcp-server==2.2.2", "excel-mcp-server", "stdio"]
 
 
@@ -107,6 +111,9 @@ def run_agent(d, arm, bindir, model, budget):
     work = os.path.join(d, "work")
     env = dict(os.environ)
     path = [p for p in env.get("PATH", "").split(os.pathsep) if not os.path.exists(os.path.join(p, "sheets"))]
+    # LibreOffice, though installed here for grading, is not there for the
+    # agents, as on most machines.
+    path.insert(0, no_libreoffice(os.path.dirname(bindir)))
     if arm == "sheets":
         path.insert(0, bindir)
     env["PATH"] = os.pathsep.join(path)
@@ -124,7 +131,17 @@ def run_agent(d, arm, bindir, model, budget):
     cmd += ["--allowedTools", *tools, "--disallowedTools", "WebFetch", "WebSearch", "Task", "Agent"]
     start = time.time()
     # No stdin: a command that reads it ends at once instead of waiting.
-    res = subprocess.run(cmd, cwd=work, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    # An agent whose tool hangs is stopped, with the tool, after TIMEOUT
+    # seconds and counts as an error.
+    p = subprocess.Popen(cmd, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        stdout, stderr = p.communicate(timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        stdout, stderr = p.communicate()
+        stderr += f"\nstopped after {TIMEOUT} s"
+    res = subprocess.CompletedProcess(cmd, p.returncode, stdout, stderr)
     # The transcript, kept to see what each agent did; its last event is the
     # result.
     with open(os.path.join(d, "transcript.jsonl"), "w") as f:
@@ -146,6 +163,20 @@ def run_agent(d, arm, bindir, model, budget):
     with open(os.path.join(d, "meta.json"), "w") as f:
         json.dump(meta, f)
     return meta
+
+
+def no_libreoffice(out):
+    """A folder of stand-ins for LibreOffice's commands, which report it
+    missing."""
+    d = os.path.join(out, "no-libreoffice")
+    os.makedirs(d, exist_ok=True)
+    for name in ("soffice", "libreoffice", "localc"):
+        p = os.path.join(d, name)
+        if not os.path.exists(p):
+            with open(p, "w") as f:
+                f.write(f"#!/bin/sh\necho '{name}: command not found' >&2\nexit 127\n")
+            os.chmod(p, 0o755)
+    return d
 
 
 def tool_uses(events):

@@ -39,7 +39,8 @@ type sheetInfo struct {
 
 type regionInfo struct {
 	Range   string   `json:"range"`
-	Kind    string   `json:"kind"` // table, block, cell or title
+	Kind    string   `json:"kind"`              // table, section (of the table above), block, cell or title
+	Heading string   `json:"heading,omitempty"` // the section's heading ("West")
 	Named   string   `json:"excel_table,omitempty"`
 	Title   string   `json:"title,omitempty"`
 	Header  int      `json:"header_row,omitempty"`
@@ -127,8 +128,15 @@ func describeRegion(wb *grid.Workbook, s *grid.Sheet, reg analyze.Region) region
 		}
 		c := wb.Value(s, reg.Range.R1, reg.Range.C1)
 		ri.Text = grid.Truncate(grid.Display(c, wb.FormatOf(c), wb.Date1904), 60)
+	case reg.Continues > 0:
+		ri.Kind = "section"
+		ri.Header = reg.Continues
+		ri.Heading = analyze.HeadingText(s, reg)
+		ri.Rows = max(reg.Body.Rows(), 0)
+		ri.Total = reg.TotalRow > 0
 	case reg.IsTable():
 		ri.Kind = "table"
+		ri.Heading = analyze.HeadingText(s, reg)
 		ri.Header = reg.HeaderRow
 		ri.Group = reg.GroupRow
 		ri.Rows = reg.Body.Rows()
@@ -249,8 +257,24 @@ func regionLine(r regionInfo) string {
 		if r.Total {
 			rows += " + total"
 		}
+		if r.Heading != "" {
+			parts = append(parts, fmt.Sprintf("section %q", r.Heading))
+		}
 		parts = append(parts, rows, headerList(r.Columns, 8))
 		return strings.Join(parts, " · ")
+	case "section":
+		if r.Rows == 0 && r.Total {
+			return fmt.Sprintf("%s  total row of the table above", r.Range)
+		}
+		line := r.Range + "  section of the table above"
+		if r.Heading != "" {
+			line = fmt.Sprintf("%s  section %q of the table above", r.Range, r.Heading)
+		}
+		rows := plural(r.Rows, "row")
+		if r.Total {
+			rows += " + total"
+		}
+		return line + " · " + rows
 	}
 	return fmt.Sprintf("%s  block %d×%d", r.Range, r.Rows, r.Cols)
 }

@@ -1,14 +1,13 @@
 package xlsx
 
 import (
-	"fmt"
 	"regexp"
 	"sort"
 	"strings"
 
+	"github.com/eemax/sheets/internal/engine"
 	"github.com/eemax/sheets/internal/formula"
 	"github.com/eemax/sheets/internal/grid"
-	"github.com/xuri/excelize/v2"
 )
 
 // Results for a streaming edit are computed in a workbook of their own,
@@ -62,7 +61,8 @@ func (s *StreamEditor) calcState() calcState {
 
 // unfollowed are functions whose inputs cannot be read off their
 // arguments, or that answer for the workbook around them: the calculation
-// workbook does not hold what they would look at.
+// workbook, which holds what formulas name, does not hold what they would
+// look at.
 var unfollowed = setOf(`INDIRECT OFFSET CELL INFO SHEET SHEETS`)
 
 func setOf(s string) map[string]bool {
@@ -75,7 +75,7 @@ func setOf(s string) map[string]bool {
 
 // calcBook builds the calculation workbook for the formulas being
 // computed (see above).
-func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*formulaAt]bool) (*excelize.File, calcPlan, func(), error) {
+func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*formulaAt]bool) (engine.Book, calcPlan, error) {
 	// The plan is made here: what is frozen (taken at its stored result)
 	// is decided below, for what the formulas computed read.
 	plan := calcPlan{frozen: map[*formulaAt]bool{}, veto: map[*formulaAt]string{}}
@@ -103,7 +103,6 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 	}
 	reads := map[*formulaAt][]sheetRange{}
 	covered := map[colKey]*rowSpans{}
-	bad := map[colKey][]int{}
 	checked := map[colKey]int{}
 	var queue []*formulaAt
 	include := func(f *formulaAt) {
@@ -139,8 +138,8 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 		queue = queue[1:]
 		text := calcOf(f)
 		for _, fn := range formula.CalledFunctions(text) {
-			if unfollowed[fn] {
-				plan.veto[f] = fn + " looks at cells or the workbook in a way the sheets calculator does not follow in a file this large"
+			if unfollowed[fn] && engine.Has(fn) {
+				plan.veto[f] = fn + " looks at cells its arguments do not name, which a streaming edit does not read"
 			}
 		}
 		if plan.veto[f] != "" {
@@ -188,14 +187,6 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 					s.eachNow(sheet, grid.Range{R1: part[0], C1: c, R2: part[1], C2: c}, func(r, c int, v grid.Cell) {
 						k := cellKey{lower, r, c}
 						if v.Formula == "" {
-							if v.Kind == grid.Error {
-								if ef, ok := errorFormula[v.Text]; ok {
-									cells[k], names[k] = entry{formula: ef}, sheet
-								} else {
-									bad[ck] = append(bad[ck], r)
-								}
-								return
-							}
 							cells[k], names[k] = entry{v: v}, sheet
 							return
 						}
@@ -219,63 +210,21 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 						}
 						if !included[g] {
 							plan.frozen[g] = true
-							e := entry{v: g.stored}
-							if g.stored.Kind == grid.Error {
-								// As the calculator answers with it (freezable).
-								e = entry{v: g.stored, formula: errorFormula[g.stored.Text]}
-							}
-							cells[k], names[k] = e, sheet
+							cells[k], names[k] = entry{v: g.stored}, sheet
 						}
 					})
 					covered[ck].add(part[0], part[1])
-				}
-				for _, r := range bad[ck] {
-					if rg.R1 <= r && r <= rg.R2 && plan.veto[f] == "" {
-						plan.veto[f] = fmt.Sprintf("it reads %s, an error the sheets calculator cannot hold", grid.FormatRef(sheet, grid.Range{R1: r, C1: c, R2: r, C2: c}))
-					}
 				}
 			}
 		}
 	}
 
-	// The calculator gets what the formulas it computes read; aggregates
-	// of references are computed without it (see nativeAggregates), from
-	// cells it need not hold.
-	inBook := map[cellKey]bool{}
-	var needs []*formulaAt
-	for g := range included {
-		if _, _, ok := aggregateOf(calcOf(g)); !ok {
-			needs = append(needs, g)
-		}
+	book := &cellsBook{cells: map[cellKey]cellEntry{}, sheets: map[string]string{}, used: s.usedNow, rs: rs}
+	for _, sh := range s.wb.Sheets {
+		book.sheets[strings.ToLower(sh.Name)] = sh.Name
 	}
-	excel := map[*formulaAt]bool{}
-	marked := map[sheetRange]bool{}
-	for len(needs) > 0 {
-		g := needs[len(needs)-1]
-		needs = needs[:len(needs)-1]
-		if excel[g] {
-			continue
-		}
-		excel[g] = true
-		inBook[keyOf(g.sheet, g.row, g.col)] = true
-		for _, sr := range reads[g] {
-			if marked[sr] {
-				continue
-			}
-			marked[sr] = true
-			for r := sr.rg.R1; r <= sr.rg.R2; r++ {
-				for c := sr.rg.C1; c <= sr.rg.C2; c++ {
-					k := cellKey{sr.sheet, r, c}
-					if _, ok := cells[k]; !ok {
-						continue
-					}
-					inBook[k] = true
-					if h := at[k]; h != nil && included[h] && !excel[h] {
-						needs = append(needs, h)
-					}
-				}
-			}
-		}
+	for k, e := range cells {
+		book.cells[k] = cellEntry{v: e.v, formula: e.formula}
 	}
 	plan.native = nativeAggregates(s.usedNow, func(j *judge, sheet string, r, c int) (grid.Cell, bool) {
 		k := keyOf(sheet, r, c)
@@ -288,101 +237,49 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 		}
 		if g := at[k]; g != nil && included[g] {
 			res := j.result(g)
-			if res.err != nil {
-				return grid.Cell{}, false
-			}
-			v := res.v
-			if v.Kind != grid.Error {
-				// What a reader of the cell sees: the result, typed.
-				if typed, ok := formula.Typed(res.raw, j.ty.kindsOf(g)); ok {
-					v = typed
-				}
-			}
-			return v, true
-		}
-		// An error written as a formula the calculator answers with.
-		for text, ef := range errorFormula {
-			if ef == e.formula {
-				return grid.Cell{Kind: grid.Error, Text: text}, true
-			}
+			return res.v, res.err == nil
 		}
 		return grid.Cell{}, false
 	})
-	f := excelize.NewFile()
-	release := func() { f.Close() }
-	for i, sh := range s.wb.Sheets {
-		var err error
-		if i == 0 {
-			err = f.SetSheetName(f.GetSheetName(0), sh.Name)
-		} else {
-			_, err = f.NewSheet(sh.Name)
-		}
-		if err != nil {
-			release()
-			return nil, plan, nil, err
-		}
+	return book, plan, nil
+}
+
+// cellsBook is a calculation workbook of the cells formulas read (see
+// calcBook): values, and the formulas being computed.
+type cellsBook struct {
+	cells  map[cellKey]cellEntry
+	sheets map[string]string // lower-cased name to name
+	used   func(sheet string) grid.Range
+	rs     *resolver
+}
+
+type cellEntry struct {
+	v       grid.Cell
+	formula string
+}
+
+func (b *cellsBook) Cell(sheet string, row, col int) (engine.Value, string) {
+	e := b.cells[keyOf(sheet, row, col)]
+	if e.formula != "" {
+		return engine.Value{}, e.formula
 	}
-	for name, defs := range rs.names {
-		for _, d := range defs {
-			scope := ""
-			if d.scope != "" {
-				if sh := s.wb.Sheet(d.scope); sh != nil {
-					scope = sh.Name
-				}
-			}
-			// Names a calculator cannot hold (pointing nowhere) are left
-			// out; formulas using them fail and are not trusted.
-			_ = f.SetDefinedName(&excelize.DefinedName{Name: nameOf(s.wb, name), RefersTo: d.text, Scope: scope})
-		}
+	return cellToCalc(e.v), ""
+}
+
+func (b *cellsBook) Extent(sheet string) (int, int, bool) {
+	name, ok := b.sheets[strings.ToLower(sheet)]
+	if !ok {
+		return 0, 0, false
 	}
-	bySheet := map[string][][2]int{}
-	for k := range inBook {
-		if _, ok := cells[k]; ok {
-			bySheet[names[k]] = append(bySheet[names[k]], [2]int{k.row, k.col})
-		}
+	u := b.used(name)
+	return max(u.R2, 0), max(u.C2, 0), true
+}
+
+func (b *cellsBook) Name(name, sheet string) (string, bool) {
+	if def := b.rs.lookup(name, sheet); def != nil {
+		return def.text, true
 	}
-	for sheet, pos := range bySheet {
-		sort.Slice(pos, func(i, j int) bool { return pos[i][0] < pos[j][0] || pos[i][0] == pos[j][0] && pos[i][1] < pos[j][1] })
-		sw, err := f.NewStreamWriter(sheet)
-		if err != nil {
-			release()
-			return nil, plan, nil, err
-		}
-		for i := 0; i < len(pos); {
-			row := pos[i][0]
-			j := i
-			for j < len(pos) && pos[j][0] == row {
-				j++
-			}
-			first := pos[i][1]
-			vals := make([]interface{}, pos[j-1][1]-first+1)
-			for _, p := range pos[i:j] {
-				e := cells[keyOf(sheet, p[0], p[1])]
-				var v interface{}
-				switch {
-				case e.formula != "":
-					v = excelize.Cell{Formula: formula.ToFile(e.formula)}
-				case e.v.Kind == grid.Number:
-					v = e.v.Num
-				case e.v.Kind == grid.Bool:
-					v = e.v.Bool
-				case e.v.Kind == grid.Text:
-					v = e.v.Text
-				}
-				vals[p[1]-first] = v
-			}
-			if err := sw.SetRow(grid.CellName(row, first), vals); err != nil {
-				release()
-				return nil, plan, nil, err
-			}
-			i = j
-		}
-		if err := sw.Flush(); err != nil {
-			release()
-			return nil, plan, nil, err
-		}
-	}
-	return f, plan, release, nil
+	return "", false
 }
 
 // rowSpans are the rows of a column read so far, as sorted, separate

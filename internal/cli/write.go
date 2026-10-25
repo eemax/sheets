@@ -27,9 +27,11 @@ type writeResult struct {
 	CreatedSheet bool              `json:"created_sheet,omitempty"`
 	Types        map[string]string `json:"types,omitempty"`
 	Note         string            `json:"note,omitempty"`
+	Filled       []string          `json:"filled,omitempty"` // formula columns filled into appended rows: "E =B{r}*C{r}"
 	Formulas     *formulaReport    `json:"formulas,omitempty"`
 	Warnings     []string          `json:"warnings,omitempty"`
 	written      []cellRef         // formulas written, reported once saved
+	appended     bool              // rows went below existing data
 }
 
 // saved completes the result after saving: the formula results the file
@@ -84,6 +86,11 @@ skipped.`,
 				return err
 			}
 			if len(rows) == 0 {
+				if a.batch {
+					// In a batch, stdin is the script: the rows come from -i
+					// or a here-document on the line.
+					return errors.New("no input rows: in a batch, give them with -i <file>, or after the line as a here-document (write Sales!A1 <<END, the rows, END)")
+				}
 				return errors.New("no input rows")
 			}
 			if clear && appendRows {
@@ -98,7 +105,7 @@ skipped.`,
 				return err
 			}
 			defer ed.Close()
-			res, err := writeRows(ed, args[0], ref, rows, clear, appendRows)
+			res, err := writeRows(ed, args[0], ref, rows, clear, appendRows, true)
 			if err != nil {
 				return err
 			}
@@ -142,7 +149,9 @@ func sheetFor(ed book.Editor, ref string) (name string, created bool, anchor *gr
 	return name, created, r.Range, err
 }
 
-func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, appendRows bool) (*writeResult, error) {
+// header tells whether the input may start with a header row, which an
+// append matches to the table's columns.
+func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, appendRows, header bool) (*writeResult, error) {
 	sheet, created, anchor, err := sheetFor(ed, ref)
 	if err != nil {
 		return nil, err
@@ -164,6 +173,8 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 	}
 	skipped := 0                         // input rows consumed as a header
 	var totals func() ([]cellRef, error) // extends a total row over appended rows
+	var appendTo *analyze.Region         // the table rows are appended to
+	insertedAt := 0                      // where rows were inserted for them, if they were
 	if clear {
 		if err := ed.Clear(sheet); err != nil {
 			return nil, err
@@ -171,7 +182,9 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 	} else if appendRows {
 		if used := s.Used(); !used.Empty() {
 			row0 = used.R2 + 1
+			res.appended = true
 			table := lastTable(wb, s)
+			appendTo = table
 			if anchor == nil {
 				col0 = used.C1
 				if table != nil {
@@ -181,9 +194,9 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 					cols[i] = col0 + i
 				}
 			}
-			if mapped, ok, err := matchHeader(wb, s, rows[0]); err != nil {
+			if mapped, ok, err := matchHeader(wb, s, table, rows[0]); err != nil && header {
 				return nil, err
-			} else if ok {
+			} else if ok && header {
 				cols = mapped
 				rows = rows[1:]
 				skipped = 1
@@ -202,7 +215,7 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 				if err := ed.InsertRows(sheet, at, len(rows)); err != nil {
 					return nil, err
 				}
-				row0 = at
+				row0, insertedAt = at, at
 				if table.TotalRow > 0 {
 					res.Note = "inserted above the total row, whose formulas now cover the new rows"
 					totals = func() ([]cellRef, error) {
@@ -244,6 +257,7 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 		typedFrom = 1 // a header row says nothing about types
 	}
 	minCol, maxCol := grid.MaxCols, 0
+	given := map[[2]int]bool{} // cells the input gives a value
 	for i, r := range rows {
 		if len(r) > len(cols) {
 			return nil, fmt.Errorf("input row %d has %d values but the header names %d columns", i+1+skipped, len(r), len(cols))
@@ -252,13 +266,21 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 			row, col := row0+i, cols[j]
 			if v.Formula != "" {
 				v.Formula = formula.FillRow(v.Formula, row)
+				f, err := sheetTableRefs(ed.Workbook(), v.Formula)
+				if err != nil {
+					return nil, err
+				}
+				v.Formula = f
 			}
 			if err := ed.Set(sheet, row, col, v); err != nil {
 				return nil, err
 			}
 			minCol, maxCol = min(minCol, col), max(maxCol, col)
+			if !v.IsEmpty() {
+				given[[2]int{row, col}] = true
+			}
 			if v.Formula != "" {
-				formulas = append(formulas, cellRef{sheet, row, col, formula.Spills(v.Formula)})
+				formulas = append(formulas, cellRef{sheet, row, col, spills(v.Formula)})
 			}
 			if i >= typedFrom && !v.IsEmpty() {
 				if types[col] == nil {
@@ -267,6 +289,14 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 				types[col][valueType(v)]++
 			}
 		}
+	}
+	if appendTo != nil {
+		filled, cells, err := fillColumns(ed, s, appendTo, row0, len(rows), insertedAt, given)
+		if err != nil {
+			return nil, err
+		}
+		res.Filled = filled
+		formulas = append(formulas, cells...)
 	}
 	if totals != nil {
 		changed, err := totals()
@@ -299,6 +329,81 @@ func writeRows(ed book.Editor, file, ref string, rows [][]input.Value, clear, ap
 	return res, nil
 }
 
+// fillColumns writes into appended rows the formula of each formula column
+// the input leaves empty, as Excel does: a calculated column of an Excel
+// table, or a column whose last rows hold one formula filled down (Excel's
+// "extend data range formats and formulas" needs it in three of the last
+// five rows). s is the sheet as it was before the rows went in; at is
+// where rows were inserted for them (0 when none were).
+func fillColumns(ed book.Editor, s *grid.Sheet, table *analyze.Region, row0, n, at int, given map[[2]int]bool) ([]string, []cellRef, error) {
+	var filled []string
+	var cells []cellRef
+	last := table.Body.R2
+	for col := table.Range.C1; col <= table.Range.C2; col++ {
+		base := s.Get(last, col).Formula
+		calculated := ""
+		if t := s.TableAt(grid.Range{R1: last, C1: col, R2: last, C2: col}); t != nil {
+			if i := col - t.Range.C1; i < len(t.Calculated) {
+				calculated = t.Calculated[i]
+			}
+		}
+		from := last // the row base is written for
+		if calculated != "" {
+			// The calculated column's formula, from the last row holding
+			// it: a row may override it.
+			key, _ := formula.Pattern(calculated, table.Body.R1, col)
+			base, from = calculated, table.Body.R1
+			for r := last; r >= table.Body.R1; r-- {
+				if f := s.Get(r, col).Formula; f != "" {
+					if k, _ := formula.Pattern(f, r, col); k == key {
+						base, from = f, r
+						break
+					}
+				}
+			}
+		} else if base == "" || !filledDown(s, table.Body, last, col) {
+			continue
+		}
+		if at > 0 && from < at {
+			base = formula.InsertLines(base, s.Name, s.Name, false, at, n)
+		}
+		var wrote bool
+		for r := row0; r < row0+n; r++ {
+			if given[[2]int{r, col}] {
+				continue
+			}
+			text := formula.Shift(base, r-from, 0)
+			text = formula.GrowRanges(text, s.Name, s.Name, table.Body.R1, table.Body.R2, table.Body.R2+n, table.Range.C1, table.Range.C2)
+			if err := ed.Set(s.Name, r, col, input.Value{Formula: text}); err != nil {
+				return nil, nil, err
+			}
+			cells = append(cells, cellRef{s.Name, r, col, spills(text)})
+			wrote = true
+		}
+		if wrote {
+			_, shown := formula.Pattern(base, from, col)
+			filled = append(filled, grid.ColName(col)+" ="+shown)
+		}
+	}
+	return filled, cells, nil
+}
+
+// filledDown tells whether a column's last rows hold one formula filled
+// down: three of the last five rows of the body up to row last, or every
+// row of a body of two.
+func filledDown(s *grid.Sheet, body grid.Range, last, col int) bool {
+	key, _ := formula.Pattern(s.Get(last, col).Formula, last, col)
+	same := 0
+	for r := last; r >= max(body.R1, last-4); r-- {
+		if f := s.Get(r, col).Formula; f != "" {
+			if k, _ := formula.Pattern(f, r, col); k == key {
+				same++
+			}
+		}
+	}
+	return same >= 3 || same >= 2 && same == last-body.R1+1
+}
+
 // lastTable returns the bottom-most table on a sheet.
 func lastTable(wb *grid.Workbook, s *grid.Sheet) *analyze.Region {
 	var t *analyze.Region
@@ -313,15 +418,20 @@ func lastTable(wb *grid.Workbook, s *grid.Sheet) *analyze.Region {
 
 // matchHeader maps input columns to sheet columns by header name when the
 // first input row consists of the sheet's header labels.
-func matchHeader(wb *grid.Workbook, s *grid.Sheet, first []input.Value) ([]int, bool, error) {
+// The header is the table's, the one rows are appended to; without one,
+// the last header on the sheet.
+func matchHeader(wb *grid.Workbook, s *grid.Sheet, table *analyze.Region, first []input.Value) ([]int, bool, error) {
 	if !allText(first) {
 		return nil, false, nil
 	}
-	var header *analyze.Region
-	for _, reg := range analyze.Regions(wb, s) {
-		if reg.HeaderRow > 0 {
-			r := reg
-			header = &r
+	header := table
+	if header == nil || header.HeaderRow == 0 {
+		header = nil
+		for _, reg := range analyze.Regions(wb, s) {
+			if reg.HeaderRow > 0 {
+				r := reg
+				header = &r
+			}
 		}
 	}
 	if header == nil {
@@ -432,6 +542,9 @@ func (a *app) printWrite(res *writeResult) {
 	if res.Note != "" {
 		a.printf("%s\n", res.Note)
 	}
+	if len(res.Filled) > 0 {
+		a.printf("filled formula columns in the new rows, as Excel does: %s\n", strings.Join(res.Filled, ", "))
+	}
 	if len(res.Types) > 0 {
 		var cols []string
 		for c := range res.Types {
@@ -450,8 +563,10 @@ func (a *app) printWrite(res *writeResult) {
 	}
 	a.printFormulaReport(res.Formulas)
 	a.printWarnings(res.Warnings)
+	// fmt restyles the sheet in the house style: right for a sheet this
+	// write made, not for rows added to someone's formatted sheet.
 	switch kind, _ := book.FormatOf(res.File); {
-	case kind == "csv":
+	case kind == "csv" || res.appended:
 		a.hint("sheets peek %s", shellQuote(res.File))
 	case res.Formulas == nil || len(res.Formulas.Errors) == 0:
 		a.hint("sheets fmt %s", shellQuote(res.File))

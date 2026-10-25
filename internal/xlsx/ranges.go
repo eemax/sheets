@@ -283,12 +283,20 @@ func (e *Editor) put(sheet string, row, col int, h *taken, text string, what pas
 			e.grow(sheet, grid.Range{R1: row, C1: col, R2: row, C2: col})
 		}
 		if f := e.wb.FormatOf(&h.cell); what.numFmt && h.cell.Kind == grid.Number && f.Kind != grid.General {
-			code := f.Code
-			if code == "" || strings.EqualFold(code, "General") {
-				code = style.NumFmt(f, false)
-			}
-			if err := e.applyNumFmt(sheet, cell, code); err != nil {
+			// A cell with a number format of its own keeps it, as with
+			// Excel's Paste Values.
+			general, err := e.generalNumFmt(sheet, cell)
+			if err != nil {
 				return err
+			}
+			if general {
+				code := f.Code
+				if code == "" || strings.EqualFold(code, "General") {
+					code = style.NumFmt(f, false)
+				}
+				if err := e.applyNumFmt(sheet, cell, code); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -335,7 +343,7 @@ func (e *Editor) put(sheet string, row, col int, h *taken, text string, what pas
 // setFormulaAs writes a formula, keeping it a dynamic array formula when
 // it was one, though its text alone may not show it (=A1:A5).
 func (e *Editor) setFormulaAs(sheet, cell, text string, dynamic bool) error {
-	if !dynamic || formula.Spills(formula.ToFile(text)) {
+	if !dynamic || dynamicFormula(formula.ToFile(text)) {
 		return e.setFormula(sheet, cell, text)
 	}
 	if err := e.f.SetCellDefault(sheet, cell, ""); err != nil {

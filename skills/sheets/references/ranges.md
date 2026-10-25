@@ -10,7 +10,9 @@
     sheets replace book.xlsx 'N/A' '' Sales --exact  # empties those cells
 
 - These behave as in Excel. `copy` shifts relative references (A2 becomes
-  A12 ten rows down); `--values` pastes results with their number formats.
+  A12 ten rows down); `--values` pastes results: a cell without a number
+  format takes the source's (a date stays a date), one with a format keeps
+  it, as with Paste Values.
   `move` keeps moved formulas reading the same cells, and formulas, names
   and charts anywhere follow the moved cells; references to the cells it
   pastes over become #REF! and are listed.
