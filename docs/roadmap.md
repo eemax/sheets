@@ -8,8 +8,8 @@ This file is the plan: a status board, then Horizon 1 as work packages.
 
 | Package | What | Wave | Status |
 |---|---|---|---|
-| WP-01 | `sheets check` | 1 | fixing |
-| WP-07a | Excel check, round 2: what sheets writes today | 1 | fixing |
+| WP-01 | `sheets check` | 1 | done |
+| WP-07a | Excel check, round 2: what sheets writes today | 1 | done |
 | WP-08 | Evals that measure the claims | 1 | planned |
 | WP-02 | Experiment: does `check` cut Python's silent defects? | 2 | planned |
 | WP-05 | `explain` and `trace` | 2 | planned |
@@ -20,10 +20,11 @@ This file is the plan: a status board, then Horizon 1 as work packages.
 | WP-10 | Skill and docs for the new position | 4 | planned |
 | WP-07b | Excel check: the new features; then Max opens the pack in Excel | 4 | planned |
 | WP-11 | An Excel oracle: real Excel computing, through Microsoft Graph | — | waiting on Max |
-| WP-12 | Fix: a dynamic array set on a sheet the same command adds is saved corrupt | 1 | auditing |
+| WP-12 | Fix: a dynamic array set on a sheet the same command adds is saved corrupt | 1 | done |
 | WP-13 | Fix: render computes what read calls unknown; dates written into narrow columns show ######## | — | planned |
 | WP-14 | Engine: what it computes unlike Excel becomes unknown, so check --fix never stores it | — | planned |
 | WP-15 | Fix: spills lost by a script's sheet copy, and after deleting a row inside a spill | — | planned |
+| WP-16 | Fix: every edit Excel refuses inside an array is refused; hand over to the full editor only when an edit reaches an array | — | planned |
 
 **Gate after wave 2.** WP-02's verdict decides whether the position holds
 (see the kill criterion in the vision). Max reviews it before wave 3.
@@ -307,6 +308,29 @@ the definition of done in [orchestration.md](orchestration.md).
   `#SPILL!`. Excel would spill a, c, d again.
 - **Acceptance:** both cases match Excel in both editors; tests; XML order
   checked with `internal/xlsxtest`.
+
+### WP-16 Fix: edits inside legacy arrays
+
+- **Found by:** the wave-1 audit's third round. These are left over, not
+  regressions.
+- **Writes into part of a legacy array:** `set`, `write`, `replace` and
+  script `setValue` refuse them, but `clear`, `copy`, `move` and script
+  `Range.clear()` still go through. They leave values Excel would not
+  show, and `check` vouches for them. Excel refuses all of these.
+- **Cutting an array:** a row or column insert or delete through its
+  range leaves the old results behind as plain values. Deleting the
+  anchor's row gives no warning. Excel refuses these edits too.
+- **Speed:** one small legacy array sends every edit of a large workbook
+  to the full editor (4.1 s instead of 1 s on 150,000 rows). Hand it
+  over only when an edit reaches an array, or moves rows or columns.
+- **Acceptance:**
+  - every edit Excel refuses inside an array is refused, with the same
+    message;
+  - `check` never vouches for values inside an array that sheets did not
+    compute;
+  - plain edits on large workbooks are back to their earlier speed;
+  - tests in both editors.
+- **Repro files:** the auditor's, copied to `~/sheets-evals/wave1-audit/`.
 
 ### WP-11 An Excel oracle (waiting on Max)
 
