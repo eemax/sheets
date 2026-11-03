@@ -91,3 +91,14 @@ exec sheets read arrays_openpyxl.xlsx S!D2:D5
 exec sheets rows delete arrays_openpyxl.xlsx S!2:4
 exec sheets check arrays_openpyxl.xlsx
 ! stdout 'unknown|missing-result'
+
+# An array formula in one cell moves and copies as one.
+fixture arrays_xlsxwriter.xlsx
+exec sheets check --fix arrays_xlsxwriter.xlsx
+exec sheets move arrays_xlsxwriter.xlsx S!G2 S!H5
+exec sheets copy arrays_xlsxwriter.xlsx S!H5 S!I5
+exec sheets read arrays_xlsxwriter.xlsx S!G2:I5
+stdout '^5		2	20$'
+exec sheets check arrays_xlsxwriter.xlsx
+! stdout 'unknown|#SPILL|missing-result'
+exec sheets set arrays_xlsxwriter.xlsx S!G2 1

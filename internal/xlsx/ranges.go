@@ -22,9 +22,12 @@ type taken struct {
 	cell    grid.Cell // its value; for a formula, its result
 	formula string    // "" for a constant
 	dynamic bool      // a dynamic array formula (it spills)
-	style   int
-	note    *excelize.Comment
-	link    *grid.Link
+	// array: an array formula in one cell (entered with
+	// Ctrl+Shift+Enter), which stays one where it goes.
+	array bool
+	style int
+	note  *excelize.Comment
+	link  *grid.Link
 }
 
 func (h *taken) empty() bool {
@@ -178,6 +181,9 @@ func (e *Editor) take(sheet string, r grid.Range) (*block, error) {
 			if _, ok := spills[[2]int{row, col}]; ok && c.Formula != "" {
 				h.dynamic = true
 			}
+			if rg, ok := e.legacyArrays()[keyOf(sheet, row, col)]; ok && c.Formula != "" && rg.Rows()*rg.Cols() == 1 {
+				h.array = true
+			}
 		})
 		for _, n := range s.Links {
 			if r.Contains(n.Row, n.Col) {
@@ -257,7 +263,13 @@ func (e *Editor) put(sheet string, row, col int, h *taken, text string, what pas
 		delete(e.patches.errorCells[sheet], cell)
 		var err error
 		switch {
+		case text != "" && h.array:
+			t, ref := excelize.STCellFormulaTypeArray, cell
+			if err = e.f.SetCellFormula(sheet, cell, formula.ToFile(text), excelize.FormulaOpts{Type: &t, Ref: &ref}); err == nil {
+				e.legacyArrays()[keyOf(sheet, row, col)] = grid.Range{R1: row, C1: col, R2: row, C2: col}
+			}
 		case text != "":
+			delete(e.legacyArrays(), keyOf(sheet, row, col))
 			err = e.setFormulaAs(sheet, cell, text, h.dynamic)
 		case h.cell.Kind == grid.Text:
 			err = setText(e.f, sheet, cell, h.cell.Text)
@@ -840,7 +852,7 @@ func (e *Editor) CopyRange(from string, src grid.Range, to string, at grid.Range
 			if err := e.checkArrays(to, d, "paste over", nil); err != nil {
 				return res, err
 			}
-			defer e.dropArrays(to, d)
+			e.dropArrays(to, d)
 			if err := e.checkTableFormulas(b, from, to, d); err != nil {
 				return res, err
 			}
@@ -969,7 +981,7 @@ func (e *Editor) valuesOf(b *block) error {
 			c = &v
 		}
 		h.cell = grid.Cell{Kind: c.Kind, Num: c.Num, Text: c.Text, Bool: c.Bool, Fmt: c.Fmt}
-		h.formula, h.dynamic = "", false
+		h.formula, h.dynamic, h.array = "", false, false
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
@@ -1061,7 +1073,6 @@ func (e *Editor) MoveRange(from string, src grid.Range, to string, at grid.Range
 	if err := e.checkArrays(to, dst, "move onto", nil); err != nil {
 		return res, err
 	}
-	defer e.dropArrays(to, dst)
 	for a, sp := range e.spillsOn(to) {
 		if same && src.Contains(a[0], a[1]) || sp.Intersect(dst).Empty() || sp.Rows()*sp.Cols() == 1 {
 			continue
@@ -1074,6 +1085,10 @@ func (e *Editor) MoveRange(from string, src grid.Range, to string, at grid.Range
 	if err != nil {
 		return res, err
 	}
+	// What it lands on, and the arrays in one cell it takes (they go with
+	// their cells; see put).
+	e.dropArrays(to, dst)
+	e.dropArrays(from, src)
 	ms, err := e.f.GetMergeCells(to)
 	if err != nil {
 		return res, err
@@ -1323,6 +1338,9 @@ func (e *Editor) MoveRange(from string, src grid.Range, to string, at grid.Range
 // arrayNotCopied refuses to copy or move a whole legacy array formula,
 // which sheets would turn into a plain one.
 func arrayNotCopied(sheet string, rg grid.Range, verb string) error {
+	if rg.Rows()*rg.Cols() == 1 {
+		return nil // an array formula in one cell goes as one (see put)
+	}
 	instead := "copy it with --values"
 	if verb != "copy" {
 		instead = "copy it with --values, then clear it"
