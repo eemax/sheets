@@ -223,3 +223,39 @@ func TestStreamArrayFormula(t *testing.T) {
 		t.Errorf("C7 stores %q, want 94", got)
 	}
 }
+
+// A link to another workbook only Excel can update: its stale result is
+// kept, as unknown, and nothing else about it changes.
+func TestCheckKeepsLinkedResults(t *testing.T) {
+	f := excelize.NewFile()
+	f.SetCellValue("Sheet1", "A1", 2)
+	f.SetCellFormula("Sheet1", "B1", "[1]Rates!A1*A1")
+	f.SetCellFormula("Sheet1", "B2", "A1*3")
+	on := true
+	must(t, f.SetCalcProps(&excelize.CalcPropsOptions{FullCalcOnLoad: &on}))
+	var buf bytes.Buffer
+	must(t, f.Write(&buf))
+	data := patchZip(t, buf.Bytes(), dataPart, func(x string) string {
+		x = regexp.MustCompile(`<c r="B1"[^>]*>(<f>[^<]*</f>)(<v>[^<]*</v>)?`).ReplaceAllString(x, `<c r="B1">${1}<v>7</v>`)
+		return regexp.MustCompile(`<c r="B2"[^>]*>(<f>[^<]*</f>)(<v>[^<]*</v>)?`).ReplaceAllString(x, `<c r="B2">${1}<v>0</v>`)
+	})
+	bothEditors(t, func(t *testing.T) {
+		res := checkData(t, "x.xlsx", data)
+		ch := changesOf(res)
+		if c, ok := ch["replaced B2"]; !ok || c.After.Num != 6 || len(ch) != 1 {
+			t.Errorf("changes: %v", ch)
+		}
+		if len(res.Unknown) != 1 || res.Unknown[0].Row != 1 || !strings.Contains(res.Unknown[0].Why, "another workbook") {
+			t.Errorf("unknown: %+v", res.Unknown)
+		}
+		if res.Data == nil {
+			t.Fatal("nothing fixed")
+		}
+		a, err := ReadBytes(res.Data)
+		must(t, err)
+		if c := a.Sheet("Sheet1").Get(1, 2); c.Num != 7 {
+			t.Errorf("B1 now %+v", c)
+		}
+		fixedTwice(t, data, res)
+	})
+}

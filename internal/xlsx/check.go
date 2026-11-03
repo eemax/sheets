@@ -308,6 +308,14 @@ func compareFiles(before, after *grid.Workbook, ed fixEditor, res *CheckResult) 
 				return
 			}
 			switch {
+			case formula.DepsOf(b.Formula).External:
+				// Only Excel can update a link to another workbook: the
+				// result stored is kept, which sheets cannot vouch for.
+				if !sameValue(bv, av) {
+					brk(sb.Name, r, c, "linked result "+show(bv)+" → "+show(av))
+					return
+				}
+				res.Unknown = append(res.Unknown, Unknown{Sheet: sb.Name, Row: r, Col: c, Why: "it links to another workbook, which only Excel can update; the result stored is kept"})
 			case hasA && bv.Kind == grid.Empty:
 				res.Changes = append(res.Changes, Change{Kind: "stored", Sheet: sb.Name, Row: r, Col: c, After: av})
 			case hasA && sameValue(bv, av):
