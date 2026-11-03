@@ -18,13 +18,16 @@ This file is the plan: a status board, then Horizon 1 as work packages.
 | WP-03 | Values that moved where no edit reached | 3 | planned |
 | WP-09 | Receipts | 4 | planned |
 | WP-10 | Skill and docs for the new position | 4 | planned |
-| WP-07b | Excel check: the new features; then Max opens the pack in Excel | 4 | planned |
+| WP-07b | Excel check: the new features; then Max opens the pack in Excel | 4 | parked |
 | WP-11 | An Excel oracle: real Excel computing, through Microsoft Graph | — | waiting on Max |
 | WP-12 | Fix: a dynamic array set on a sheet the same command adds is saved corrupt | 1 | done |
 | WP-13 | Fix: render computes what read calls unknown; dates written into narrow columns show ######## | — | planned |
 | WP-14 | Engine: what it computes unlike Excel becomes unknown, so check --fix never stores it | — | planned |
 | WP-15 | Fix: spills lost by a script's sheet copy, and after deleting a row inside a spill | — | planned |
-| WP-16 | Fix: every edit Excel refuses inside an array is refused; hand over to the full editor only when an edit reaches an array | — | planned |
+| WP-16 | Fix: every edit Excel refuses inside an array is refused; hand over to the full editor only when an edit reaches an array | — | working |
+
+**Parked (Max, 2026-11-03):** whatever needs Excel installed. That's
+WP-07b, and Max opening the Excel check pack.
 
 **Gate after wave 2.** WP-02's verdict decides whether the position holds
 (see the kill criterion in the vision). Max reviews it before wave 3.
