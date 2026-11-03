@@ -63,6 +63,17 @@ func (e *Editor) SortRange(sheet string, r grid.Range, keys []SortKey) (SortResu
 	if err := e.checkSort(s, r); err != nil {
 		return res, err
 	}
+	// Excel sorts no cell of an array formula, whole or in part.
+	for _, rg := range e.arraysOn(sheet) {
+		if !rg.Intersect(r).Empty() {
+			what := " takes in part of"
+			if within([]grid.Range{rg}, r) {
+				what = " takes in"
+			}
+			return res, fmt.Errorf("%s%s the array formula %s (entered with Ctrl+Shift+Enter), and Excel sorts no cell of an array: sort the cells around it",
+				grid.FormatRef(sheet, r), what, grid.FormatRef(sheet, rg))
+		}
+	}
 
 	// The order.
 	coll := collate.New(language.Und, collate.IgnoreCase, collate.IgnoreWidth)

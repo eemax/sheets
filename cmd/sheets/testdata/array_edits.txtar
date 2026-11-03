@@ -30,7 +30,46 @@ stderr 'deleting those columns would cut through the array formula S!F1:G1'
 stderr 'S!D2:D3 takes in part of the array formula S!D1:D4'
 ! exec sheets script arrays_openpyxl.xlsx -e 'function main(workbook: ExcelScript.Workbook) { workbook.getWorksheet("S")!.getRange("D2").setValue(5); }'
 stderr 'S!D2 lies inside the array formula S!D1:D4'
+! exec sheets sort arrays_openpyxl.xlsx S!D2:D3 D:desc
+stderr 'S!D2:D3 takes in part of the array formula S!D1:D4 \(entered with Ctrl\+Shift\+Enter\), and Excel sorts no cell of an array'
+! exec sheets sort arrays_openpyxl.xlsx S!A1:E4 D
+stderr 'S!A1:E4 takes in the array formula S!D1:D4 .*Excel sorts no cell of an array'
+! exec sheets sort arrays_openpyxl.xlsx S!D1:D4 D
+stderr 'takes in the array formula S!D1:D4'
+! exec sheets script arrays_openpyxl.xlsx -e 'function main(workbook: ExcelScript.Workbook) { workbook.getWorksheet("S")!.getRange("D2:D3").getSort().apply([{ key: 0, ascending: false }]); }'
+stderr 'S!D2:D3 takes in part of the array formula S!D1:D4 .*Excel sorts no cell of an array'
 cmp arrays_openpyxl.xlsx before.xlsx
+
+# Part of one read as values: allowed, the array untouched.
+exec sheets copy arrays_openpyxl.xlsx S!D2:D3 S!N1 --values
+exec sheets read arrays_openpyxl.xlsx S!N1:N2
+stdout '^1	40$'
+stdout '^2	90$'
+exec sheets clear arrays_openpyxl.xlsx S!N1:N2
+! exec sheets move arrays_openpyxl.xlsx S!D1:D4 S!N1
+stderr 'cannot move as an array yet: move it in Excel, or copy it with --values, then clear it'
+
+# Its inputs sorted, moved, or its formula's text replaced: still a legacy
+# array over its range, computed.
+cp arrays_openpyxl.xlsx moved.xlsx
+exec sheets sort moved.xlsx S!A1:B4 A:desc
+exec sheets read moved.xlsx S!D1:D4
+stdout '^1	160$'
+stdout '^4	10$'
+exec sheets move moved.xlsx S!A1:B4 S!P1
+exec sheets read moved.xlsx S!D1:D4 --formulas
+stdout '^1	=P1:P4\*Q1:Q4$'
+exec sheets read moved.xlsx S!D1:D4
+stdout '^1	160$'
+stdout '^4	10$'
+exec sheets replace moved.xlsx 'P1:P4' 'P1:P4+0' --formulas
+exec sheets read moved.xlsx S!D1:D4
+stdout '^1	4$'
+stdout '^4	1$'
+exec sheets check moved.xlsx
+! stdout 'unknown|#SPILL|missing-result'
+! exec sheets set moved.xlsx S!D2 1
+stderr 'S!D2 lies inside the array formula S!D1:D4'
 
 # A whole array: copied or moved as values only, for now.
 ! exec sheets copy arrays_openpyxl.xlsx S!D1:D4 S!N1
@@ -52,3 +91,14 @@ exec sheets read arrays_openpyxl.xlsx S!D2:D5
 exec sheets rows delete arrays_openpyxl.xlsx S!2:4
 exec sheets check arrays_openpyxl.xlsx
 ! stdout 'unknown|missing-result'
+
+# An array formula in one cell moves and copies as one.
+fixture arrays_xlsxwriter.xlsx
+exec sheets check --fix arrays_xlsxwriter.xlsx
+exec sheets move arrays_xlsxwriter.xlsx S!G2 S!H5
+exec sheets copy arrays_xlsxwriter.xlsx S!H5 S!I5
+exec sheets read arrays_xlsxwriter.xlsx S!G2:I5
+stdout '^5		2	20$'
+exec sheets check arrays_xlsxwriter.xlsx
+! stdout 'unknown|#SPILL|missing-result'
+exec sheets set arrays_xlsxwriter.xlsx S!G2 1
