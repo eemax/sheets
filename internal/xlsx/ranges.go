@@ -462,6 +462,10 @@ func (e *Editor) ClearRange(sheet string, r grid.Range, w ClearWhat) (RangeResul
 		if err := e.checkSpills(sheet, r, "clear"); err != nil {
 			return res, err
 		}
+		if err := e.checkArrays(sheet, r, "clear", nil); err != nil {
+			return res, err
+		}
+		defer e.dropArrays(sheet, r)
 	}
 	if w.Notes {
 		if cell, ok := e.threadIn(sheet, r); ok {
@@ -781,6 +785,16 @@ func (e *Editor) CopyRange(from string, src grid.Range, to string, at grid.Range
 			return res, err
 		}
 	}
+	if what.contents {
+		if err := e.checkArrays(from, src, "copy", func(rg grid.Range) error {
+			if o.Values {
+				return nil // its values alone
+			}
+			return arrayNotCopied(from, rg, "copy")
+		}); err != nil {
+			return res, err
+		}
+	}
 	if cell, ok := e.threadIn(from, src); ok && what.notes {
 		return res, fmt.Errorf("%s holds a comment thread (Excel 365) in %s, which sheets cannot copy; copy around it, or copy --values", grid.FormatRef(from, src), cell)
 	}
@@ -827,6 +841,10 @@ func (e *Editor) CopyRange(from string, src grid.Range, to string, at grid.Range
 			if err := e.checkSpills(to, d, "paste over"); err != nil {
 				return res, err
 			}
+			if err := e.checkArrays(to, d, "paste over", nil); err != nil {
+				return res, err
+			}
+			defer e.dropArrays(to, d)
 			if err := e.checkTableFormulas(b, from, to, d); err != nil {
 				return res, err
 			}
@@ -1041,6 +1059,13 @@ func (e *Editor) MoveRange(from string, src grid.Range, to string, at grid.Range
 	if err := e.checkSpills(from, src, "move"); err != nil {
 		return res, err
 	}
+	if err := e.checkArrays(from, src, "move", func(rg grid.Range) error { return arrayNotCopied(from, rg, "move") }); err != nil {
+		return res, err
+	}
+	if err := e.checkArrays(to, dst, "move onto", nil); err != nil {
+		return res, err
+	}
+	defer e.dropArrays(to, dst)
 	for a, sp := range e.spillsOn(to) {
 		if same && src.Contains(a[0], a[1]) || sp.Intersect(dst).Empty() || sp.Rows()*sp.Cols() == 1 {
 			continue
@@ -1297,4 +1322,11 @@ func (e *Editor) MoveRange(from string, src grid.Range, to string, at grid.Range
 			countOf(len(partial), "formula"), map[bool]string{true: "reads", false: "read"}[len(partial) == 1], map[bool]string{true: "reads", false: "read"}[len(partial) == 1], strings.Join(list, "; ")))
 	}
 	return res, nil
+}
+
+// arrayNotCopied refuses to copy or move a whole legacy array formula,
+// which sheets would turn into a plain one.
+func arrayNotCopied(sheet string, rg grid.Range, verb string) error {
+	return fmt.Errorf("%s holds the array formula %s (entered with Ctrl+Shift+Enter), which sheets cannot %s as an array yet: %s it in Excel, or %s with --values",
+		grid.FormatRef(sheet, rg), grid.FormatRef(sheet, rg), verb, verb, map[bool]string{true: "copy it", false: "copy it, then clear it,"}[verb == "copy"])
 }

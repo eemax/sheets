@@ -17,6 +17,9 @@ import (
 
 // InsertRows inserts n empty rows before row at.
 func (e *Editor) InsertRows(sheet string, at, n int) error {
+	if err := e.cutsArray(sheet, false, at, at-1); err != nil {
+		return err
+	}
 	err := e.relines(sheet, false,
 		func(f, home string) string { return formula.InsertLines(f, home, sheet, false, at, n) },
 		func(rg grid.Range) bool { return rg.R1 < at && at <= rg.R2 },
@@ -50,6 +53,9 @@ func (e *Editor) DeleteRows(sheet string, from, to int) error {
 	if err := e.checkTableRows(sheet, from, to); err != nil {
 		return err
 	}
+	if err := e.cutsArray(sheet, false, from, to); err != nil {
+		return err
+	}
 	if err := e.deleteLines(sheet, false, from, to); err != nil {
 		return err
 	}
@@ -75,6 +81,9 @@ func (e *Editor) DeleteRows(sheet string, from, to int) error {
 // InsertCols inserts n empty columns before column at.
 func (e *Editor) InsertCols(sheet string, at, n int) error {
 	if err := e.checkTableCols(sheet, at, at, true); err != nil {
+		return err
+	}
+	if err := e.cutsArray(sheet, true, at, at-1); err != nil {
 		return err
 	}
 	err := e.relines(sheet, true,
@@ -108,6 +117,9 @@ func (e *Editor) InsertCols(sheet string, at, n int) error {
 // DeleteCols deletes columns from..to (inclusive).
 func (e *Editor) DeleteCols(sheet string, from, to int) error {
 	if err := e.checkTableCols(sheet, from, to, false); err != nil {
+		return err
+	}
+	if err := e.cutsArray(sheet, true, from, to); err != nil {
 		return err
 	}
 	if err := e.deleteLines(sheet, true, from, to); err != nil {

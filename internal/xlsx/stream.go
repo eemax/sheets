@@ -65,6 +65,9 @@ type StreamEditor struct {
 	extent    map[string]grid.Range // used range by lower-cased sheet, where edits grew it
 	warnings  []string
 	res       *calcResult // after saving
+	// laysOut lets Render go on where a legacy array over several cells
+	// is to be computed, which needs the full editor (see Auto.full).
+	laysOut bool
 	// merges are a sheet's merged cells where they are now, and used its
 	// used range, by lower-cased sheet, as of a count of ops.
 	merges map[string]mergesAt
@@ -369,18 +372,45 @@ func (s *StreamEditor) tablesNow(sheet string) []tableNow {
 	return out
 }
 
-// anySpills tells whether the workbook holds dynamic arrays, or legacy
-// array formulas over several cells: the full editor lays out their
-// results, which the streaming editor cannot.
+// anySpills tells whether the workbook holds dynamic arrays.
 func (s *StreamEditor) anySpills() bool {
 	for _, sh := range s.wb.Sheets {
 		if len(sh.Spills) > 0 {
 			return true
 		}
-		for _, a := range sh.Arrays {
-			if a.Rows()*a.Cols() > 1 {
-				return true
-			}
+	}
+	return false
+}
+
+// legacyNow lists a sheet's legacy array formulas over several cells
+// (entered with Ctrl+Shift+Enter), where they are now: the full editor
+// lays out their results, which the streaming editor cannot.
+func (s *StreamEditor) legacyNow(sheet string) []grid.Range {
+	sh := s.wb.Sheet(sheet)
+	if sh == nil {
+		return nil
+	}
+	var out []grid.Range
+	for _, a := range sh.Arrays {
+		if a.Rows()*a.Cols() < 2 {
+			continue
+		}
+		if _, ok := legacyArray(sh, a.R1, a.C1); !ok {
+			continue
+		}
+		if now, ok := s.area(sh.Name, a, false); ok {
+			out = append(out, now)
+		}
+	}
+	return out
+}
+
+// anyLegacy tells whether the workbook holds legacy array formulas over
+// several cells.
+func (s *StreamEditor) anyLegacy() bool {
+	for _, sh := range s.wb.Sheets {
+		if len(s.legacyNow(sh.Name)) > 0 {
+			return true
 		}
 	}
 	return false
@@ -464,6 +494,11 @@ func (s *StreamEditor) Set(sheet string, row, col int, v input.Value) error {
 		}
 		return hiddenByMerge(name, row, col, m)
 	}
+	for _, a := range s.legacyNow(name) {
+		if a.Contains(row, col) {
+			return errUpgrade // part of an array: the full editor refuses it
+		}
+	}
 	if s.spilling(name, row, col) || s.anySpills() {
 		// A dynamic array a write reaches spills anew: the full editor
 		// lays its result out (see spill.go).
@@ -532,7 +567,7 @@ func (s *StreamEditor) lines(sheet string, op streamOp) error {
 		return err
 	}
 	op.sheet = name
-	if s.anySpills() {
+	if s.anySpills() || s.anyLegacy() {
 		return errUpgrade // arrays whose results move: the full editor
 	}
 	sh := s.wb.Sheet(name)

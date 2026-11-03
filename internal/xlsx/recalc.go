@@ -387,6 +387,9 @@ type calcState struct {
 	// multi tells whether a cell anchors a legacy array formula over
 	// several cells (its other cells hold its result).
 	multi func(sheet string, row, col int) bool
+	// deferArrays: legacy arrays over several cells the streaming editor
+	// does not fill go to the full editor, which says what it cannot.
+	deferArrays bool
 	// within tells whether a cell lies inside another cell's legacy array
 	// formula, where Excel allows no formula of its own.
 	within func(sheet string, row, col int) bool
@@ -725,7 +728,7 @@ func computeResults(st calcState) (calcResult, error) {
 			case can:
 				ok, why = false, "an array formula over several cells whose whole result sheets could not work out"
 			default:
-				ok, why = false, "an array formula over several cells (entered with Ctrl+Shift+Enter), whose other cells this edit does not fill"
+				ok, why = false, arrayNotFilled
 			}
 		}
 		if ok && st.dynamic != nil && st.dynamic(f.sheet, f.row, f.col) {
@@ -742,6 +745,8 @@ func computeResults(st calcState) (calcResult, error) {
 			out.dropped[key] = why
 			switch {
 			case i >= len(first) || written:
+			case why == arrayNotFilled && st.deferArrays:
+				// The full editor computes it (see Auto.full).
 			case strings.HasPrefix(why, "not computed in the time"):
 				left++
 			case f.unprefixed:
@@ -1019,3 +1024,7 @@ func arrayElem(a *engine.Arr, i, j int) engine.Value {
 	}
 	return a.At(i, j)
 }
+
+// arrayNotFilled says why a legacy array over several cells has no result
+// from the streaming editor, which does not lay arrays out.
+const arrayNotFilled = "an array formula over several cells (entered with Ctrl+Shift+Enter), whose other cells this edit does not fill"

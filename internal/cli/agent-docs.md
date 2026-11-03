@@ -296,6 +296,10 @@ naming a table that does not exist is refused.
 - `replace` reads a changed value as typed input ("1,200" becomes a
   number); `--formulas` replaces in formula text instead; `--regex` takes
   groups as $1.
+- An array formula entered with Ctrl+Shift+Enter changes whole or not at
+  all, as in Excel: writing, clearing, copying or moving part of its
+  range, or inserting or deleting rows or columns through it, is refused,
+  and the message names the array. Copy a whole one with `--values`.
 
 ## Notes and links
 

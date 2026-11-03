@@ -1,0 +1,54 @@
+# Excel changes an array formula entered with Ctrl+Shift+Enter whole or
+# not at all, and so does sheets: every edit into part of one, or one that
+# cuts through it, is refused with the same message; one that takes it in
+# whole, or misses it, goes through.
+fixture arrays_openpyxl.xlsx
+exec sheets check --fix arrays_openpyxl.xlsx
+cp arrays_openpyxl.xlsx before.xlsx
+
+! exec sheets clear arrays_openpyxl.xlsx S!D2
+stderr 'S!D2 takes in part of the array formula S!D1:D4 \(entered with Ctrl\+Shift\+Enter\), and Excel does not change part of an array: clear all of D1:D4, or none of it'
+! exec sheets copy arrays_openpyxl.xlsx S!A1:A2 S!D2
+stderr 'takes in part of the array formula S!D1:D4 .*paste over all of D1:D4, or none of it'
+! exec sheets copy arrays_openpyxl.xlsx S!D2:D3 S!N1
+stderr 'S!D2:D3 takes in part of the array formula S!D1:D4'
+! exec sheets move arrays_openpyxl.xlsx S!A4 S!D3
+stderr 'S!D3 takes in part of the array formula S!D1:D4 .*move onto all of D1:D4'
+! exec sheets move arrays_openpyxl.xlsx S!D3 S!N1
+stderr 'S!D3 takes in part of the array formula S!D1:D4'
+! exec sheets set arrays_openpyxl.xlsx S!D3 1
+stderr 'S!D3 lies inside the array formula S!D1:D4'
+! exec sheets rows insert arrays_openpyxl.xlsx S!2
+stderr 'inserting rows there would cut through the array formula S!D1:D4'
+! exec sheets rows delete arrays_openpyxl.xlsx S!1
+stderr 'deleting those rows would cut through the array formula S!D1:D4'
+! exec sheets cols insert arrays_openpyxl.xlsx S!G
+stderr 'inserting columns there would cut through the array formula S!F1:G1'
+! exec sheets cols delete arrays_openpyxl.xlsx S!F
+stderr 'deleting those columns would cut through the array formula S!F1:G1'
+! exec sheets script arrays_openpyxl.xlsx -e 'function main(workbook: ExcelScript.Workbook) { workbook.getWorksheet("S")!.getRange("D2:D3").clear(); }'
+stderr 'S!D2:D3 takes in part of the array formula S!D1:D4'
+! exec sheets script arrays_openpyxl.xlsx -e 'function main(workbook: ExcelScript.Workbook) { workbook.getWorksheet("S")!.getRange("D2").setValue(5); }'
+stderr 'S!D2 lies inside the array formula S!D1:D4'
+cmp arrays_openpyxl.xlsx before.xlsx
+
+# A whole array: copied or moved as values only, for now.
+! exec sheets copy arrays_openpyxl.xlsx S!D1:D4 S!N1
+stderr 'holds the array formula S!D1:D4 .*which sheets cannot copy as an array yet'
+exec sheets copy arrays_openpyxl.xlsx S!D1:D4 S!N1 --values
+exec sheets read arrays_openpyxl.xlsx S!N1:N4
+stdout '^4	160$'
+exec sheets clear arrays_openpyxl.xlsx S!N1:N4
+
+# Whole, or missing it: through.
+exec sheets rows insert arrays_openpyxl.xlsx S!1
+exec sheets cols insert arrays_openpyxl.xlsx S!E
+exec sheets read arrays_openpyxl.xlsx S!D2:D5
+stdout '^2	10$'
+stdout '^5	160$'
+exec sheets clear arrays_openpyxl.xlsx S!D2:D5
+exec sheets read arrays_openpyxl.xlsx S!D2:D5
+! stdout '^[2-5]	.'
+exec sheets rows delete arrays_openpyxl.xlsx S!2:4
+exec sheets check arrays_openpyxl.xlsx
+! stdout 'unknown|missing-result'
