@@ -159,6 +159,15 @@ func (e *Engine) evalCell(sheet string, row, col int, text string) Value {
 	}
 	if array {
 		a := c.toArr(v)
+		if refs(a) {
+			// Elements that are references (INDEX over an array) show the
+			// values they refer to.
+			b := newArr(a.Rows, a.Cols)
+			for i, x := range a.V {
+				b.V[i] = c.child(false).scalar(x)
+			}
+			a = b
+		}
 		e.arrays[key(sheet, row, col)] = a
 		_ = fill
 		return finalScalar(a.At(0, 0))
@@ -382,9 +391,10 @@ func (c *ctx) scalar(v Value) Value {
 			return c.cell(r.Sheet, a.R1, a.C1)
 		}
 		if c.arr {
-			// In an array formula a range in a scalar slot is an array;
-			// the caller lifts it. Here only its first value fits.
-			return c.cell(r.Sheet, a.R1, a.C1)
+			// In an array formula a range in a scalar slot is an array,
+			// which the caller lifts. One that reaches here was not
+			// lifted: Excel would take it element by element.
+			return c.fail(unsupported(collapsed))
 		}
 		// Implicit intersection: the cell of a column in the formula's
 		// row, or of a row in its column (whatever the sheet).
@@ -399,10 +409,17 @@ func (c *ctx) scalar(v Value) Value {
 		if len(v.Arr.V) == 0 {
 			return errv(ErrValue)
 		}
+		if c.arr && len(v.Arr.V) > 1 {
+			return c.fail(unsupported(collapsed))
+		}
 		return c.scalar(v.Arr.V[0])
 	}
 	return v
 }
+
+// collapsed says why an array formula is unknown when a function took
+// one value of an array Excel would go through element by element.
+const collapsed = "it is an array formula with a function the sheets calculator does not apply element by element"
 
 // toArr reads a value as an array: a reference's cells (bounded to its
 // sheet), an array as is, a scalar as a 1×1 array.
@@ -696,4 +713,14 @@ func floorDiv(a, b int) int {
 		q--
 	}
 	return q
+}
+
+// refs tells whether an array holds references.
+func refs(a *Arr) bool {
+	for _, x := range a.V {
+		if x.Kind == Ref {
+			return true
+		}
+	}
+	return false
 }

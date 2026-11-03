@@ -58,9 +58,12 @@ type Editor struct {
 	merges map[string][]grid.Range
 
 	sheetsChanged bool
-	// arraysSet are the legacy array formulas entered this session, by
-	// anchor.
-	arraysSet map[cellKey]grid.Range
+	// legacy are the legacy array formulas where they stand now, by
+	// anchor (see legacyArrays); nil until first needed.
+	legacy map[cellKey]grid.Range
+	// brokenArrays are legacy array formulas a write into their range
+	// broke: their results are not stored.
+	brokenArrays []cellKey
 	// dropped notes, after saving, why a formula got no stored result,
 	// or what its error means.
 	dropped map[cellKey]string
@@ -212,6 +215,9 @@ func (e *Editor) Set(sheet string, row, col int, v input.Value) error {
 			return nil // as it is: merged cells show only their first
 		}
 		return hiddenByMerge(sheet, row, col, m)
+	}
+	if err := e.leaveLegacy(sheet, row, col); err != nil {
+		return err
 	}
 	if err := e.unshareFormulas(sheet, row, col); err != nil {
 		return err
@@ -678,10 +684,38 @@ func (e *Editor) SetArray(sheet string, rg grid.Range, text string) error {
 	if err := e.f.SetCellFormula(sheet, cell, formula.ToFile(text), excelize.FormulaOpts{Type: &t, Ref: &ref}); err != nil {
 		return err
 	}
-	if e.arraysSet == nil {
-		e.arraysSet = map[cellKey]grid.Range{}
-	}
-	e.arraysSet[keyOf(sheet, rg.R1, rg.C1)] = rg
+	e.legacyArrays()[keyOf(sheet, rg.R1, rg.C1)] = rg
 	e.touch(sheet, rg.R1, rg.C1)
+	return nil
+}
+
+// leaveLegacy makes way for a write into a legacy array formula's range
+// (entered with Ctrl+Shift+Enter). Its first cell: the array goes, its
+// formula replaced, and the cells that held the rest of its result are
+// cleared. Another cell: Excel refuses to change part of an array, and so
+// does sheets.
+func (e *Editor) leaveLegacy(sheet string, row, col int) error {
+	arrays := e.legacyArrays()
+	k := keyOf(sheet, row, col)
+	if rg, ok := arrays[k]; ok {
+		delete(arrays, k)
+		var err error
+		if s := e.wb.Sheet(sheet); s != nil && rg.Rows()*rg.Cols() > 1 && !e.structural {
+			for r := rg.R1; r <= rg.R2 && err == nil; r++ {
+				for c := rg.C1; c <= rg.C2 && err == nil; c++ {
+					if r == row && c == col || s.Get(r, c).Formula != "" {
+						continue
+					}
+					err = e.f.SetCellDefault(sheet, grid.CellName(r, c), "")
+					e.touch(sheet, r, c)
+				}
+			}
+		}
+		return err
+	}
+	if rg, ok := e.legacyArrayIn(sheet, row, col); ok {
+		return fmt.Errorf("%s lies inside the array formula %s (entered with Ctrl+Shift+Enter), and Excel does not change part of an array: write its first cell, %s, or clear the whole of %s first",
+			grid.FormatRef(sheet, grid.Range{R1: row, C1: col, R2: row, C2: col}), grid.FormatRef(sheet, rg), grid.CellName(rg.R1, rg.C1), rg)
+	}
 	return nil
 }

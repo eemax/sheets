@@ -1,0 +1,64 @@
+# Array results survive later edits in either editor: a dynamic array and
+# a legacy one (Ctrl+Shift+Enter) whose first value is "" keep the rest of
+# their results across set, style and note; legacy arrays stay legacy
+# across inserted rows and columns; a write inside one is warned of.
+
+# A dynamic array whose first value is "".
+stdin nums.tsv
+exec sheets write dy.xlsx S
+exec sheets set dy.xlsx S!M1 '=IF(A1:A3>1,"big","")'
+exec sheets set dy.xlsx S!Z1 1
+exec sheets style dy.xlsx S!A1 bold
+exec sheets note dy.xlsx S!A2 hi
+exec sheets read dy.xlsx S!M1:M3
+stdout '^2	big$'
+stdout '^3	big$'
+exec sheets check dy.xlsx
+stdout 'no problems found'
+
+# A legacy array filled by check --fix, its first value "".
+fixture arrays_openpyxl.xlsx
+exec sheets check --fix arrays_openpyxl.xlsx
+exec sheets set arrays_openpyxl.xlsx S!Z1 1
+exec sheets style arrays_openpyxl.xlsx S!B1 bold
+exec sheets note arrays_openpyxl.xlsx S!B2 hi
+exec sheets read arrays_openpyxl.xlsx S!J1:L3
+stdout '^1		b	x$'
+stdout '^2	big	a	y$'
+stdout '^3	big	a	y$'
+
+# A change the array reads: recomputed over its whole range.
+exec sheets set arrays_openpyxl.xlsx S!A2 0
+exec sheets read arrays_openpyxl.xlsx S!D1:D4
+stdout '^2	0$'
+stdout '^3	90$'
+
+# Rows and columns inserted: still legacy arrays, results in place.
+exec sheets rows insert arrays_openpyxl.xlsx S!1
+exec sheets cols insert arrays_openpyxl.xlsx S!A
+exec sheets set arrays_openpyxl.xlsx S!B3 5
+exec sheets read arrays_openpyxl.xlsx S!E2:E5
+stdout '^2	10$'
+stdout '^3	100$'
+stdout '^4	90$'
+stdout '^5	160$'
+exec sheets read arrays_openpyxl.xlsx S!I2:I4
+stdout '^2	13$'
+stdout '^4	13$'
+exec sheets check arrays_openpyxl.xlsx
+stdout ', 0 missing, 0 stale$'
+! stdout 'unknown|#SPILL'
+
+# Writing inside one is refused, as in Excel; writing its first cell
+# replaces the array, and clears the rest of its old result.
+! exec sheets set arrays_openpyxl.xlsx S!E3 7
+stderr 'S!E3 lies inside the array formula S!E2:E5'
+exec sheets set arrays_openpyxl.xlsx S!E2 7
+exec sheets read arrays_openpyxl.xlsx S!E2:E5
+stdout '^2	7$'
+! stdout '^3	.'
+
+-- nums.tsv --
+1
+2
+3

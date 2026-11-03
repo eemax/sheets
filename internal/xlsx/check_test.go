@@ -318,7 +318,7 @@ func TestCheckLegacyArrays(t *testing.T) {
 	op, xw := openFixture(t, "arrays_openpyxl.xlsx"), openFixture(t, "arrays_xlsxwriter.xlsx")
 	bothEditors(t, func(t *testing.T) {
 		res := checkData(t, "op.xlsx", op)
-		for rg, want := range map[string]string{"D1:D4": "[10 40 90 160]", "F1:G1": "[1 2]", "H1:H3": "[10 10 10]"} {
+		for rg, want := range map[string]string{"D1:D4": "[10 40 90 160]", "F1:G1": "[1 2]", "H1:H3": "[10 10 10]", "J1:J3": `["" "big" "big"]`, "K1:K3": `["b" "a" "a"]`, "L1:L3": `["x" "y" "y"]`} {
 			r, _ := grid.ParseRange(rg)
 			if got := fmt.Sprint(valuesAt(t, res.Data, "S", r)); got != want {
 				t.Errorf("openpyxl %s: %s, want %s", rg, got, want)
@@ -447,7 +447,7 @@ func TestCompareOnlyExcelsInputs(t *testing.T) {
 		return regexp.MustCompile(`<c r="J2"[^>]*>(<f>[^<]*</f>)(<v>[^<]*</v>)?`).ReplaceAllString(x, `<c r="J2">${1}<v>3</v>`)
 	})
 	res := checkData(t, "c.xlsx", data)
-	if len(res.Differ) != 0 || res.Uncomputable != 1 {
+	if len(res.Differ) != 0 || res.ReadsUnstored != 1 {
 		t.Errorf("differences %+v, %d not compared", res.Differ, res.Uncomputable)
 	}
 }

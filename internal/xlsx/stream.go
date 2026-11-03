@@ -369,11 +369,18 @@ func (s *StreamEditor) tablesNow(sheet string) []tableNow {
 	return out
 }
 
-// anySpills tells whether the workbook holds dynamic arrays.
+// anySpills tells whether the workbook holds dynamic arrays, or legacy
+// array formulas over several cells: the full editor lays out their
+// results, which the streaming editor cannot.
 func (s *StreamEditor) anySpills() bool {
 	for _, sh := range s.wb.Sheets {
 		if len(sh.Spills) > 0 {
 			return true
+		}
+		for _, a := range sh.Arrays {
+			if a.Rows()*a.Cols() > 1 {
+				return true
+			}
 		}
 	}
 	return false
@@ -525,6 +532,9 @@ func (s *StreamEditor) lines(sheet string, op streamOp) error {
 		return err
 	}
 	op.sheet = name
+	if s.anySpills() {
+		return errUpgrade // arrays whose results move: the full editor
+	}
 	sh := s.wb.Sheet(name)
 	// Dynamic arrays on the sheet: their results would need moving cell
 	// by cell, with their metadata.

@@ -309,6 +309,9 @@ for r, (a, b) in enumerate([(1, 10), (2, 20), (3, 30), (4, 40)], 1):
 ws["D1"] = ArrayFormula("D1:D4", "=A1:A4*B1:B4")
 ws["F1"] = ArrayFormula("F1:G1", "=TRANSPOSE(A1:A2)")
 ws["H1"] = ArrayFormula("H1:H3", "=SUM(A1:A4)")
+ws["J1"] = ArrayFormula("J1:J3", '=IF(A1:A3>1,"big","")')  # its first value is ""
+ws["K1"] = ArrayFormula("K1:K3", '=IFS(A1:A3>1,"a",TRUE,"b")')
+ws["L1"] = ArrayFormula("L1:L3", '=SWITCH(A1:A3,1,"x","y")')
 wb.save(f"{out}/arrays_openpyxl.xlsx")
 
 # arrays_xlsxwriter.xlsx: the same from XlsxWriter (a 0 in every cell), and
@@ -357,3 +360,14 @@ d.write_dynamic_array_formula("D1", "=UNIQUE(A2:A5)")
 d.write_formula("E1", "=SUM(B2:B5)")
 d.write_dynamic_array_formula("F1", "=SORT(B2:B5,1,-1)")
 xw.close()
+
+# arrays_inside.xlsx: a formula of its own inside an array formula's range,
+# which Excel does not allow.
+wb = Workbook()
+ws = wb.active
+ws.title = "S"
+for r in range(1, 4):
+    ws.cell(r, 1, r)
+ws["E1"] = ArrayFormula("E1:E3", "=A1:A3*3")
+ws["E3"] = "=A1+100"
+wb.save(f"{out}/arrays_inside.xlsx")

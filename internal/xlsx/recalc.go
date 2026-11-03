@@ -387,6 +387,9 @@ type calcState struct {
 	// multi tells whether a cell anchors a legacy array formula over
 	// several cells (its other cells hold its result).
 	multi func(sheet string, row, col int) bool
+	// within tells whether a cell lies inside another cell's legacy array
+	// formula, where Excel allows no formula of its own.
+	within func(sheet string, row, col int) bool
 }
 
 // calcResult is what working out results gives.
@@ -463,11 +466,20 @@ func (e *Editor) results() (calcResult, error) {
 	if e.wb != nil {
 		st.date1904 = e.wb.Date1904
 	}
-	if !e.structural && !e.sheetsChanged {
-		// Where cells stand as opened: legacy arrays are where the file
-		// has them.
-		st.legacy = e.legacyAt
-		st.multi = func(sheet string, row, col int) bool { _, ok := e.legacyAt(sheet, row, col); return ok }
+	broken := map[cellKey]bool{}
+	for _, k := range e.brokenArrays {
+		broken[k] = true
+	}
+	// Legacy arrays follow edits of rows, columns and sheets (see relines
+	// and sheetEdit); one an edit broke is unknown.
+	st.legacy = e.legacyAt
+	st.multi = func(sheet string, row, col int) bool {
+		_, ok := e.legacyAt(sheet, row, col)
+		return ok || broken[keyOf(sheet, row, col)]
+	}
+	st.within = func(sheet string, row, col int) bool {
+		rg, ok := e.legacyArrayIn(sheet, row, col)
+		return ok && (rg.R1 != row || rg.C1 != col)
 	}
 	res, err := computeResults(st)
 	if err != nil {
@@ -646,14 +658,14 @@ func computeResults(st calcState) (calcResult, error) {
 	for i, f := range append(first, then...) {
 		ref := grid.FormatRef(f.sheet, grid.Range{R1: f.row, C1: f.col, R2: f.row, C2: f.col})
 		if formula.DepsOf(f.text).External {
-			// Only Excel can update a link to another workbook; the
-			// stored result is all there is until it does.
+			// Only Excel can update a link to another workbook. A result
+			// out of date when opened, or that this change reached, goes:
+			// the stamp would vouch for it, and what reads it would be
+			// computed from it.
 			if i < len(first) {
 				linked = append(linked, ref)
 			}
-			if f.pending {
-				// A result already out of date when opened: the stamp
-				// would vouch for it, so it goes.
+			if f.pending || i < len(first) {
 				store(f, grid.Cell{})
 				out.dropped[keyOf(f.sheet, f.row, f.col)] = linkNote
 			}
@@ -669,6 +681,14 @@ func computeResults(st calcState) (calcResult, error) {
 			if r.note != "" {
 				out.dropped[key] = r.note
 			}
+			if v.Kind == grid.Empty {
+				// A formula shows a value; none means the calculator lost
+				// its way.
+				ok, why = false, "the sheets calculator gets no value for it"
+			}
+		}
+		if ok && st.within != nil && st.within(f.sheet, f.row, f.col) {
+			ok, why = false, "it lies inside another cell's array formula (entered with Ctrl+Shift+Enter), which Excel does not allow"
 		}
 		if ok && st.multi != nil && st.multi(f.sheet, f.row, f.col) {
 			// Its other cells hold the rest of its result: laid out, or
@@ -678,14 +698,25 @@ func computeResults(st calcState) (calcResult, error) {
 				rg, can = st.legacy(f.sheet, f.row, f.col)
 			}
 			a, done := eng.ArrayOf(f.sheet, f.row, f.col)
-			if !done && ok {
-				// Computed as one value (an aggregate taken natively, say),
-				// which fills the range.
+			if _, _, agg := aggregateOf(calcOf(f)); !done && ok && agg {
+				// An aggregate of references alone, taken natively: one
+				// value, which fills the range.
 				if r := j.result(f); r.err == nil && !j.frozen[f] {
 					a, done = &engine.Arr{Rows: 1, Cols: 1, V: []engine.Value{cellToCalc(r.v)}}, true
 				}
 			}
+			inside := ""
+			if can {
+				for _, g := range all {
+					if strings.EqualFold(g.sheet, f.sheet) && g != f && rg.Contains(g.row, g.col) {
+						inside = grid.CellName(g.row, g.col)
+						break
+					}
+				}
+			}
 			switch {
+			case inside != "":
+				ok, why = false, "an array formula over several cells, one of which ("+inside+") holds a formula of its own, which Excel does not allow"
 			case can && done:
 				if out.legacy == nil {
 					out.legacy = map[cellKey]laidOut{}
@@ -752,6 +783,7 @@ func computeResults(st calcState) (calcResult, error) {
 				continue
 			}
 			if _, done := out.results[strings.ToLower(f.sheet)][grid.CellName(f.row, f.col)]; !done {
+				v.Computed = true // as stored: an array keeps the rest of its result
 				store(f, v)
 			}
 		}
@@ -786,9 +818,9 @@ func computeResults(st calcState) (calcResult, error) {
 			map[bool]string{true: "it", false: "them"}[len(unprefixed) == 1], map[bool]string{true: "it is", false: "they are"}[len(unprefixed) == 1], strings.Join(list, ", ")))
 	}
 	if len(linked) > 0 {
-		out.warnings = append(out.warnings, fmt.Sprintf("%s that this change reaches %s to another workbook; %s stored %s may be out of date until Excel updates the links: %s",
+		out.warnings = append(out.warnings, fmt.Sprintf("%s that this change reaches %s to another workbook, which only Excel can update; %s no stored result until it does: %s",
 			countOf(len(linked), "formula"), map[bool]string{true: "links", false: "link"}[len(linked) == 1],
-			map[bool]string{true: "its", false: "their"}[len(linked) == 1], map[bool]string{true: "result", false: "results"}[len(linked) == 1],
+			map[bool]string{true: "it has", false: "they have"}[len(linked) == 1],
 			strings.Join(linked[:min(len(linked), 5)], ", ")))
 	}
 	if left > 0 {
@@ -885,7 +917,7 @@ func (e *Editor) keepEmptyText(res calcResult) {
 		if e.patches.results[s] == nil {
 			e.patches.results[s] = map[string]grid.Cell{}
 		}
-		e.patches.results[s][cell] = grid.Cell{Kind: grid.Text}
+		e.patches.results[s][cell] = grid.Cell{Kind: grid.Text, Computed: true} // as stored: an array keeps the rest of its result
 	}
 }
 
@@ -895,17 +927,40 @@ const linkNote = "it links to another workbook, which only Excel can update"
 // legacyAt finds the legacy array formula over several cells anchored at
 // a cell (not a dynamic array, nor one this session wrote over).
 func (e *Editor) legacyAt(sheet string, row, col int) (grid.Range, bool) {
-	s := e.wb.Sheet(sheet)
-	if s == nil || e.wasDynamic(sheet, grid.CellName(row, col)) {
-		return grid.Range{}, false
+	rg, ok := e.legacyArrays()[keyOf(sheet, row, col)]
+	return rg, ok && rg.Rows()*rg.Cols() > 1
+}
+
+// legacyArrays are the legacy array formulas (entered with
+// Ctrl+Shift+Enter, single cells too) where they stand now, by anchor:
+// as opened, then followed through the session's edits.
+func (e *Editor) legacyArrays() map[cellKey]grid.Range {
+	if e.legacy != nil {
+		return e.legacy
 	}
-	if rg, ok := e.arraysSet[keyOf(sheet, row, col)]; ok {
-		return rg, rg.Rows()*rg.Cols() > 1
+	e.legacy = map[cellKey]grid.Range{}
+	if e.wb == nil {
+		return e.legacy
 	}
-	if _, written := e.changed[keyOf(sheet, row, col)]; written {
-		return grid.Range{}, false
+	for _, s := range e.wb.Sheets {
+		for _, a := range s.Arrays {
+			if rg, ok := legacyArray(s, a.R1, a.C1); ok {
+				e.legacy[keyOf(s.Name, a.R1, a.C1)] = rg
+			}
+		}
 	}
-	return multiArrayAt(s, row, col)
+	return e.legacy
+}
+
+// legacyArrayIn finds the legacy array formula whose range holds a cell.
+func (e *Editor) legacyArrayIn(sheet string, row, col int) (grid.Range, bool) {
+	k := strings.ToLower(sheet)
+	for at, rg := range e.legacyArrays() {
+		if at.sheet == k && rg.Contains(row, col) {
+			return rg, true
+		}
+	}
+	return grid.Range{}, false
 }
 
 // multiArrayAt finds the legacy array formula over several cells a sheet
