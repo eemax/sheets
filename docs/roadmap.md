@@ -8,7 +8,7 @@ This file is the plan: a status board, then Horizon 1 as work packages.
 
 | Package | What | Wave | Status |
 |---|---|---|---|
-| WP-01 | `sheets check` | 1 | working |
+| WP-01 | `sheets check` | 1 | auditing |
 | WP-07a | Excel check, round 2: what sheets writes today | 1 | auditing |
 | WP-08 | Evals that measure the claims | 1 | planned |
 | WP-02 | Experiment: does `check` cut Python's silent defects? | 2 | planned |
@@ -22,6 +22,7 @@ This file is the plan: a status board, then Horizon 1 as work packages.
 | WP-11 | An Excel oracle: real Excel computing, through Microsoft Graph | — | waiting on Max |
 | WP-12 | Fix: a dynamic array set on a sheet the same command adds is saved corrupt | 1 | auditing |
 | WP-13 | Fix: render computes what read calls unknown; dates written into narrow columns show ######## | — | planned |
+| WP-14 | Engine: what it computes unlike Excel becomes unknown, so check --fix never stores it | — | planned |
 
 **Gate after wave 2.** WP-02's verdict decides whether the position holds
 (see the kill criterion in the vision). Max reviews it before wave 3.
@@ -264,6 +265,30 @@ the definition of done in [orchestration.md](orchestration.md).
   Excel does when you type one.
 - **Smaller:** a long decimal in General format draws as `########`
   (Excel shows 0.348837), and TRUE and FALSE should be centred.
+
+### WP-14 Engine: unknown where it computes unlike Excel
+
+- **Found by:** WP-01's builder. It round-tripped all 800 corpus files
+  through openpyxl, then ran `check --fix`, and compared each stored
+  result with what Excel had stored.
+- **What it found:** of 65,460 results, 2,218 differ.
+  - **About 2,000 differ only in spaces.** Strings in the dataset files
+    were trimmed, so this is not the engine.
+  - **The rest are wrong values that `--fix` would store:**
+    - `TEXT(date,"mmmm")` in English where Excel used its own language;
+    - a Swedish `ÅÅÅÅ-MM-DD` format;
+    - `SUMPRODUCT` over whole columns;
+    - `ERROR.TYPE` inside `IF`;
+    - `SUMIFS` with `DATE` criteria.
+  - **The full list** is in `~/sheets-evals/wp01/corpus-op-out/unlike-excel.txt`.
+- **Goal:** each class either matches Excel or gives unknown, never a
+  value Excel would not show. Month and day names, and other formats
+  that depend on Excel's language, are unknown (the language rule).
+- **Acceptance:**
+  - the comparison from `~/sheets-evals/wp01/roundtrip.py` shows no
+    difference outside spaces;
+  - the engine corpus test does not get worse;
+  - tests cover each class.
 
 ### WP-11 An Excel oracle (waiting on Max)
 
