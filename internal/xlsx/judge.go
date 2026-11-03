@@ -90,7 +90,11 @@ func (j *judge) result(f *formulaAt) *judged {
 	if j.frozen[f] {
 		r = &judged{v: f.stored}
 	} else {
+		before := engine.EpochUses()
 		r = judgedOf(j.eng.Compute(f.sheet, f.row, f.col))
+		if j.eng.Date1904 && r.err == nil && engine.EpochUses() != before {
+			r = &judged{note: date1904Note, err: errUnsupported}
+		}
 		if r.err == nil && r.v.Kind == grid.Error && r.v.Text == "#NAME?" {
 			// Say which name Excel does not know.
 			isName := func(n string) bool { return j.rs.lookup(n, f.sheet) != nil }
@@ -259,3 +263,7 @@ func show(c grid.Cell) string {
 	}
 	return "nothing"
 }
+
+// date1904Note says why a result that turns serials into dates has no
+// value in a workbook of the 1904 date system.
+const date1904Note = "it works with dates, and this workbook counts dates in the 1904 system, which the sheets calculator does not"

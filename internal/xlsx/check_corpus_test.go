@@ -2,6 +2,7 @@ package xlsx
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/eemax/sheets/internal/formula"
 	"github.com/eemax/sheets/internal/grid"
+	"github.com/eemax/sheets/internal/xlsxtest"
 )
 
 // TestCheckCorpus runs sheets check --fix over a folder of workbooks and
@@ -56,6 +58,7 @@ func TestCheckCorpus(t *testing.T) {
 	sort.Strings(files)
 	opts := CheckOptions{Budget: 2 * time.Minute, Compare: 10 * time.Second}
 	var (
+		badOrder                                                                                               int
 		unreadable, nothing, fixed, refused, failedOpen, loFailed, secondChanged, vouchedChanged, otherChanged int
 		formulas, vouched, stored, replaced, dropped, prefixed, unknown, compared, agreed, differ              int
 		slowest                                                                                                time.Duration
@@ -75,6 +78,9 @@ func TestCheckCorpus(t *testing.T) {
 		res, err := CheckResults(p, data, opts)
 		if d := time.Since(start); d > slowest {
 			slowest, slowFile = d, filepath.Base(p)
+		}
+		if err == nil && res.FixError != "" {
+			err = errors.New(res.FixError)
 		}
 		if err != nil {
 			refused++
@@ -110,6 +116,10 @@ func TestCheckCorpus(t *testing.T) {
 			failedOpen++
 			t.Errorf("%s: sheets cannot open the fixed file: %v", filepath.Base(p), err)
 			continue
+		}
+		if err := xlsxtest.CheckOrder(res.Data); err != nil {
+			badOrder++
+			t.Errorf("%s: cells out of order: %v", filepath.Base(p), err)
 		}
 		v, o := promisesKept(before, after)
 		if len(v) > 0 {
@@ -161,7 +171,11 @@ func TestCheckCorpus(t *testing.T) {
 			t.Fatal(err)
 		}
 		again, err := CheckResults(name, res.Data, opts)
+		if err == nil && again.FixError != "" {
+			err = errors.New(again.FixError)
+		}
 		if err != nil {
+			secondChanged++
 			t.Errorf("%s: second run: %v", filepath.Base(p), err)
 		} else if again.Data != nil {
 			secondChanged++
@@ -179,8 +193,8 @@ func TestCheckCorpus(t *testing.T) {
 	t.Logf("formulas %d, results vouched for %d; changed cells: %d stored, %d stale replaced, %d stale dropped, %d prefixed; %d left unknown",
 		formulas, vouched, stored, replaced, dropped, prefixed, unknown)
 	t.Logf("stored results against the calculator: %d compared, %d agree, %d differ", compared, agreed, differ)
-	t.Logf("promises: %d fixed files sheets cannot open, %d LibreOffice cannot open (checked: %v), %d with a vouched result changed, %d with other values changed, %d changed by a second fix",
-		failedOpen, loFailed, soffice != "", vouchedChanged, otherChanged, secondChanged)
+	t.Logf("promises: %d fixed files sheets cannot open, %d LibreOffice cannot open (checked: %v), %d with a vouched result changed, %d with other values changed, %d changed by a second fix or failing on it, %d with cells out of order",
+		failedOpen, loFailed, soffice != "", vouchedChanged, otherChanged, secondChanged, badOrder)
 	t.Logf("slowest: %s, %s", slowFile, slowest.Round(time.Millisecond))
 	if excelDir != "" {
 		t.Logf("results stored, against Excel's: %d the same, %d different, %d Excel did not store", asExcel, unlikeExcel, notInExcel)

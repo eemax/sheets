@@ -235,3 +235,12 @@ func (s byRow) Swap(i, j int) {
 	s.t.rows[i], s.t.rows[j] = s.t.rows[j], s.t.rows[i]
 	s.t.ids[i], s.t.ids[j] = s.t.ids[j], s.t.ids[i]
 }
+
+// valueDeps are what a formula depends on for the values it reads: a
+// reference given whole to ROWS or COLUMNS (which read where it is) is no
+// edge, so =ROWS($A$2:A2) in A2 is not circular.
+func valueDeps(text string) formula.Deps {
+	d := formula.DepsOf(text)
+	d.Refs = formula.ValueRefs(text)
+	return d
+}

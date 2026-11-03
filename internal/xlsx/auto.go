@@ -306,3 +306,7 @@ func (a *Auto) SetNote(sheet string, row, col int, text, author string) error {
 func (a *Auto) SetLink(sheet string, row, col int, l *grid.Link, text string) error {
 	return a.on(func(e *Editor) error { return e.SetLink(sheet, row, col, l, text) })
 }
+
+func (a *Auto) SetArray(sheet string, rg grid.Range, text string) error {
+	return a.on(func(e *Editor) error { return e.SetArray(sheet, rg, text) })
+}

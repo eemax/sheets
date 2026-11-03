@@ -4,8 +4,31 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// epochUses counts the computations that turn serials into dates or back,
+// which depend on the workbook's date system: a workbook in the 1904
+// system counts days from 1904-01-01, which the calculator does not.
+var epochUses atomic.Int64
+
+// EpochUses tells how many such computations ran so far (in any engine):
+// a formula during whose computation the count moved depends on the date
+// system.
+func EpochUses() int64 { return epochUses.Load() }
+
+// civil and weekday as used by functions: they count as depending on the
+// date system (formatting, which knows the system, uses the plain ones).
+func civil(serial float64) (y, m, d int) {
+	epochUses.Add(1)
+	return civilDate(serial)
+}
+
+func weekday(serial float64) int {
+	epochUses.Add(1)
+	return weekdayOf(serial)
+}
 
 // Dates are serial numbers: days since 1899-12-30 in the 1900 system,
 // where Excel also counts a 29 February 1900 that never was (serial 60), so
@@ -13,6 +36,7 @@ import (
 
 // serialOf gives the serial of a civil date.
 func serialOf(y, m, d int) float64 {
+	epochUses.Add(1)
 	t := time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC)
 	days := math.Floor(t.Sub(time.Date(1899, 12, 31, 0, 0, 0, 0, time.UTC)).Hours()/24 + 0.5)
 	if days >= 60 { // on or after 1 March 1900, past the phantom 29 February
@@ -21,9 +45,9 @@ func serialOf(y, m, d int) float64 {
 	return days
 }
 
-// civil gives the date of a serial (its whole part): year, month, day.
+// civilDate gives the date of a serial (its whole part): year, month, day.
 // Serial 60 is the phantom 29 February 1900; serial 0 is 0 January 1900.
-func civil(serial float64) (y, m, d int) {
+func civilDate(serial float64) (y, m, d int) {
 	n := int(math.Floor(serial))
 	switch {
 	case n == 60:
@@ -69,6 +93,14 @@ func monthByName(s string) int {
 // in an English (US) locale: 1/2/2024 is 2 January, 2024-01-02, Jan 2,
 // 2024, 2-Jan-2024, January 2024, 13:30, 1:30 PM, and combinations.
 func parseDateTime(s string) (float64, bool) {
+	n, ok := parseDateTimeOf(s)
+	if ok {
+		epochUses.Add(1)
+	}
+	return n, ok
+}
+
+func parseDateTimeOf(s string) (float64, bool) {
 	t := strings.TrimSpace(s)
 	if t == "" {
 		return 0, false

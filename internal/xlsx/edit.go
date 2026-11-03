@@ -58,6 +58,9 @@ type Editor struct {
 	merges map[string][]grid.Range
 
 	sheetsChanged bool
+	// arraysSet are the legacy array formulas entered this session, by
+	// anchor.
+	arraysSet map[cellKey]grid.Range
 	// dropped notes, after saving, why a formula got no stored result,
 	// or what its error means.
 	dropped map[cellKey]string
@@ -495,10 +498,13 @@ func whenExcel(note string) string {
 	case strings.HasPrefix(note, "circular reference") || strings.Contains(note, "Excel computes it") || strings.Contains(note, "Excel updates it") || strings.Contains(note, "#NAME?"):
 		return note
 	case strings.Contains(note, "another workbook"):
-		return note + "; Excel updates it when that workbook is at hand and links are allowed (Data › Edit Links)"
+		return note + whenLinked
 	}
 	return note + "; Excel computes it on open"
 }
+
+// whenLinked says when Excel updates a link to another workbook.
+const whenLinked = "; Excel updates it when that workbook is at hand and links are allowed (Data › Edit Links)"
 
 // Evaluate is the value a cell holds after this session's edits: for a
 // formula, the result saving would store. Formula errors are Error cells.
@@ -554,15 +560,6 @@ func (e *Editor) Render() ([]byte, error) {
 	if err := e.f.SetCalcProps(&excelize.CalcPropsOptions{FullCalcOnLoad: &on}); err != nil {
 		return nil, err
 	}
-	// excelize does not maintain <dimension>; some readers trust it.
-	for sheet, ext := range e.extent {
-		if ext.Empty() {
-			ext = grid.Range{R1: 1, C1: 1, R2: 1, C2: 1}
-		}
-		if err := e.f.SetSheetDimension(sheet, ext.String()); err != nil {
-			return nil, err
-		}
-	}
 	if err := e.restyleWritten(); err != nil {
 		return nil, err
 	}
@@ -571,6 +568,16 @@ func (e *Editor) Render() ([]byte, error) {
 	}
 	if err := e.recalc(); err != nil {
 		return nil, err
+	}
+	// excelize does not maintain <dimension>; some readers trust it. Set
+	// after the results, which can fill the cells an array spills into.
+	for sheet, ext := range e.extent {
+		if ext.Empty() {
+			ext = grid.Range{R1: 1, C1: 1, R2: 1, C2: 1}
+		}
+		if err := e.f.SetSheetDimension(sheet, ext.String()); err != nil {
+			return nil, err
+		}
 	}
 	e.patches.stamp = true
 	buf, err := serialize(e.f, e.patches)
@@ -654,3 +661,27 @@ func writeAtomic(path string, buf []byte) error {
 
 // Close releases resources.
 func (e *Editor) Close() error { return e.f.Close() }
+
+// SetArray enters a legacy array formula (as with Ctrl+Shift+Enter) over
+// a range anchored at its first cell, stored as Excel stores it: functions
+// get their prefixes. Its result is laid out over the range when saved.
+func (e *Editor) SetArray(sheet string, rg grid.Range, text string) error {
+	if err := formula.Check(text); err != nil {
+		return fmt.Errorf("%s: =%s is not a valid formula: %v", grid.FormatRef(sheet, rg), text, err)
+	}
+	if err := e.unshareFormulas(sheet, rg.R1, rg.C1); err != nil {
+		return err
+	}
+	cell := grid.CellName(rg.R1, rg.C1)
+	e.noteFresh(sheet, rg.R1, rg.C1)
+	t, ref := excelize.STCellFormulaTypeArray, rg.String()
+	if err := e.f.SetCellFormula(sheet, cell, formula.ToFile(text), excelize.FormulaOpts{Type: &t, Ref: &ref}); err != nil {
+		return err
+	}
+	if e.arraysSet == nil {
+		e.arraysSet = map[cellKey]grid.Range{}
+	}
+	e.arraysSet[keyOf(sheet, rg.R1, rg.C1)] = rg
+	e.touch(sheet, rg.R1, rg.C1)
+	return nil
+}

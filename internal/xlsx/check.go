@@ -61,6 +61,9 @@ type CheckResult struct {
 	// changes nothing).
 	Before, After *grid.Workbook
 	Warnings      []string
+	// FixError says why the fix could not be worked out ("" when it
+	// could); nothing comes of it then.
+	FixError string
 }
 
 // Change is one cell fixing changes.
@@ -99,6 +102,7 @@ type Difference struct {
 // over to the full one (Auto), or the full one.
 type fixEditor interface {
 	Set(sheet string, row, col int, v input.Value) error
+	SetArray(sheet string, rg grid.Range, text string) error
 	Render() ([]byte, error)
 	Evaluate(sheet string, row, col int) (grid.Cell, string, bool)
 	Warnings() []string
@@ -158,7 +162,9 @@ func CheckResults(path string, data []byte, opts CheckOptions) (*CheckResult, er
 		err = fix(path, data, before, res, false)
 	}
 	if err != nil {
-		return nil, err
+		// What was found holds; the fix cannot be made.
+		res.Changes, res.Unknown, res.Skipped, res.Confirmed, res.Data, res.After = nil, nil, nil, 0, nil, before
+		res.FixError = err.Error()
 	}
 	return res, nil
 }
@@ -178,7 +184,7 @@ func (b *brokenPromise) Error() string {
 // the one read.
 func fix(path string, data []byte, before *grid.Workbook, res *CheckResult, prefix bool) (err error) {
 	var ed fixEditor
-	if from := StreamFrom(); from >= 0 && int64(len(data)) >= from && !spillsPending(before) {
+	if from := StreamFrom(); from >= 0 && int64(len(data)) >= from && !needsFull(before) {
 		ed, err = OpenAuto(path, data)
 	} else {
 		ed, err = OpenEditorData(path, data)
@@ -193,11 +199,17 @@ func fix(path string, data []byte, before *grid.Workbook, res *CheckResult, pref
 				if err != nil || !cell.Unprefixed {
 					return
 				}
+				if rg, ok := legacyArray(s, r, c); ok {
+					// Entered as an array formula (Ctrl+Shift+Enter): entered
+					// again as one, over the same range.
+					if e := ed.SetArray(s.Name, rg, cell.Formula); e != nil {
+						res.Skipped = append(res.Skipped, Unknown{Sheet: s.Name, Row: r, Col: c, Why: e.Error()})
+					}
+					return
+				}
 				if inArray(s, r, c) {
-					// Entered as an array formula (Ctrl+Shift+Enter), which
-					// writing it again would make a plain one.
 					res.Skipped = append(res.Skipped, Unknown{Sheet: s.Name, Row: r, Col: c,
-						Why: "an array formula (entered with Ctrl+Shift+Enter): enter it again in Excel"})
+						Why: "it lies in a dynamic array's result: enter the formula again with sheets set"})
 					return
 				}
 				if e := ed.Set(s.Name, r, c, input.Value{Formula: cell.Formula}); e != nil {
@@ -227,18 +239,78 @@ func fix(path string, data []byte, before *grid.Workbook, res *CheckResult, pref
 	return nil
 }
 
-// spillsPending tells whether a dynamic array's result is to be computed:
-// the full editor lays its result out over the cells it spills into,
-// where the streaming editor would store its first cell alone.
-func spillsPending(wb *grid.Workbook) bool {
+// needsFull tells whether fixing needs the full editor, which computes
+// some formulas the streaming editor cannot: an array over several cells
+// (dynamic, or entered with Ctrl+Shift+Enter), whose result the full
+// editor lays out over its cells, and INDIRECT or OFFSET, which look at
+// cells their arguments do not name.
+func needsFull(wb *grid.Workbook) bool {
 	for _, s := range wb.Sheets {
-		for _, sp := range s.Spills {
+		for i, sp := range append(append([]grid.Range{}, s.Spills...), s.Arrays...) {
+			if i >= len(s.Spills) && sp.Rows()*sp.Cols() < 2 {
+				continue // an array formula in one cell: either editor
+			}
 			if c := s.At(sp.R1, sp.C1); c != nil && c.Formula != "" && c.Pending {
 				return true
 			}
 		}
 	}
+	// A formula to compute that looks at cells its arguments do not name
+	// (INDIRECT, OFFSET): the streaming editor holds only what is named.
+	looks := false
+	for _, s := range wb.Sheets {
+		s.Each(s.Used(), func(r, c int, cell *grid.Cell) {
+			if looks || cell.Formula == "" || !cell.Pending {
+				return
+			}
+			for _, fn := range formula.CalledFunctions(cell.Formula) {
+				if unfollowed[fn] {
+					looks = true
+				}
+			}
+		})
+	}
+	return looks
+}
+
+// legacyArray finds the legacy array formula (not a dynamic array)
+// anchored at a cell.
+func legacyArray(s *grid.Sheet, row, col int) (grid.Range, bool) {
+	for _, sp := range s.Spills {
+		if sp.R1 == row && sp.C1 == col {
+			return grid.Range{}, false
+		}
+	}
+	for _, a := range s.Arrays {
+		if a.R1 == row && a.C1 == col {
+			return a, true
+		}
+	}
+	return grid.Range{}, false
+}
+
+// anchorVouched tells whether a cell lies in the range of an array
+// formula whose result Excel stored and vouches for.
+func anchorVouched(s *grid.Sheet, row, col int) bool {
+	for _, a := range append(append([]grid.Range{}, s.Arrays...), s.Spills...) {
+		if a.Contains(row, col) {
+			if c := s.At(a.R1, a.C1); c != nil && c.Formula != "" && !c.Pending {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// arrayChange names the change of a cell of an array formula's result.
+func arrayChange(b, a grid.Cell) string {
+	switch {
+	case a.Kind == grid.Empty:
+		return "cleared"
+	case b.Kind == grid.Empty:
+		return "filled"
+	}
+	return "replaced"
 }
 
 // inArray tells whether a cell lies in a legacy array formula's range.
@@ -280,8 +352,10 @@ func compareFiles(before, after *grid.Workbook, ed fixEditor, res *CheckResult) 
 			a := sa.Get(r, c)
 			if b.Formula == "" && a.Formula == "" {
 				if !sameValue(*b, a) {
-					if arrays(r, c) {
-						res.Changes = append(res.Changes, Change{Kind: map[bool]string{true: "cleared", false: "filled"}[a.Kind == grid.Empty], Sheet: sb.Name, Row: r, Col: c, Before: valueOnly(*b), After: valueOnly(a)})
+					if anchorVouched(sb, r, c) {
+						brk(sb.Name, r, c, "array result "+show(valueOnly(*b))+" → "+show(valueOnly(a)))
+					} else if arrays(r, c) {
+						res.Changes = append(res.Changes, Change{Kind: arrayChange(*b, a), Sheet: sb.Name, Row: r, Col: c, Before: valueOnly(*b), After: valueOnly(a)})
 					} else {
 						brk(sb.Name, r, c, "value "+show(valueOnly(*b))+" → "+show(valueOnly(a)))
 					}
@@ -308,14 +382,6 @@ func compareFiles(before, after *grid.Workbook, ed fixEditor, res *CheckResult) 
 				return
 			}
 			switch {
-			case formula.DepsOf(b.Formula).External:
-				// Only Excel can update a link to another workbook: the
-				// result stored is kept, which sheets cannot vouch for.
-				if !sameValue(bv, av) {
-					brk(sb.Name, r, c, "linked result "+show(bv)+" → "+show(av))
-					return
-				}
-				res.Unknown = append(res.Unknown, Unknown{Sheet: sb.Name, Row: r, Col: c, Why: "it links to another workbook, which only Excel can update; the result stored is kept"})
 			case hasA && bv.Kind == grid.Empty:
 				res.Changes = append(res.Changes, Change{Kind: "stored", Sheet: sb.Name, Row: r, Col: c, After: av})
 			case hasA && sameValue(bv, av):
@@ -335,7 +401,7 @@ func compareFiles(before, after *grid.Workbook, ed fixEditor, res *CheckResult) 
 			if b := sb.At(r, c); b != nil && !b.IsEmpty() {
 				return
 			}
-			if a.Formula != "" || !arrays(r, c) {
+			if a.Formula != "" || !arrays(r, c) || anchorVouched(sb, r, c) {
 				brk(sb.Name, r, c, "new content "+show(valueOnly(*a)))
 				return
 			}
@@ -354,10 +420,13 @@ func unknownWhy(ed fixEditor, sheet string, r, c int, a grid.Cell) string {
 		return unprefixedNote(a.Formula)
 	}
 	if formula.DepsOf(a.Formula).External {
-		return "it links to another workbook, which only Excel can update"
+		return linkNote
 	}
 	_, note, _ := ed.Evaluate(sheet, r, c)
-	note = strings.TrimSuffix(note, "; Excel computes it on open")
+	// Why alone, without when Excel gives it a result (see whenExcel).
+	for _, when := range []string{"; Excel computes it on open", whenLinked} {
+		note = strings.TrimSuffix(note, when)
+	}
 	if note == "" || note == "Excel computes it on open" {
 		note = "the sheets calculator cannot compute it"
 	}
@@ -410,6 +479,35 @@ func compare(wb *grid.Workbook, res *CheckResult, budget time.Duration) {
 		}
 		return engine.Value{}, false
 	}
+	// Formulas whose results Excel did not vouch for, by lower-cased
+	// sheet: a formula reading one is not compared, as the difference
+	// could be the input's.
+	unvouched := map[string][][2]int{}
+	for _, s := range wb.Sheets {
+		s.Each(s.Used(), func(r, c int, cell *grid.Cell) {
+			if cell.Formula != "" && !vouched(*cell) {
+				k := strings.ToLower(s.Name)
+				unvouched[k] = append(unvouched[k], [2]int{r, c})
+			}
+		})
+	}
+	readsUnvouched := func(sheet string, row, col int, text string) bool {
+		if len(unvouched) == 0 {
+			return false
+		}
+		refs, ok := rs.ranges(sheet, row, col, valueDeps(text), 0)
+		if !ok {
+			return true
+		}
+		for _, ref := range refs {
+			for _, at := range unvouched[strings.ToLower(ref.Sheet)] {
+				if ref.Range.Contains(at[0], at[1]) {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	for _, s := range wb.Sheets {
 		s.Each(s.Used(), func(r, col int, cell *grid.Cell) {
 			if !vouched(*cell) {
@@ -423,7 +521,15 @@ func compare(wb *grid.Workbook, res *CheckResult, budget time.Duration) {
 				res.NotCompared++
 				return
 			}
+			if readsUnvouched(s.Name, r, col, book.text(s.Name, r, col, cell.Formula)) {
+				res.Uncomputable++
+				return
+			}
+			before := engine.EpochUses()
 			v, ok := evalSafely(eng, s.Name, r, col, book.text(s.Name, r, col, cell.Formula))
+			if wb.Date1904 && engine.EpochUses() != before {
+				ok = false // it works with dates, in the 1904 system
+			}
 			if _, _, _, array := book.ArrayAt(s.Name, r, col); array {
 				eng.Reset() // its array would stand in for the results Excel stored
 			}

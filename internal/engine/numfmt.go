@@ -540,7 +540,7 @@ func formatDate(v float64, sec string, date1904 bool) string {
 	days := math.Floor(ticks / (86400 * scale))
 	rem := ticks - days*86400*scale
 	v = ticks / (86400 * scale)
-	y, mo, d := civil(days)
+	y, mo, d := civilDate(days)
 	secs := int(math.Floor(rem / scale))
 	h := secs / 3600
 	mi := secs / 60 % 60
@@ -670,9 +670,9 @@ func formatDate(v float64, sec string, date1904 bool) string {
 			case t.n == 2:
 				b.WriteString(pad(d, 2))
 			case t.n == 3:
-				b.WriteString(dayNames[weekday(v)][:3])
+				b.WriteString(dayNames[weekdayOf(v)][:3])
 			default:
-				b.WriteString(dayNames[weekday(v)])
+				b.WriteString(dayNames[weekdayOf(v)])
 			}
 		case 'h':
 			hh := h
@@ -732,7 +732,7 @@ func formatDate(v float64, sec string, date1904 bool) string {
 
 // weekday gives 0 for Sunday .. 6 for Saturday. Excel counts serial 1 as
 // a Sunday and every serial on from it, the phantom 29 February included.
-func weekday(serial float64) int {
+func weekdayOf(serial float64) int {
 	n := int(math.Floor(serial))
 	return ((n-1)%7 + 7) % 7
 }

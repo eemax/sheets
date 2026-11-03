@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -169,6 +170,9 @@ func (a *app) check(path string, fix bool) (*checkResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	if fix && cr.FixError != "" {
+		return nil, errors.New(cr.FixError)
+	}
 	fc := &checkFormulas{Total: cr.Formulas, Vouched: cr.Vouched, Missing: cr.Missing, Stale: cr.Stale, Unprefixed: cr.Unprefixed,
 		Confirmed: cr.Confirmed, Unknown: len(cr.Unknown)}
 	for _, c := range cr.Changes {
@@ -194,6 +198,10 @@ func (a *app) check(path string, fix bool) (*checkResult, error) {
 		wb = cr.After
 	} else {
 		own = append(own, fixable(cr.Changes)...)
+	}
+	if cr.FixError != "" {
+		own = append(own, checkFinding{Rule: "fix-failed", Severity: lint.Error,
+			Message: "sheets cannot work out what --fix would store, so the results above are not checked: " + cr.FixError})
 	}
 	own = append(own, unknownFindings(cr.Unknown, !fix)...)
 	own = append(own, skippedFindings(cr)...)
@@ -281,7 +289,7 @@ func changeGroups(cs []xlsx.Change) []checkChange {
 			msg = fmt.Sprintf("replaced %s marked out of date with the computed %s (%s: %s → %s)", countOf(n, "result"), map[bool]string{true: "one", false: "ones"}[n == 1], cellName(c), showCell(c.Before), showCell(c.After))
 		case "dropped":
 			root, _ := rootReason(c.Why)
-			msg = fmt.Sprintf("removed %s marked out of date that sheets cannot compute (%s); Excel computes %s on open", countOf(n, "result"), root, map[bool]string{true: "it", false: "them"}[n == 1])
+			msg = fmt.Sprintf("removed %s marked out of date that sheets cannot compute (%s)", countOf(n, "result"), root) + whenExcel(root, n)
 		case "filled":
 			msg = fmt.Sprintf("filled %s of an array formula's result", countOf(n, "cell"))
 		case "cleared":
@@ -358,9 +366,7 @@ func unknownFindings(us []xlsx.Unknown, report bool) []checkFinding {
 		if stale {
 			msg += fmt.Sprintf("; %s a result marked as out of date, which sheets check --fix removes", map[bool]string{true: "it holds", false: "they hold"}[n == 1])
 		}
-		if !strings.Contains(root, "#NAME?") && !strings.Contains(root, "another workbook") && !strings.HasPrefix(root, "circular") {
-			msg += "; Excel computes " + map[bool]string{true: "it", false: "them"}[n == 1] + " on open"
-		}
+		msg += whenExcel(root, n)
 		out = append(out, checkFinding{Rule: "unknown-result", Severity: lint.Warning, Sheet: x.sheet, Cells: capCells(x.cells), Count: n, Message: msg})
 	}
 	return out
@@ -421,12 +427,42 @@ func rootReason(why string) (root string, via bool) {
 	const mark = ", whose result is unknown here ("
 	for strings.HasPrefix(why, "it reads ") {
 		i := strings.Index(why, mark)
-		if i < 0 || !strings.HasSuffix(why, ")") {
+		if i < 0 {
 			break
 		}
-		why, via = why[i+len(mark):len(why)-1], true
+		// The parenthesis that closes the one the mark opens.
+		inner, depth, end := why[i+len(mark):], 1, -1
+		for k, r := range inner {
+			switch r {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			if depth == 0 {
+				end = k
+				break
+			}
+		}
+		if end < 0 {
+			break
+		}
+		why, via = inner[:end], true
 	}
 	return why, via
+}
+
+// whenExcel says when Excel gives formulas unknown for a reason their
+// results: on open, but not for #NAME?, a circular reference, or a link
+// to another workbook.
+func whenExcel(root string, n int) string {
+	switch {
+	case strings.Contains(root, "#NAME?") || strings.HasPrefix(root, "circular"):
+		return ""
+	case strings.Contains(root, "another workbook"):
+		return "; Excel updates " + map[bool]string{true: "it", false: "them"}[n == 1] + " when that workbook is at hand"
+	}
+	return "; Excel computes " + map[bool]string{true: "it", false: "them"}[n == 1] + " on open"
 }
 
 func showCell(c grid.Cell) string {
