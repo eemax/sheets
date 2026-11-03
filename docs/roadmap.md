@@ -9,7 +9,7 @@ This file is the plan: a status board, then Horizon 1 as work packages.
 | Package | What | Wave | Status |
 |---|---|---|---|
 | WP-01 | `sheets check` | 1 | working |
-| WP-07a | Excel check, round 2: what sheets writes today | 1 | working |
+| WP-07a | Excel check, round 2: what sheets writes today | 1 | auditing |
 | WP-08 | Evals that measure the claims | 1 | planned |
 | WP-02 | Experiment: does `check` cut Python's silent defects? | 2 | planned |
 | WP-05 | `explain` and `trace` | 2 | planned |
@@ -20,6 +20,8 @@ This file is the plan: a status board, then Horizon 1 as work packages.
 | WP-10 | Skill and docs for the new position | 4 | planned |
 | WP-07b | Excel check: the new features; then Max opens the pack in Excel | 4 | planned |
 | WP-11 | An Excel oracle: real Excel computing, through Microsoft Graph | — | waiting on Max |
+| WP-12 | Fix: a dynamic array set on a sheet the same command adds is saved corrupt | 1 | planned |
+| WP-13 | Fix: render computes what read calls unknown; dates written into narrow columns show ######## | — | planned |
 
 **Gate after wave 2.** WP-02's verdict decides whether the position holds
 (see the kill criterion in the vision). Max reviews it before wave 3.
@@ -234,6 +236,34 @@ the definition of done in [orchestration.md](orchestration.md).
 - **Acceptance:** the trigger eval (`evals/triggers.py`) still chooses the
   skill when it should.
 - **Depends on:** WP-01, WP-04, WP-05, WP-06.
+
+### WP-12 Fix: a corrupt sheet from a dynamic array on a new sheet
+
+- **Found by:** WP-07a's builder.
+- **Reproduction:** `printf '%s\n' Name d b a c | sheets write n.xlsx Data`,
+  then `sheets set n.xlsx S!A1 x S!B3 '=SEQUENCE(4)' S!B8 u`.
+- **What goes wrong:** the new sheet's XML holds a second `B3` cell inside
+  row 8, and its rows come out of order. Without B8, row 3 appears twice.
+  The same happens through `sheets script` (`addWorksheet`, then
+  `setFormula`), where a later value also lands in the wrong cell.
+- **Acceptance:**
+  - the reproduction gives valid sheet XML: rows in order and unique,
+    cells in order and unique, the array's anchor `ref` spanning the
+    spill;
+  - a test covers the case, in the full and the streaming editor and
+    through `script`;
+  - `excel-check/` file 20c is then built as a normal entry.
+
+### WP-13 Fix: render and narrow columns
+
+- **Render and unknown values:** `render` draws values that `read` calls
+  unknown (an unprefixed function, which Excel shows as `#NAME?`). Render
+  should show what Excel would show, or the unknown marker.
+- **Dates in default-width columns:** a date that `set` or `script` writes
+  into one shows `########`. Writing a date should widen the column as
+  Excel does when you type one.
+- **Smaller:** a long decimal in General format draws as `########`
+  (Excel shows 0.348837), and TRUE and FALSE should be centred.
 
 ### WP-11 An Excel oracle (waiting on Max)
 
