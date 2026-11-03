@@ -49,6 +49,7 @@ const (
 	flagNum
 	flagText
 	flagFormula
+	flagUnprefixed
 )
 
 // MarshalBinary encodes the sheets, names and formats. Path, Size and
@@ -89,6 +90,9 @@ func (w *Workbook) MarshalBinary() ([]byte, error) {
 				}
 				if c.Shared {
 					f |= flagShared
+				}
+				if c.Unprefixed {
+					f |= flagUnprefixed
 				}
 				if c.Fmt != 0 {
 					f |= flagFmt
@@ -238,7 +242,7 @@ func (w *Workbook) UnmarshalBinary(data []byte) error {
 			for i := 0; i < k && d.err == nil; i++ {
 				c := &s.rows[r][i]
 				f := d.uvarint()
-				if f >= flagFormula<<1 || Kind(f&7) > Error {
+				if f >= flagUnprefixed<<1 || Kind(f&7) > Error {
 					return errCorrupt
 				}
 				c.Kind = Kind(f & 7)
@@ -246,6 +250,7 @@ func (w *Workbook) UnmarshalBinary(data []byte) error {
 				c.Pending = f&flagPending != 0
 				c.Computed = f&flagComputed != 0
 				c.Shared = f&flagShared != 0
+				c.Unprefixed = f&flagUnprefixed != 0
 				if f&flagFmt != 0 {
 					c.Fmt = uint16(d.count(len(h.Formats) - 1))
 				}

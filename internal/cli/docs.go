@@ -40,7 +40,7 @@ var docTopics = []struct {
 	{"ranges", []string{"clear", "copy", "move", "sort", "replace"}, "Moving data: clear, copy, move, sort, replace"},
 	{"notes", []string{"note", "link", "links"}, "Notes and links"},
 	{"csv", []string{"convert"}, "CSV files"},
-	{"check", []string{"lint", "diff"}, "Checking: lint and diff"},
+	{"check", []string{"lint", "diff", "fix"}, "Checking: check, lint and diff"},
 	{"charts", []string{"chart"}, "Charts"},
 	{"render", nil, "Looking at a sheet: render"},
 	{"safety", []string{"undo", "dry-run"}, "Safety: dry runs and undo"},

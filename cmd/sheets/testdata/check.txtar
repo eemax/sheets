@@ -1,0 +1,106 @@
+# check reports what other tools left behind and writes nothing; --fix
+# stores every result sheets can compute and adds missing prefixes, as
+# one change undo takes back; a second --fix changes nothing.
+fixture unprefixed.xlsx stale.xlsx vouched.xlsx cached.xlsx
+cp unprefixed.xlsx unprefixed.orig
+
+# openpyxl stores no results, and leaves the prefixes off.
+! exec sheets check unprefixed.xlsx
+cmp stdout report.out
+cmp unprefixed.xlsx unprefixed.orig
+
+exec sheets --dry-run check --fix unprefixed.xlsx
+stdout '^dry run: nothing was saved$'
+stdout '^--fix would change:$'
+cmp unprefixed.xlsx unprefixed.orig
+
+exec sheets check --fix unprefixed.xlsx
+cmp stdout fixed.out
+exec sheets read unprefixed.xlsx C2:F2
+stdout '^2	PK1	PK1,XX2,PK3	30	60$'
+exec sheets lint unprefixed.xlsx
+stdout 'no problems found'
+
+exec sheets check --fix unprefixed.xlsx
+stdout '^unprefixed.xlsx: 4 formulas; results: 4 stored and vouched for, 0 missing, 0 stale$'
+stdout '^nothing to fix$'
+
+exec sheets undo unprefixed.xlsx
+cmp unprefixed.xlsx unprefixed.orig
+
+# XlsxWriter stores 0 for every formula, marked out of date. What sheets
+# cannot compute loses its stale 0, and says why.
+! exec sheets check stale.xlsx
+stdout '^error    Data!C2, C3, C6, C7, C8  5 formulas hold a result the file marks as out of date that differs from what sheets computes \(C2 holds 0, sheets gets 15\): sheets check --fix replaces them$'
+stdout '^warning  Data!C4, C5  +2 formulas have no result sheets can know: BAHTTEXT is not supported by the sheets calculator \(for 1 of them, in a formula they read\); they hold a result marked as out of date, which sheets check --fix removes; Excel computes them on open$'
+! exec sheets check --fix stale.xlsx
+stdout '^prefixed  Data!C3 +added the _xlfn. prefix Excel needs to 1 formula: MAXIFS$'
+stdout '^replaced  Data!C2, C3, C6, C7, C8  replaced 5 results marked out of date with the computed ones \(C2: 0 → 15\)$'
+stdout '^dropped   Data!C4, C5 +removed 2 results marked out of date that sheets cannot compute \(BAHTTEXT is not supported by the sheets calculator\); Excel computes them on open$'
+stdout '^error    Data!C6 +1 cell shows #DIV/0!$'
+exec sheets read stale.xlsx C2:C8
+stdout '^2	15$'
+stdout '^3	5$'
+stdout '^4	\?$'
+stdout '^7	83$'
+exec sheets check --fix stale.xlsx --fail-on never
+stdout '^nothing to fix$'
+
+# A result Excel stored is kept, even where the calculator disagrees (a
+# note); only the missing one is stored.
+! exec sheets check vouched.xlsx --fail-on note
+stdout '^note   Data!C3  the sheets calculator gets another result than Excel stored for 1 formula \(C3 =B2\*2: Excel 999, sheets 10\); Excel.s result is kept$'
+exec sheets check --fix vouched.xlsx
+stdout '^stored  Data!C4  stored 1 computed result where there was none \(C4 = 9\)$'
+exec sheets read vouched.xlsx C2:C4
+stdout '^3	999$'
+stdout '^4	9$'
+
+# Nothing to do: the file is not written.
+cp cached.xlsx cached.orig
+exec sheets check --fix cached.xlsx
+stdout '^nothing to fix$'
+stdout '^no problems found$'
+cmp cached.xlsx cached.orig
+! exec sheets undo cached.xlsx
+
+# JSON.
+cp unprefixed.orig u.xlsx
+! exec sheets check u.xlsx --json
+stdout '"formulas":\{"total":4,"vouched":0,"missing":4,"stale":0,"unprefixed":3,"computable":4,"confirmed":0,"unknown":0\}'
+stdout '"rule":"missing-result","severity":"error","sheet":"Data","cells":\["C2","D2","E2","F2"\],"count":4'
+exec sheets check u.xlsx --json --fix
+stdout '"fixed":true'
+stdout '"change":"prefixed","sheet":"Data","cells":\["C2","D2","E2"\],"count":3'
+
+# A CSV file holds values: lint only.
+exec sheets check data.csv
+stdout '^data.csv: a CSV file holds values, so only lint applies$'
+stdout '^note +data!A3 +1 value in Item has leading or trailing spaces'
+! exec sheets check --fix data.csv --fail-on note
+stdout '^nothing to fix$'
+cmp data.csv data.orig
+
+-- data.csv --
+Item,Units
+a,1
+b ,2
+c,3
+-- data.orig --
+Item,Units
+a,1
+b ,2
+c,3
+-- report.out --
+unprefixed.xlsx: 4 formulas; results: 0 stored and vouched for, 4 missing, 0 stale (sheets computes 4)
+2 errors, 0 warnings, 0 notes
+error  Data!C2, D2, E2, F2  4 formulas have no stored result, so pandas, openpyxl and previews read blanks; sheets computes them (C2 = "PK1"): sheets check --fix stores them
+error  Data!C2, D2, E2      3 formulas like =IFERROR(INDEX($A$2:$A$4,AGGREGATE(15,6,(ROW($A$2:$A$4)-1)/(LEFT($A$2:$A$4,2)="PK"),1)),"") call AGGREGATE, TEXTJOIN, MAXIFS without the _xlfn. prefix Excel needs for functions added after 2007 (openpyxl leaves it off), so Excel shows #NAME? until they are entered again; sheets check --fix adds it
+next: sheets check --fix unprefixed.xlsx
+-- fixed.out --
+unprefixed.xlsx: 4 formulas; results: 0 stored and vouched for, 4 missing, 0 stale (sheets computes 4)
+fixed (one change; sheets undo unprefixed.xlsx takes it back):
+prefixed  Data!C2, D2, E2      added the _xlfn. prefix Excel needs to 3 formulas: AGGREGATE, TEXTJOIN, MAXIFS
+stored    Data!C2, D2, E2, F2  stored 4 computed results where there were none (C2 = "PK1")
+no problems found
+next: sheets diff unprefixed.xlsx

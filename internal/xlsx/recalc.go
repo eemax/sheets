@@ -721,7 +721,7 @@ func computeResults(st calcState) (calcResult, error) {
 		if len(list) > 5 {
 			list = append(list[:5:5], fmt.Sprintf("and %d more", len(unprefixed)-5))
 		}
-		out.warnings = append(out.warnings, fmt.Sprintf("%s that this change reaches %s functions stored without the _xlfn. prefix Excel needs, so Excel shows #NAME? for %s until %s entered again (sheets set adds it): %s",
+		out.warnings = append(out.warnings, fmt.Sprintf("%s that this change reaches %s functions stored without the _xlfn. prefix Excel needs, so Excel shows #NAME? for %s until %s entered again (sheets check --fix adds it): %s",
 			countOf(len(unprefixed), "formula"), map[bool]string{true: "calls", false: "call"}[len(unprefixed) == 1],
 			map[bool]string{true: "it", false: "them"}[len(unprefixed) == 1], map[bool]string{true: "it is", false: "they are"}[len(unprefixed) == 1], strings.Join(list, ", ")))
 	}

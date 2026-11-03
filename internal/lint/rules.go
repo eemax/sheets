@@ -433,9 +433,9 @@ func unprefixedFunctions(formulas []formulaCell, only func(*grid.Sheet) bool) []
 	for _, s := range order {
 		f, cells, one := first[s], bySheet[s], len(bySheet[s]) == 1
 		out = append(out, Finding{Rule: "unprefixed-function", Severity: Error, Sheet: s.Name, Cells: cells, row: f.row, col: f.col,
-			Message: fmt.Sprintf("%s like =%s %s %s without the _xlfn. prefix Excel needs for functions added after 2007 (openpyxl leaves it off), so Excel shows #NAME? until %s entered again; set %s again with sheets set, which adds it",
+			Message: fmt.Sprintf("%s like =%s %s %s without the _xlfn. prefix Excel needs for functions added after 2007 (openpyxl leaves it off), so Excel shows #NAME? until %s entered again; sheets check --fix adds it",
 				countOf(len(cells), "formula"), f.text, map[bool]string{true: "calls", false: "call"}[one], strings.Join(fns[s], ", "),
-				map[bool]string{true: "it is", false: "they are"}[one], map[bool]string{true: "it", false: "them"}[one])})
+				map[bool]string{true: "it is", false: "they are"}[one])})
 	}
 	return out
 }

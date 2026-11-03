@@ -219,7 +219,7 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 		}
 	}
 
-	book := &cellsBook{cells: map[cellKey]cellEntry{}, sheets: map[string]string{}, used: s.usedNow, rs: rs}
+	book := &cellsBook{cells: map[cellKey]cellEntry{}, sheets: map[string]string{}, used: s.usedNow, rs: rs, arrays: s.arraysNow}
 	for _, sh := range s.wb.Sheets {
 		book.sheets[strings.ToLower(sh.Name)] = sh.Name
 	}
@@ -251,6 +251,83 @@ type cellsBook struct {
 	sheets map[string]string // lower-cased name to name
 	used   func(sheet string) grid.Range
 	rs     *resolver
+	// arrays are a sheet's array formulas, where they are now; arrayAt
+	// finds them, by lower-cased sheet.
+	arrays  func(sheet string) []grid.Range
+	arrayAt map[string]*arrayIndex
+}
+
+// ArrayAt finds the array formula covering a cell: one entered with
+// Ctrl+Shift+Enter computes as an array, as Excel computes it.
+func (b *cellsBook) ArrayAt(sheet string, row, col int) (int, int, engine.Area, bool) {
+	if b.arrays == nil {
+		return 0, 0, engine.Area{}, false
+	}
+	k := strings.ToLower(sheet)
+	x, ok := b.arrayAt[k]
+	if !ok {
+		x = newArrayIndex(b.arrays(sheet))
+		if b.arrayAt == nil {
+			b.arrayAt = map[string]*arrayIndex{}
+		}
+		b.arrayAt[k] = x
+	}
+	if a, ok := x.at(row, col); ok {
+		return a.R1, a.C1, engine.Area{R1: a.R1, C1: a.C1, R2: a.R2, C2: a.C2}, true
+	}
+	return 0, 0, engine.Area{}, false
+}
+
+// arrayIndex finds the array formula a cell lies in: by cell for the
+// small ones, by going through the large ones.
+type arrayIndex struct {
+	cells map[[2]int]grid.Range
+	large []grid.Range
+}
+
+func newArrayIndex(rs []grid.Range) *arrayIndex {
+	x := &arrayIndex{cells: map[[2]int]grid.Range{}}
+	for _, a := range rs {
+		if a.Rows()*a.Cols() > 4096 {
+			x.large = append(x.large, a)
+			continue
+		}
+		for r := a.R1; r <= a.R2; r++ {
+			for c := a.C1; c <= a.C2; c++ {
+				x.cells[[2]int{r, c}] = a
+			}
+		}
+	}
+	return x
+}
+
+func (x *arrayIndex) at(row, col int) (grid.Range, bool) {
+	if a, ok := x.cells[[2]int{row, col}]; ok {
+		return a, true
+	}
+	for _, a := range x.large {
+		if a.Contains(row, col) {
+			return a, true
+		}
+	}
+	return grid.Range{}, false
+}
+
+// arraysNow lists a sheet's array formulas where they are now, but for
+// those whose first cell this session wrote.
+func (s *StreamEditor) arraysNow(sheet string) []grid.Range {
+	sh := s.wb.Sheet(sheet)
+	if sh == nil {
+		return nil
+	}
+	var out []grid.Range
+	for _, a := range sh.Arrays {
+		now, ok := s.area(sh.Name, a, false)
+		if ok && s.edit(sh.Name, now.R1, now.C1) == nil {
+			out = append(out, now)
+		}
+	}
+	return out
 }
 
 type cellEntry struct {

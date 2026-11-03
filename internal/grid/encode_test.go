@@ -33,6 +33,7 @@ func sampleWorkbook() *Workbook {
 	s.Set(4, 1, Cell{Kind: Text, Text: "North"}) // repeated string
 	s.Set(4, 2, Cell{Kind: Number, Num: math.Copysign(0, -1)})
 	s.Set(4, 3, Cell{Formula: "B4*2", Pending: true})
+	s.Set(4, 4, Cell{Formula: "MAXIFS(B3:B4,A3:A4,\"N*\")", Pending: true, Unprefixed: true})
 	s.Set(5, 1, Cell{Kind: Bool, Bool: true})
 	s.Set(5, 2, Cell{Kind: Error, Text: "#DIV/0!", Formula: "1/0"})
 	s.Set(5, 3, Cell{Kind: Number, Num: math.Inf(-1)})
