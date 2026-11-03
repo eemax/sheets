@@ -20,7 +20,7 @@ This file is the plan: a status board, then Horizon 1 as work packages.
 | WP-10 | Skill and docs for the new position | 4 | planned |
 | WP-07b | Excel check: the new features; then Max opens the pack in Excel | 4 | planned |
 | WP-11 | An Excel oracle: real Excel computing, through Microsoft Graph | — | waiting on Max |
-| WP-12 | Fix: a dynamic array set on a sheet the same command adds is saved corrupt | 1 | planned |
+| WP-12 | Fix: a dynamic array set on a sheet the same command adds is saved corrupt | 1 | auditing |
 | WP-13 | Fix: render computes what read calls unknown; dates written into narrow columns show ######## | — | planned |
 
 **Gate after wave 2.** WP-02's verdict decides whether the position holds
