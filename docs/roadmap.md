@@ -24,7 +24,8 @@ This file is the plan: a status board, then Horizon 1 as work packages.
 | WP-13 | Fix: render computes what read calls unknown; dates written into narrow columns show ######## | — | planned |
 | WP-14 | Engine: what it computes unlike Excel becomes unknown, so check --fix never stores it | — | planned |
 | WP-15 | Fix: spills lost by a script's sheet copy, and after deleting a row inside a spill | — | planned |
-| WP-16 | Fix: every edit Excel refuses inside an array is refused; hand over to the full editor only when an edit reaches an array | — | working |
+| WP-16 | Fix: every edit Excel refuses inside an array is refused; hand over to the full editor only when an edit reaches an array | — | done |
+| WP-18 | Fix: moving or copying a plain range formula makes it spill; sort refuses single-cell dynamic arrays | — | planned |
 
 **Parked (Max, 2026-11-03):** whatever needs Excel installed. That's
 WP-07b, and Max opening the Excel check pack.
@@ -334,6 +335,25 @@ the definition of done in [orchestration.md](orchestration.md).
   - plain edits on large workbooks are back to their earlier speed;
   - tests in both editors.
 - **Repro files:** the auditor's, copied to `~/sheets-evals/wave1-audit/`.
+
+### WP-18 Fix: formula kinds in move, copy and sort
+
+- **Found by:** WP-16's last audit. Both predate it.
+- **Move and copy:** moving or copying the cell of a plain formula that
+  reads a range (`=B1:B2*100`, implicit intersection) turns it into a
+  dynamic array that spills. Excel keeps it plain: at F5, F1's formula
+  shows `#VALUE!`. The cause is `put`, through `setFormulaAs`, then
+  `dynamicFormula`. Repro: `~/sheets-evals/wave1-audit/k1.xlsx`.
+- **Sort:** it refuses rows holding a single-cell dynamic array (`cm="1"`,
+  a ref of the cell itself), which Excel 365 saves for many ordinary
+  formulas that use arrays. Excel sorts them. 110 of the 800 corpus
+  workbooks hold such cells.
+- **Acceptance:**
+  - formulas keep their kind (plain, legacy array, dynamic array) through
+    move, copy and sort, as through row and column edits now;
+  - the kind checker in `~/sheets-evals/wave1-audit/bin/` (kcheck.py)
+    finds nothing;
+  - tests in both editors.
 
 ### WP-11 An Excel oracle (waiting on Max)
 
