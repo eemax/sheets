@@ -19,7 +19,7 @@ This file is the plan: a status board, then Horizon 1 as work packages.
 | WP-09 | Receipts | 4 | planned |
 | WP-10 | Skill and docs for the new position | 4 | planned |
 | WP-07b | Excel check: the new features; then Max opens the pack in Excel | 4 | parked |
-| WP-11 | An Excel oracle: real Excel computing, through Microsoft Graph | — | waiting on Max |
+| WP-11 | An Excel oracle: real Excel computing, through Microsoft Graph | — | waiting on Max (Business Basic tenant) |
 | WP-12 | Fix: a dynamic array set on a sheet the same command adds is saved corrupt | 1 | done |
 | WP-13 | Fix: render computes what read calls unknown; dates written into narrow columns show ######## | — | planned |
 | WP-14 | Engine: what it computes unlike Excel becomes unknown, so check --fix never stores it | — | planned |
@@ -344,8 +344,14 @@ the definition of done in [orchestration.md](orchestration.md).
   - the engine's results;
   - the files sheets writes (Excel opens them without repairing them);
   - SpreadsheetBench grading, without LibreOffice's gaps.
-- **Needs:** a Microsoft 365 account Max chooses, with its token in `sec`.
-  Nothing starts until he says which account.
+- **Route (Max, 2026-11-03): a Microsoft 365 Business Basic tenant of
+  Max's own.**
+  - **Why business:** Graph's workbook API works only on OneDrive for
+    Business and SharePoint, so a personal plan won't do.
+  - **Not:** his New Wave Group work account, a client's tenant.
+  - **Setup is Max's step:** buying the plan and registering the app.
+    The token then goes into `sec`.
+  - **Until then:** nothing starts.
 - **Acceptance:** a script uploads a workbook, recalculates, and compares
   every formula's value with what sheets stores. It runs on the
   excel-check pack and a corpus sample, and reports where they differ.

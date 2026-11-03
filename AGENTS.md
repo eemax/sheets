@@ -67,6 +67,10 @@ and CSV files without Excel. Module `github.com/eemax/sheets`.
 
   On sheets people made, `fmt` replaces their look with this style rather
   than tidying it.
+- **The Excel oracle uses a Microsoft 365 Business Basic tenant of Max's
+  own,** through Graph's workbook API (Max, 2026-11-03). It does not use
+  a personal plan, which the API doesn't support, or his New Wave Group
+  work account. Work that needs Excel installed is parked.
 - **Breaking changes are fine.** sheets has no external users to keep
   compatible with yet.
 - **Anthropic's xlsx skill is proprietary.** Use it locally, as an eval
