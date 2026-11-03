@@ -8,8 +8,8 @@ This file is the plan: a status board, then Horizon 1 as work packages.
 
 | Package | What | Wave | Status |
 |---|---|---|---|
-| WP-01 | `sheets check` | 1 | planned |
-| WP-07a | Excel check, round 2: what sheets writes today | 1 | planned |
+| WP-01 | `sheets check` | 1 | working |
+| WP-07a | Excel check, round 2: what sheets writes today | 1 | working |
 | WP-08 | Evals that measure the claims | 1 | planned |
 | WP-02 | Experiment: does `check` cut Python's silent defects? | 2 | planned |
 | WP-05 | `explain` and `trace` | 2 | planned |
