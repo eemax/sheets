@@ -3,6 +3,8 @@
 # cannot do. See excel-check/CHECKLIST.md after running:
 #
 #   scripts/excel-check.sh [output-dir]
+#
+# Needs Go, and python3 (its standard library only) for 22.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -279,6 +281,146 @@ s cond 19-rules.xlsx Data!D3:D6 bars
 s rows insert 19-rules.xlsx Data!5
 s set 19-rules.xlsx Data!B5 Added Data!C5 4 Data!D5 50 Data!E5 1
 
+# 20. Dynamic arrays, saved as Excel 365 saves them: the formula with
+#     cm="1" metadata, the cells it spills into holding their values; one
+#     blocked (#SPILL!); and on Edits two that grew and shrank after an
+#     edit. 20b: the same edits through the streaming editor.
+printf '%s\n' $'Name\tScore' $'Ada\t9' $'Bob\t4' $'Cy\t7' $'Ada\t8' $'Dee\t6' | "$bin" write 20-dynamic-arrays.xlsx Data >/dev/null
+s set 20-dynamic-arrays.xlsx \
+  Data!D1 'Unique' Data!D2 '=UNIQUE(A2:A6)' \
+  Data!E1 'Top scores' Data!E2 '=SORT(FILTER(B2:B6,B2:B6>5),,-1)' \
+  Data!F1 'Grid' Data!F2 '=SEQUENCE(2,3)' \
+  Data!J1 'Blocked' Data!J3 'in the way' Data!J2 '=UNIQUE(A2:A6)'
+printf '%s\n' $'Item\tCode' $'a\tx' $'b\ty' $'a\tz' | "$bin" write 20-dynamic-arrays.xlsx Edits >/dev/null
+s set 20-dynamic-arrays.xlsx Edits!D1 'Grows' Edits!D2 '=UNIQUE(A2:A4)' Edits!E1 'Shrinks' Edits!E2 '=UNIQUE(B2:B4)'
+cp 20-dynamic-arrays.xlsx 20b-dynamic-arrays-streamed.xlsx
+s set 20-dynamic-arrays.xlsx Edits!A4 c
+s set 20-dynamic-arrays.xlsx Edits!B3 x Edits!B4 x
+SHEETS_STREAM=always "$bin" set 20b-dynamic-arrays-streamed.xlsx Edits!A4 c >/dev/null
+SHEETS_STREAM=always "$bin" set 20b-dynamic-arrays-streamed.xlsx Edits!B3 x Edits!B4 x >/dev/null
+
+# 20c. A dynamic array on a sheet the same command adds to a workbook.
+printf '%s\n' Name d b a c | "$bin" write 20c-spill-on-new-sheet.xlsx Data >/dev/null
+s set 20c-spill-on-new-sheet.xlsx New!A1 'Sorted' New!B3 '=SORT(Data!A2:A5)' New!B8 'below'
+
+# 21. The spill operator: C2# (stored as _xlfn.ANCHORARRAY(C2)) read by
+#     other formulas, one of them spilling itself.
+printf '%s\n' Colour Red Blue Red Green Blue | "$bin" write 21-spill-refs.xlsx Colours >/dev/null
+s set 21-spill-refs.xlsx \
+  C1 'Sorted unique' C2 '=SORT(UNIQUE(A2:A6))' \
+  D1 'How many' D2 '=COUNTA(C2#)' \
+  E1 'Shout' E2 '=C2#&"!"' \
+  F1 'Times seen' F2 '=COUNTIF(A2:A6,C2#)' \
+  G1 'Second' G2 '=INDEX(C2#,2)'
+
+# 22. Sorting rows holding filled-down formulas stored as Excel stores
+#     them, shared (one formula, ref="D2:D6", the rows below pointing at
+#     it): sheets writes formulas one per cell, so they are shared here as
+#     Excel would. The sort unshares every formula on the sheet, and the
+#     results must keep their types: numbers, text, TRUE/FALSE. A second
+#     block below the sorted range is unshared without being sorted.
+#     22b: the same sort through the streaming editor.
+share() { # share <file> <ref>...: share the formulas of each column range on the first sheet
+  python3 -I - "$@" <<'PY'
+import re, sys, zipfile
+path, refs = sys.argv[1], sys.argv[2:]
+part = "xl/worksheets/sheet1.xml"
+with zipfile.ZipFile(path) as z:
+    items = [(i, z.read(i.filename)) for i in z.infolist()]
+def share(xml):
+    for si, ref in enumerate(refs):
+        (col, r1), (_, r2) = (re.fullmatch(r"([A-Z]+)(\d+)", a).groups() for a in ref.split(":"))
+        for r in range(int(r1), int(r2) + 1):
+            m = re.search(r'(<c r="%s%d"[^>]*>)<f>([^<]*)</f>' % (col, r), xml)
+            if not m:
+                sys.exit("share: no formula in %s%d" % (col, r))
+            f = '<f t="shared" ref="%s" si="%d">%s</f>' % (ref, si, m[2]) if r == int(r1) else '<f t="shared" si="%d"/>' % si
+            xml = xml[: m.start()] + m[1] + f + xml[m.end() :]
+    return xml
+with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+    for info, data in items:
+        z.writestr(info, share(data.decode()).encode() if info.filename == part else data)
+PY
+}
+f22=$'\t=B{r}*C{r}\t=A{r}&" #"&B{r}\t=B{r}>4\t=D{r}/SUM($D$2:$D$6)'
+printf '%s\n' $'Region\tUnits\tPrice\tRevenue\tLabel\tBig\tShare' \
+  $'East\t5\t30'"$f22" $'West\t2\t40'"$f22" $'North\t9\t10'"$f22" \
+  $'South\t1\t100'"$f22" $'Mid\t4\t2.5'"$f22" |
+  "$bin" write 22-shared-sort.xlsx Sales >/dev/null
+s set 22-shared-sort.xlsx A7 Total B7 '=SUM(B2:B6)' D7 '=SUM(D2:D6)' \
+  A9 Item B9 Cost C9 Doubled D9 Tag E9 'Over 50' \
+  A10 Rent B10 40 A11 Power B11 55 A12 Ink B12 7 \
+  C10:C12 '=B{r}*2' D10:D12 '=A{r}&"!"' E10:E12 '=B{r}>50'
+s style 22-shared-sort.xlsx Sales!G2:G6 format=percent decimals=1
+share 22-shared-sort.xlsx D2:D6 E2:E6 F2:F6 G2:G6 C10:C12 D10:D12 E10:E12
+cp 22-shared-sort.xlsx 22b-shared-sort-streamed.xlsx
+s sort 22-shared-sort.xlsx Sales!A1:G6 Revenue:desc
+SHEETS_STREAM=always "$bin" sort 22b-shared-sort-streamed.xlsx Sales!A1:G6 Revenue:desc >/dev/null
+
+# 23. A workbook changed by sheets script (Office Scripts): duplicates
+#     removed, formulas filled, a total row, number formats, fonts, fills,
+#     borders, a sort, frozen panes, a filter; rows added to an Excel table
+#     (made by openpyxl) above its total row; a spilling formula; a new
+#     sheet with formulas and a date. The script is kept beside the
+#     workbook. (A spilling formula on the new sheet is 20c.)
+cp "$root/internal/xlsx/testdata/tables.xlsx" 23-script.xlsx
+printf '%s\n' $'Region\tUnits\tPrice' $'North\t10\t2.5' $'South\t4\t3' $'North\t10\t2.5' $'East\t7\t1.5' $'West\t12\t2' |
+  "$bin" write 23-script.xlsx Orders >/dev/null
+cat > 23-script.ts <<'TS'
+function main(workbook: ExcelScript.Workbook) {
+  const ws = workbook.getWorksheet("Orders")!;
+  const removed = ws.getUsedRange()!.removeDuplicates([0, 1, 2], true).getRemoved();
+  ws.getRange("D1").setValue("Revenue");
+  ws.getRange("D2:D5").setFormula("=B2*C2");
+  ws.getRange("A2:D5").getSort().apply([{ key: 3, ascending: false }]);
+  ws.getRange("A6:D6").setValues([["Total", "=SUM(B2:B5)", null, "=SUM(D2:D5)"]]);
+  ws.getRange("C2:D6").setNumberFormat("$#,##0.00");
+  const head = ws.getRange("A1:D1").getFormat();
+  head.getFont().setBold(true);
+  head.getFont().setColor("#FFFFFF");
+  head.getFill().setColor("#1F3864");
+  const total = ws.getRange("A6:D6").getFormat();
+  total.getFont().setBold(true);
+  total.getRangeBorder(ExcelScript.BorderIndex.edgeTop).setStyle(ExcelScript.BorderLineStyle.continuous);
+  ws.getFreezePanes().freezeRows(1);
+  ws.getAutoFilter().apply(ws.getRange("A1:D5"));
+  ws.getRange("A:D").getFormat().setColumnWidth(80);
+
+  const t = workbook.getTable("SalesT")!;
+  t.addRows(-1, [["West", 4, 1.5], ["Central", 6, 2]]);
+
+  ws.getRange("F1").setValue("A to Z");
+  ws.getRange("F2").setFormula("=SORT(A2:A5)");
+
+  const sum = workbook.addWorksheet("Summary");
+  sum.getRange("A1:B3").setValues([["Regions", "=COUNTA(Orders!A2:A5)"], ["Best", "=INDEX(Orders!A2:A5,1)"], ["Updated", "2026-07-01"]]);
+  return { removed, best: sum.getRange("B2").getValue(), revenue: ws.getRange("D6").getValue() };
+}
+TS
+s script 23-script.xlsx 23-script.ts
+
+# 24. openpyxl stores functions added after Excel 2007 without the _xlfn.
+#     prefix Excel needs (AGGREGATE, TEXTJOIN, MAXIFS): 24 as openpyxl left
+#     it, 24b after sheets set entered the three formulas again.
+cp "$root/internal/xlsx/testdata/unprefixed.xlsx" 24-unprefixed-as-is.xlsx
+cp "$root/internal/xlsx/testdata/unprefixed.xlsx" 24b-unprefixed-reentered.xlsx
+s set 24b-unprefixed-reentered.xlsx \
+  C2 '=IFERROR(INDEX($A$2:$A$4,AGGREGATE(15,6,(ROW($A$2:$A$4)-1)/(LEFT($A$2:$A$4,2)="PK"),1)),"")' \
+  D2 '=TEXTJOIN(",",TRUE,A2:A4)' E2 '=MAXIFS(B2:B4,A2:A4,"PK*")'
+
+# 25. Formulas that compute over a range where one value goes, stored as
+#     dynamic arrays so Excel computes them as written (older Excel needed
+#     Ctrl+Shift+Enter); a whole column (G2) still means the formula's row.
+s set 25-array-formulas.xlsx \
+  A1 Qty A2 3 A3 1 A4 2 B1 Price B2 10 B3 20 B4 30 \
+  D1 'Sum of Qty>1' D2 '=SUM(IF(A2:A4>1,A2:A4))' \
+  E1 'Qty doubled' E2 '=A2:A4*2' \
+  F1 'Prices>15' F2 '=SUM(--(INDEX(A2:B4,,2)>15))' \
+  G1 'Whole column' G2 '=B:B*2' \
+  H1 'SUMPRODUCT' H2 '=SUMPRODUCT((A2:A4>1)*B2:B4)' \
+  I1 'Max price, Qty<3' I2 '=MAX(IF(A2:A4<3,B2:B4))' \
+  J1 'Is first Qty' J2 '=INDEX(A2:B4,,1)=A2'
+
 cat > CHECKLIST.md <<'MD'
 # Excel check
 
@@ -456,5 +598,97 @@ If it asks to repair, note which file and what the repair log says.
 - Other: A1:A3 light red (`=Data!$C$3>1`); B1 has a dropdown listing West,
   North, Added, South, East.
 - No repair prompt on opening.
+
+## Round 2 (2026-11-03): what sheets writes since 2026-10-24
+
+Files 20 to 25 need Excel 365 (or 2021): dynamic arrays. sheets marks
+every file it saves to be recalculated when Excel opens it, so what Excel
+shows is Excel's own result; what matters most here is that each file
+opens with no repair prompt, and that Excel reads the formulas as meant.
+Close each without saving.
+
+## 20-dynamic-arrays.xlsx
+- Data: D2:D5 shows Ada, Bob, Cy, Dee (D1 "Unique"); E2:E5 shows 9, 8, 7,
+  6; F2:H3 shows 1, 2, 3 over 4, 5, 6.
+- Click D2: the formula bar shows =UNIQUE(A2:A6), with no @ and no { }
+  braces; a blue border marks D2:D5. Click D3: its formula shows greyed
+  out. The same for E2 (=SORT(FILTER(B2:B6,B2:B6>5),,-1)) and F2
+  (=SEQUENCE(2,3)).
+- J2 shows #SPILL! (J3 "in the way" blocks it); its warning icon says
+  the spill range isn't blank. Delete J3: J2:J5 shows Ada, Bob, Cy, Dee.
+- Type 10 in B3: E2 now spills 10, 9, 8, 7, 6, down to E6.
+- Edits: D2:D4 shows a, b, c ("Grows": sheets set A4 to c, and the
+  result grew from a, b). E2 shows x alone and E3:E4 are empty
+  ("Shrinks": B3 and B4 became x, and the result shrank from x, y, z).
+- Type a in A4: D's spill shrinks to D2:D3 (a, b). Type y in B4: E's
+  spill grows to E2:E3 (x, y).
+
+## 20b-dynamic-arrays-streamed.xlsx
+- The same as 20 (the Edits sheet's edits went through sheets' streaming
+  editor): D2:D4 a, b, c; E2 x alone; the same actions work.
+
+## 20c-spill-on-new-sheet.xlsx
+- Known sheets bug (found 2026-11-03): a dynamic array set on a sheet
+  that the same command adds is saved wrongly (a second B3 cell inside
+  row 8, rows 4-6 after row 8). Expect a repair prompt today: note what
+  the repair log says. Once fixed: no prompt; sheet New shows "Sorted" in
+  A1, a, b, c, d in B3:B6 (=SORT(Data!A2:A5) in B3), and "below" in B8.
+
+## 21-spill-refs.xlsx
+- C2:C4 shows Blue, Green, Red; D2 3; E2:E4 Blue!, Green!, Red!; F2:F4
+  2, 1, 2; G2 Green.
+- Click D2: the formula bar shows =COUNTA(C2#) (not ANCHORARRAY); E2
+  =C2#&"!", F2 =COUNTIF(A2:A6,C2#), G2 =INDEX(C2#,2).
+- Type Amber in A3: C2:C5 shows Amber, Blue, Green, Red; D2 4; E's spill
+  grows to E5 (Red!); F2:F5 1, 1, 1, 2; G2 Blue.
+
+## 22-shared-sort.xlsx
+- Sales sorted by Revenue, highest first: East, South, North, West, Mid.
+  Revenue (D2:D6) 150, 100, 90, 80, 10; Label "East #5", "South #1",
+  "North #9", "West #2", "Mid #4"; Big TRUE, FALSE, TRUE, FALSE, FALSE;
+  Share 34.9%, 23.3%, 20.9%, 18.6%, 2.3%. Total: B7 21, D7 430.
+- The rows below (9-12), not sorted: Doubled 80, 110, 14; Tag Rent!,
+  Power!, Ink!; Over 50 FALSE, TRUE, FALSE.
+- Every number right-aligned and TRUE/FALSE centred: no green triangle
+  ("Number Stored as Text") on any cell. Select D2:D6: the status bar
+  shows Sum: 430.
+- Click D3: =B3*C3; G3: =D3/SUM($D$2:$D$6); C11: =B11*2.
+
+## 22b-shared-sort-streamed.xlsx
+- The same as 22 (sorted by the streaming editor).
+
+## 23-script.xlsx
+- 23-script.ts beside it is the Office Script that sheets ran.
+- Orders: header A1:D1 dark blue with white bold text and filter
+  buttons; row 1 frozen; columns A-D wider than the default. Rows (one
+  duplicate North removed, sorted by Revenue): North 10 $2.50 $25.00,
+  West 12 $2.00 $24.00, South 4 $3.00 $12.00, East 7 $1.50 $10.50. Total
+  row bold with a thin line above it: B6 33, D6 $71.50.
+- Orders: F2:F5 spills East, North, South, West (=SORT(A2:A5)).
+- Sales: the Excel table (blue style) spans A1:C7: North, South, East,
+  then the added West 4 1.5 and Central 6 2, and the Total row with B7
+  24. Table Design shows "Total Row" ticked. E2 24 (=SUM(SalesT[Units])).
+- Summary: B1 4, B2 North; B3 shows ######## (the column is too narrow
+  for the date); widen column B: 2026-07-01.
+
+## 24-unprefixed-as-is.xlsx
+- As openpyxl wrote it, with no _xlfn. prefixes: D2 and E2 show #NAME?;
+  C2 is empty (its IFERROR hides AGGREGATE's #NAME?); F2 shows 60.
+- Click D2, press F2 (edit), then Enter: D2 shows PK1,XX2,PK3. (Excel
+  reads the function once it is typed again: the reason for 24b.)
+
+## 24b-unprefixed-reentered.xlsx
+- After sheets set entered C2:E2 again: C2 PK1, D2 PK1,XX2,PK3, E2 30,
+  F2 60. No #NAME? anywhere.
+- Click E2: the formula bar shows =MAXIFS(B2:B4,A2:A4,"PK*") (no _xlfn).
+
+## 25-array-formulas.xlsx
+- D2 5; E2:E4 spills 6, 2, 4; F2 2; G2 20 (no spill); H2 40; I2 30;
+  J2:J4 spills TRUE, FALSE, FALSE.
+- Click D2: the formula bar shows =SUM(IF(A2:A4>1,A2:A4)) with no { }
+  braces (not a legacy Ctrl+Shift+Enter formula) and no @. The same for
+  F2 (=SUM(--(INDEX(A2:B4,,2)>15))) and I2 (=MAX(IF(A2:A4<3,B2:B4))).
+- Click G2: the formula bar shows =@B:B*2 (the @ means its own row only).
+- Type 5 in A3: D2 becomes 10, E3 10, H2 60.
 MD
 echo "wrote $(ls "$out" | grep -c xlsx) workbooks to $out; see CHECKLIST.md"
