@@ -628,11 +628,11 @@ Close each without saving.
   editor): D2:D4 a, b, c; E2 x alone; the same actions work.
 
 ## 20c-spill-on-new-sheet.xlsx
-- Known sheets bug (found 2026-11-03): a dynamic array set on a sheet
-  that the same command adds is saved wrongly (a second B3 cell inside
-  row 8, rows 4-6 after row 8). Expect a repair prompt today: note what
-  the repair log says. Once fixed: no prompt; sheet New shows "Sorted" in
-  A1, a, b, c, d in B3:B6 (=SORT(Data!A2:A5) in B3), and "below" in B8.
+- A dynamic array set on a sheet the same command added (New). It opens
+  with no repair prompt. New shows "Sorted" in A1, a, b, c, d in B3:B6,
+  and "below" in B8.
+- Click B3: the formula bar shows =SORT(Data!A2:A5), and a blue border
+  marks B3:B6. Type e in Data!A2: B3:B6 shows a, b, c, e.
 
 ## 21-spill-refs.xlsx
 - C2:C4 shows Blue, Green, Red; D2 3; E2:E4 Blue!, Green!, Red!; F2:F4
