@@ -714,8 +714,98 @@ func (e *Editor) leaveLegacy(sheet string, row, col int) error {
 		return err
 	}
 	if rg, ok := e.legacyArrayIn(sheet, row, col); ok {
-		return fmt.Errorf("%s lies inside the array formula %s (entered with Ctrl+Shift+Enter), and Excel does not change part of an array: write its first cell, %s, or clear the whole of %s first",
-			grid.FormatRef(sheet, grid.Range{R1: row, C1: col, R2: row, C2: col}), grid.FormatRef(sheet, rg), grid.CellName(rg.R1, rg.C1), rg)
+		return partOfArray(grid.FormatRef(sheet, grid.Range{R1: row, C1: col, R2: row, C2: col})+" lies inside", sheet, rg,
+			"write its first cell, "+grid.CellName(rg.R1, rg.C1)+", or clear the whole of "+rg.String()+" first")
 	}
 	return nil
+}
+
+// partOfArray is the refusal of an edit that would change part of a
+// legacy array formula's range, as Excel refuses it.
+func partOfArray(what, sheet string, rg grid.Range, instead string) error {
+	return fmt.Errorf("%s the array formula %s (entered with Ctrl+Shift+Enter), and Excel does not change part of an array: %s",
+		what, grid.FormatRef(sheet, rg), instead)
+}
+
+// checkArrays refuses a range edit (clear, copy, move: verb) that takes in
+// part of a legacy array formula's range: Excel changes an array whole or
+// not at all. whole tells what to do with an array it takes in entirely:
+// ok, or an error.
+func (e *Editor) checkArrays(sheet string, r grid.Range, verb string, whole func(rg grid.Range) error) error {
+	for _, rg := range e.arraysOn(sheet) {
+		if rg.Intersect(r).Empty() {
+			continue
+		}
+		if !within([]grid.Range{rg}, r) {
+			return partOfArray(grid.FormatRef(sheet, r)+" takes in part of", sheet, rg, verb+" all of "+rg.String()+", or none of it")
+		}
+		if whole != nil {
+			if err := whole(rg); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// dropArrays forgets the legacy array formulas a range takes in whole
+// (cleared, or written over).
+func (e *Editor) dropArrays(sheet string, r grid.Range) {
+	k := strings.ToLower(sheet)
+	arrays := e.legacyArrays()
+	for at, rg := range arrays {
+		if at.sheet == k && within([]grid.Range{rg}, r) {
+			delete(arrays, at)
+		}
+	}
+}
+
+// cutsArray refuses an insert or delete of rows (or columns) that cuts
+// through a legacy array formula's range, as Excel refuses it: inserting
+// inside it, or deleting part of it. lo..hi are the lines deleted, or
+// lo the line inserted before (hi < lo).
+func (e *Editor) cutsArray(sheet string, cols bool, lo, hi int) error {
+	for _, rg := range e.arraysOn(sheet) {
+		if rg.Rows()*rg.Cols() < 2 {
+			continue
+		}
+		if err := linesCut(sheet, rg, cols, lo, hi); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// linesCut is cutsArray for one array.
+func linesCut(sheet string, rg grid.Range, cols bool, lo, hi int) error {
+	first, last, kind := rg.R1, rg.R2, "rows"
+	if cols {
+		first, last, kind = rg.C1, rg.C2, "columns"
+	}
+	switch {
+	case hi < lo && first < lo && lo <= last:
+		return partOfArray("inserting "+kind+" there would cut through", sheet, rg, "insert "+kind+" above or below it instead")
+	case hi >= lo && lo <= last && hi >= first && (lo > first || hi < last):
+		return partOfArray("deleting those "+kind+" would cut through", sheet, rg, "delete all of its "+kind+", or none of them")
+	}
+	return nil
+}
+
+// arraysOn lists a sheet's legacy array formulas, top to bottom and left
+// to right.
+func (e *Editor) arraysOn(sheet string) []grid.Range {
+	k := strings.ToLower(sheet)
+	var out []grid.Range
+	for at, rg := range e.legacyArrays() {
+		if at.sheet == k {
+			out = append(out, rg)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].R1 != out[j].R1 {
+			return out[i].R1 < out[j].R1
+		}
+		return out[i].C1 < out[j].C1
+	})
+	return out
 }

@@ -53,7 +53,7 @@ func (s *StreamEditor) kindsNow(sheet string, row, col int) formula.Kinds {
 
 func (s *StreamEditor) calcState() calcState {
 	return calcState{formulas: s.formulasNow(), rs: s.resolver(), changed: s.changed, recompute: s.recompute,
-		edited: len(s.ops) > 0, order: s.sheetOrder, calcFile: s.calcBook, multi: s.multiArray, within: s.withinArray, date1904: s.wb.Date1904,
+		edited: len(s.ops) > 0, order: s.sheetOrder, calcFile: s.calcBook, multi: s.multiArray, within: s.withinArray, deferArrays: s.laysOut, date1904: s.wb.Date1904,
 		typer: func(all map[cellKey]*formulaAt, computing map[*formulaAt]bool, rs *resolver) *typer {
 			return newTyper(s.wb, s.changed, s.kindsNow, len(s.ops) > 0, all, computing, rs)
 		}}

@@ -58,6 +58,7 @@ func (a *Auto) full() (*Editor, error) {
 	data := a.s.data
 	if len(a.s.ops) > 0 || len(a.s.changed) > 0 {
 		var err error
+		a.s.laysOut = true
 		if data, err = a.s.Render(); err != nil {
 			return nil, err
 		}
@@ -175,17 +176,29 @@ func (a *Auto) Records() []Record {
 }
 
 func (a *Auto) Save(dryRun bool) error {
-	if a.e != nil {
-		return a.e.Save(dryRun)
+	if a.e == nil {
+		err := a.s.Save(dryRun)
+		if !errors.Is(err, errUpgrade) {
+			return err
+		}
+		if _, err := a.full(); err != nil {
+			return err
+		}
 	}
-	return a.s.Save(dryRun)
+	return a.e.Save(dryRun)
 }
 
 func (a *Auto) Render() ([]byte, error) {
-	if a.e != nil {
-		return a.e.Render()
+	if a.e == nil {
+		b, err := a.s.Render()
+		if !errors.Is(err, errUpgrade) {
+			return b, err
+		}
+		if _, err := a.full(); err != nil {
+			return nil, err
+		}
 	}
-	return a.s.Render()
+	return a.e.Render()
 }
 
 func (a *Auto) Close() error {

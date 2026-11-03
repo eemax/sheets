@@ -44,6 +44,17 @@ func (s *StreamEditor) Render() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !s.laysOut {
+		// An edit reached a legacy array over several cells: the full
+		// editor computes it and lays its result out.
+		for _, sh := range s.wb.Sheets {
+			for _, a := range s.legacyNow(sh.Name) {
+				if _, ok := res.results[strings.ToLower(sh.Name)][grid.CellName(a.R1, a.C1)]; ok {
+					return nil, errUpgrade
+				}
+			}
+		}
+	}
 	s.res = &res
 	s.warnings = append(s.warnings, res.warnings...)
 	s.noteBrokenRefs()
