@@ -38,9 +38,12 @@ sessions.
    from the package in the roadmap. The board says `working`.
 2. **Work.** The worker runs with `isolation: worktree`, then reports in
    the format below. The board says `auditing`.
-3. **Audit.** A fresh auditor gets the auditor brief, the branch, and the
-   worker's claims. It does not get the worker's reasoning, so that it
-   forms its own view.
+3. **Check, merge, audit.** The orchestrator reads each worker's diff and
+   runs the whole suite in its worktree. It then merges the branches into
+   `main` locally (`git merge --no-ff`, never squash or rebase), without
+   pushing. A fresh auditor gets the packages, their acceptance criteria
+   and the range `base..HEAD` on `main`. It does not get the workers'
+   reports or the orchestrator's opinion, so it forms its own view.
 4. **Triage.** The orchestrator accepts each finding, or rejects it with a
    reason.
    - **No blockers or majors accepted:** go to step 6.
@@ -49,9 +52,7 @@ sessions.
 5. **Re-audit.** The same auditor checks its own findings and looks for
    regressions. A fresh auditor is used instead when the fix was large.
    After three rounds without a pass, the package goes to Max.
-6. **Merge.** The orchestrator:
-   - squash-merges the branch into `main`, as one commit for the package
-     (see Git);
+6. **Land.** The orchestrator:
    - runs the full checks on `main`;
    - pushes;
    - marks the package `done`, updates the portal thread, and removes the
@@ -162,9 +163,11 @@ with notes, or fixed in passing.
 
 - Workers commit on their worktree branch, by path. Only the orchestrator
   touches `main`.
-- A package goes into `main` as one squash commit, written as the earlier
-  commits are written: what it does and why, the audit verdict, and the
-  co-author line.
+- Builders working side by side each have a worktree and a branch. A
+  single builder works on `main`, like any agent (Max, 2026-11-02).
+- Branches land with `git merge --no-ff`, which lets git see that they
+  are done. The audit runs on `main` before the push. A package Max drops
+  is reverted (`git revert`), never reset.
 - The orchestrator commits by path, never with `git add -A`. Another
   session may be working in the same checkout.
 - Nobody force-pushes.
