@@ -52,7 +52,10 @@ type checkCompared struct {
 	Agree        int `json:"agree"`
 	Differ       int `json:"differ"`
 	Uncomputable int `json:"uncomputable"`
-	OutOfTime    int `json:"out_of_time,omitempty"`
+	// ReadsUnstored: not compared, as they read a result Excel did not
+	// store.
+	ReadsUnstored int `json:"reads_unstored,omitempty"`
+	OutOfTime     int `json:"out_of_time,omitempty"`
 }
 
 type checkChange struct {
@@ -181,8 +184,8 @@ func (a *app) check(path string, fix bool) (*checkResult, error) {
 		}
 	}
 	res.Formulas = fc
-	if cr.Compared+cr.Uncomputable+cr.NotCompared > 0 {
-		res.Compared = &checkCompared{Compared: cr.Compared, Agree: cr.Agreed, Differ: len(cr.Differ), Uncomputable: cr.Uncomputable, OutOfTime: cr.NotCompared}
+	if cr.Compared+cr.Uncomputable+cr.NotCompared+cr.ReadsUnstored > 0 {
+		res.Compared = &checkCompared{Compared: cr.Compared, Agree: cr.Agreed, Differ: len(cr.Differ), Uncomputable: cr.Uncomputable, OutOfTime: cr.NotCompared, ReadsUnstored: cr.ReadsUnstored}
 	}
 	res.Changes = changeGroups(cr.Changes)
 	wb := cr.Before
@@ -515,6 +518,9 @@ func (a *app) printCheck(res *checkResult, fix bool) {
 		line := fmt.Sprintf("stored results against the sheets calculator: %d agree, %d differ", c.Agree, c.Differ)
 		if c.Uncomputable > 0 {
 			line += fmt.Sprintf(", %d it cannot compute", c.Uncomputable)
+		}
+		if c.ReadsUnstored > 0 {
+			line += fmt.Sprintf(", %d not compared as they read results Excel did not store", c.ReadsUnstored)
 		}
 		if c.OutOfTime > 0 {
 			line += fmt.Sprintf(", %d left out of time", c.OutOfTime)

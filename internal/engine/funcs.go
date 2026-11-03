@@ -504,7 +504,13 @@ func lazyIfs(c *ctx, a []*node) Value {
 		return errv(ErrValue)
 	}
 	for i := 0; i < len(a); i += 2 {
-		cv := c.scalar(c.eval(a[i]))
+		v := c.eval(a[i])
+		if c.lifts(v) {
+			// Over an array, condition by condition for each element,
+			// as Excel lifts IFS.
+			return ifsArray(c, a)
+		}
+		cv := c.scalar(v)
 		if cv.Kind == Error {
 			return cv
 		}
@@ -517,6 +523,44 @@ func lazyIfs(c *ctx, a []*node) Value {
 		}
 	}
 	return errv(ErrNA)
+}
+
+// ifsArray is IFS where a condition is an array: each element takes the
+// value of the first condition true there.
+func ifsArray(c *ctx, a []*node) Value {
+	conds, vals := make([]*Arr, len(a)/2), make([]*Arr, len(a)/2)
+	rows, cols := 1, 1
+	for k := range conds {
+		conds[k] = c.toArr(c.eval(a[2*k]))
+		vals[k] = c.toArr(c.branch(a[2*k+1]))
+		for _, x := range []*Arr{conds[k], vals[k]} {
+			rows, cols = max(rows, x.Rows), max(cols, x.Cols)
+		}
+	}
+	out := newArr(rows, cols)
+	for i := 0; i < rows; i++ {
+		for j := 0; j < cols; j++ {
+			r := errv(ErrNA)
+			for k := range conds {
+				cv := pick(conds[k], i, j)
+				if cv.Kind == Error {
+					r = cv
+					break
+				}
+				b, err := toBool(cv)
+				if err != nil {
+					r = *err
+					break
+				}
+				if b {
+					r = pick(vals[k], i, j)
+					break
+				}
+			}
+			out.V[i*cols+j] = r
+		}
+	}
+	return arrOf(out)
 }
 
 func lazyChoose(c *ctx, a []*node) Value {
@@ -555,13 +599,21 @@ func lazyChoose(c *ctx, a []*node) Value {
 }
 
 func lazySwitch(c *ctx, a []*node) Value {
-	x := c.scalar(c.eval(a[0]))
+	xv := c.eval(a[0])
+	if c.lifts(xv) {
+		return switchArray(c, a, xv)
+	}
+	x := c.scalar(xv)
 	if x.Kind == Error {
 		return x
 	}
 	rest := a[1:]
 	for len(rest) >= 2 {
-		v := c.scalar(c.eval(rest[0]))
+		vv := c.eval(rest[0])
+		if c.lifts(vv) {
+			return switchArray(c, a, xv)
+		}
+		v := c.scalar(vv)
 		if v.Kind == Error {
 			return v
 		}
@@ -574,6 +626,58 @@ func lazySwitch(c *ctx, a []*node) Value {
 		return c.branch(rest[0])
 	}
 	return errv(ErrNA)
+}
+
+// switchArray is SWITCH over arrays: each element of the expression is
+// matched on its own, as Excel lifts SWITCH.
+func switchArray(c *ctx, a []*node, xv Value) Value {
+	xa := c.toArr(xv)
+	rows, cols := xa.Rows, xa.Cols
+	var cases, results []*Arr
+	var other *Arr
+	rest := a[1:]
+	for len(rest) >= 2 {
+		cases = append(cases, c.toArr(c.eval(rest[0])))
+		results = append(results, c.toArr(c.branch(rest[1])))
+		rest = rest[2:]
+	}
+	if len(rest) == 1 {
+		other = c.toArr(c.branch(rest[0]))
+		rows, cols = max(rows, other.Rows), max(cols, other.Cols)
+	}
+	for k := range cases {
+		for _, x := range []*Arr{cases[k], results[k]} {
+			rows, cols = max(rows, x.Rows), max(cols, x.Cols)
+		}
+	}
+	out := newArr(rows, cols)
+	for i := 0; i < rows; i++ {
+		for j := 0; j < cols; j++ {
+			x := pick(xa, i, j)
+			r := errv(ErrNA)
+			if x.Kind == Error {
+				r = x
+			} else {
+				matched := false
+				for k := range cases {
+					v := pick(cases[k], i, j)
+					if v.Kind == Error {
+						r, matched = v, true
+						break
+					}
+					if compare(x, v) == 0 {
+						r, matched = pick(results[k], i, j), true
+						break
+					}
+				}
+				if !matched && other != nil {
+					r = pick(other, i, j)
+				}
+			}
+			out.V[i*cols+j] = r
+		}
+	}
+	return arrOf(out)
 }
 
 func lazyLet(c *ctx, a []*node) Value {

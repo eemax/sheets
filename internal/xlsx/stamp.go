@@ -179,12 +179,14 @@ func rewriteCells(b []byte, want func(ref string) bool, fn func(cell []byte, ref
 // storeResults writes formula results into a worksheet part: res maps a
 // cell to its result, an Empty one meaning none. The other cells of an
 // array formula given a result (the rest of its spill range) hold values
-// of the old result, and lose them.
+// of the old result, and lose them. A result marked Computed is the one
+// stored already, written again (see keepEmptyText): the rest of its
+// array holds.)
 func storeResults(b []byte, res map[string]grid.Cell) []byte {
 	var arrays []grid.Range
 	b = rewriteCells(b, func(ref string) bool { _, ok := res[ref]; return ok }, func(m []byte, ref string) []byte {
 		out, array := storeResult(m, res[ref])
-		if array != nil {
+		if array != nil && !res[ref].Computed {
 			arrays = append(arrays, *array)
 		}
 		return out

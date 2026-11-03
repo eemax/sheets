@@ -262,16 +262,37 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 	// opened with have moved (see formulasNow).
 	keep := []formulaAt{}
 	recompute := map[cellKey]bool{}
+	// Legacy array formulas (Ctrl+Shift+Enter) are put back as such, over
+	// their ranges where they now stand; one whose range the edit cuts
+	// keeps its first cell alone, and its result is unknown.
+	arrays := e.legacyArrays()
+	moved := map[cellKey]grid.Range{}
 	for _, f := range all {
 		if err := e.f.SetCellFormula(f.sheet, grid.CellName(f.row, f.col), ""); err != nil {
 			return err
 		}
 		m := formulaAt{sheet: f.sheet, row: f.row, col: f.col, text: rewrite(f.text, f.sheet), pending: f.pending, stored: f.stored, unprefixed: f.unprefixed}
+		rg, isArray := arrays[keyOf(f.sheet, f.row, f.col)]
 		if strings.EqualFold(f.sheet, target) {
 			var ok bool
 			if m.row, m.col, ok = move(f.row, f.col); !ok {
 				continue
 			}
+			if isArray {
+				r2, c2, ok := move(rg.R2, rg.C2)
+				now := grid.Range{R1: m.row, C1: m.col, R2: r2, C2: c2}
+				if !ok || now.Rows() != rg.Rows() || now.Cols() != rg.Cols() {
+					e.warnings = append(e.warnings, fmt.Sprintf("the array formula %s (entered with Ctrl+Shift+Enter) lost part of its range to this edit; it keeps its first cell, and its result is not stored",
+						grid.FormatRef(f.sheet, rg)))
+					e.brokenArrays = append(e.brokenArrays, keyOf(m.sheet, m.row, m.col))
+					recompute[keyOf(m.sheet, m.row, m.col)] = true
+					now = grid.Range{R1: m.row, C1: m.col, R2: m.row, C2: m.col}
+				}
+				rg = now
+			}
+		}
+		if isArray {
+			moved[keyOf(m.sheet, m.row, m.col)] = rg
 		}
 		keep = append(keep, m)
 		if e.recompute[keyOf(f.sheet, f.row, f.col)] || movedResult(rs, f.sheet, f.row, f.col, f.text, target, hit) {
@@ -412,10 +433,19 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 		}
 	}
 	for _, m := range keep {
-		if err := e.setFormula(m.sheet, grid.CellName(m.row, m.col), m.text); err != nil {
+		cell := grid.CellName(m.row, m.col)
+		if rg, ok := moved[keyOf(m.sheet, m.row, m.col)]; ok {
+			t, ref := excelize.STCellFormulaTypeArray, rg.String()
+			if err := e.f.SetCellFormula(m.sheet, cell, formula.ToFile(m.text), excelize.FormulaOpts{Type: &t, Ref: &ref}); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := e.setFormula(m.sheet, cell, m.text); err != nil {
 			return err
 		}
 	}
+	e.legacy = moved
 	e.lines, e.recompute, e.changed, e.wasEmpty = keep, recompute, changed, fresh
 	e.structural = true
 	e.edits++
@@ -452,6 +482,22 @@ func (e *Editor) sheetEdit(from, to string, copy bool, rewrite func(string) stri
 			lines = append(lines, l)
 		}
 		e.lines = lines
+	}
+	if e.legacy != nil {
+		arrays := map[cellKey]grid.Range{}
+		for k, rg := range e.legacy {
+			if k.sheet == strings.ToLower(from) {
+				if copy {
+					arrays[cellKey{strings.ToLower(to), k.row, k.col}] = rg
+				} else if to == "" {
+					continue
+				} else {
+					k.sheet = strings.ToLower(to)
+				}
+			}
+			arrays[k] = rg
+		}
+		e.legacy = arrays
 	}
 	if copy {
 		return

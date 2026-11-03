@@ -54,7 +54,10 @@ type CheckResult struct {
 	// formulas compared, agreeing, and the differences; those the
 	// calculator cannot compute, and those left out of time.
 	Compared, Agreed, Uncomputable, NotCompared int
-	Differ                                      []Difference
+	// ReadsUnstored counts results not compared because the formula reads
+	// one Excel did not store (a difference could be that input's).
+	ReadsUnstored int
+	Differ        []Difference
 	// Data is the fixed file, nil when fixing changes nothing.
 	Data []byte
 	// Before is the workbook as read; After as fixed (Before when fixing
@@ -522,7 +525,7 @@ func compare(wb *grid.Workbook, res *CheckResult, budget time.Duration) {
 				return
 			}
 			if readsUnvouched(s.Name, r, col, book.text(s.Name, r, col, cell.Formula)) {
-				res.Uncomputable++
+				res.ReadsUnstored++
 				return
 			}
 			before := engine.EpochUses()
