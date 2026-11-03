@@ -110,6 +110,76 @@ func (d *Deps) addName(w string, seen map[string]bool) {
 	}
 }
 
+// shapeFns read where their reference arguments are, not what they hold.
+var shapeFns = setOf(`ROW ROWS COLUMN COLUMNS ISREF AREAS`)
+
+// ValueRefs are the references whose values a formula reads: Refs, but
+// for a reference given whole to a function that reads only where it is
+// (=ROWS($A$2:A2) in A2 reads no cell, and refers to itself harmlessly).
+func ValueRefs(f string) []Ref {
+	ts := lex(f)
+	changed := false
+	for i := 0; i < len(ts); i++ {
+		if !ts[i].call || !shapeFns[strings.ToUpper(bare(ts[i].text))] || i+1 >= len(ts) || ts[i+1].text != "(" {
+			continue
+		}
+		// Its arguments, at depth 1.
+		depth, start := 0, i+2
+	args:
+		for j := i + 1; j < len(ts); j++ {
+			switch ts[j].text {
+			case "(":
+				depth++
+				continue
+			case ")":
+				depth--
+				if depth > 0 {
+					continue
+				}
+			case ",":
+				if depth != 1 {
+					continue
+				}
+			default:
+				continue
+			}
+			if start < j && pureRef(ts[start:j]) {
+				for k := start; k < j; k++ {
+					ts[k].text = ""
+				}
+				ts[start].text = "0"
+				changed = true
+			}
+			start = j + 1
+			if depth == 0 {
+				break args
+			}
+		}
+	}
+	if !changed {
+		return Refs(f)
+	}
+	return Refs(join(ts))
+}
+
+// pureRef tells whether tokens are a reference alone: Sheet!$A$2:B9.
+func pureRef(ts []token) bool {
+	has := false
+	for _, t := range ts {
+		switch {
+		case strings.TrimSpace(t.text) == "":
+		case t.call:
+			return false
+		case t.word:
+			has = true
+		case t.text == ":" || t.text == "!" || strings.HasPrefix(t.text, "'"):
+		default:
+			return false
+		}
+	}
+	return has
+}
+
 var errorCodes = []string{"#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A",
 	"#GETTING_DATA", "#SPILL!", "#CALC!", "#FIELD!", "#BLOCKED!", "#CONNECT!", "#BUSY!", "#UNKNOWN!"}
 

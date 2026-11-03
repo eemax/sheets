@@ -59,7 +59,7 @@ func (c *calc) analyse() {
 		f.calc = rs.calcText(f)
 	}
 	g := newCycleGraph(list, func(f *formulaAt) ([]formula.Ref, bool) {
-		return rs.ranges(f.sheet, f.row, f.col, formula.DepsOf(calcOf(f)), 0)
+		return rs.ranges(f.sheet, f.row, f.col, valueDeps(calcOf(f)), 0)
 	})
 	plan := newPlan(list, rs, pending)
 	book := &gridBook{wb: c.wb, text: func(sheet string, row, col int, text string) string {

@@ -97,6 +97,7 @@ func (e *Editor) spillResults(res calcResult) (bool, error) {
 					if err := e.putValue(sheet, r, c, v); err != nil {
 						return false, err
 					}
+					e.grow(sheet, grid.Range{R1: r, C1: c, R2: r, C2: c})
 					e.touch(sheet, r, c)
 					changed = true
 				}

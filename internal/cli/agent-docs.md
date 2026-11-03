@@ -362,9 +362,15 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   prefixes, as one change (`undo` takes it back), and lists what it
   changed, then what is left. A result Excel stored is never replaced, and
   nothing but results and prefixes changes; a stale result sheets cannot
-  recompute is removed rather than vouched for. Running it again changes
-  nothing; a file that needs nothing is not written. `--dry-run` shows the
-  changes without saving. On a CSV file, `check` runs lint.
+  recompute (a link to another workbook among them) is removed rather
+  than vouched for. An array formula over several cells, entered with
+  Ctrl+Shift+Enter or spilling, gets every cell of its result. In a
+  workbook counting dates from 1904, results that work with dates stay
+  unknown. Running it again changes nothing; a file that needs nothing is
+  not written. `--dry-run` shows the changes without saving. On a CSV
+  file, `check` runs lint.
+- On 150,000 rows (300,000 formulas openpyxl left without results),
+  `check --fix` takes about 15 seconds, and a second run about 4.
 - `lint` finds error values, `#REF!` from deleted cells, unknown functions,
   cells that break their column's formula pattern, rows a formula column
   misses, totals that leave out rows, sums that add a total together with

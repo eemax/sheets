@@ -201,12 +201,17 @@ func (e *Engine) cellValue(sheet string, row, col int) Value {
 		if ar, ac, fill, ok := ab.ArrayAt(sheet, row, col); ok && (ar != row || ac != col) {
 			e.Compute(sheet, ar, ac)
 			if a := e.arrays[key(sheet, ar, ac)]; a != nil {
+				// As Excel fills an array formula's range: a single row
+				// or column repeats, and #N/A lies beyond the result.
 				i, j := row-fill.R1, col-fill.C1
+				if a.Rows == 1 {
+					i = 0
+				}
+				if a.Cols == 1 {
+					j = 0
+				}
 				if i < a.Rows && j < a.Cols {
 					return finalScalar(a.At(i, j))
-				}
-				if a.Rows == 1 && a.Cols == 1 {
-					return finalScalar(a.At(0, 0))
 				}
 				return errv(ErrNA)
 			}

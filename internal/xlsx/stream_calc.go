@@ -53,7 +53,7 @@ func (s *StreamEditor) kindsNow(sheet string, row, col int) formula.Kinds {
 
 func (s *StreamEditor) calcState() calcState {
 	return calcState{formulas: s.formulasNow(), rs: s.resolver(), changed: s.changed, recompute: s.recompute,
-		edited: len(s.ops) > 0, order: s.sheetOrder, calcFile: s.calcBook,
+		edited: len(s.ops) > 0, order: s.sheetOrder, calcFile: s.calcBook, multi: s.multiArray, date1904: s.wb.Date1904,
 		typer: func(all map[cellKey]*formulaAt, computing map[*formulaAt]bool, rs *resolver) *typer {
 			return newTyper(s.wb, s.changed, s.kindsNow, len(s.ops) > 0, all, computing, rs)
 		}}
@@ -146,6 +146,10 @@ func (s *StreamEditor) calcBook(list []*formulaAt, rs *resolver, computing map[*
 			continue
 		}
 		d := formula.DepsOf(text)
+		// A volatile function (TODAY, RAND) changes its result, not what it
+		// reads; those that look elsewhere (INDIRECT, OFFSET) were refused
+		// above.
+		d.Volatile = false
 		refs, ok := rs.ranges(f.sheet, f.row, f.col, d, 0)
 		if !ok {
 			refs, ok = rs.tableRanges(f, d)
@@ -629,4 +633,19 @@ func (sc *aggScan) result(fn string) (grid.Cell, bool) {
 		return grid.Cell{Kind: grid.Number, Num: sc.high}, true
 	}
 	return grid.Cell{}, false
+}
+
+// multiArray tells whether a cell anchors a legacy array formula over
+// several cells, whose other cells the streaming editor does not fill.
+func (s *StreamEditor) multiArray(sheet string, row, col int) bool {
+	sh := s.wb.Sheet(sheet)
+	if sh == nil || len(sh.Arrays) == 0 {
+		return false
+	}
+	r, ok := s.rowThen(sheet, row)
+	if !ok || s.edit(sheet, row, col) != nil {
+		return false
+	}
+	_, multi := multiArrayAt(sh, r, col)
+	return multi
 }

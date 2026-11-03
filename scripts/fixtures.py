@@ -294,3 +294,66 @@ with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         elif info.filename == "xl/worksheets/sheet1.xml":
             data = data.replace(b'<c r="C4"><f>B4*3</f><v>0</v></c>', b'<c r="C4"><f>B4*3</f></c>')
         z.writestr(info, data)
+
+# arrays_openpyxl.xlsx: array formulas entered with Ctrl+Shift+Enter over
+# several cells, as openpyxl writes them (the first cell alone).
+from openpyxl.utils.datetime import CALENDAR_MAC_1904
+from openpyxl.worksheet.formula import ArrayFormula
+
+wb = Workbook()
+ws = wb.active
+ws.title = "S"
+for r, (a, b) in enumerate([(1, 10), (2, 20), (3, 30), (4, 40)], 1):
+    ws.cell(r, 1, a)
+    ws.cell(r, 2, b)
+ws["D1"] = ArrayFormula("D1:D4", "=A1:A4*B1:B4")
+ws["F1"] = ArrayFormula("F1:G1", "=TRANSPOSE(A1:A2)")
+ws["H1"] = ArrayFormula("H1:H3", "=SUM(A1:A4)")
+wb.save(f"{out}/arrays_openpyxl.xlsx")
+
+# arrays_xlsxwriter.xlsx: the same from XlsxWriter (a 0 in every cell), and
+# one calling a function without its prefix.
+xw = xlsxwriter.Workbook(f"{out}/arrays_xlsxwriter.xlsx")
+s = xw.add_worksheet("S")
+for i, (a, b) in enumerate([(1, 10), (2, 20), (3, 30)], 1):
+    s.write_row(i, 0, [a, b])
+s.write_array_formula("E2:E4", "{=A2:A4*B2:B4}")
+s.write_array_formula("G2:G2", "{=STDEV.S(A2:A4*2)}")
+xw.close()
+
+# dates1904.xlsx: a workbook counting dates from 1904.
+wb = Workbook()
+wb.epoch = CALENDAR_MAC_1904
+ws = wb.active
+ws.title = "S"
+ws["A1"] = datetime.date(2020, 1, 1)
+ws["B1"] = "=YEAR(A1)"
+ws["C1"] = "=DATE(2020,1,1)"
+ws["D1"] = "=A1+1"
+ws["E1"] = '=TEXT(A1,"yyyy-mm-dd")'
+wb.save(f"{out}/dates1904.xlsx")
+
+# refs.xlsx: ROWS over a range holding the formula itself (not circular),
+# volatile functions, and INDIRECT.
+wb = Workbook()
+ws = wb.active
+ws.title = "S"
+ws["A2"] = "=ROWS($A$2:A2)"
+ws["A3"] = "=ROWS($A$2:A3)"
+ws["B2"] = "=COLUMNS(A2:B2)"
+ws["C1"] = datetime.date(2026, 1, 1)
+ws["C2"] = "=INT(TODAY()-C1+(1))"
+ws["C3"] = "=NOW()-NOW()"
+ws["C4"] = '=INDIRECT("A2")'
+wb.save(f"{out}/refs.xlsx")
+
+# dynamic_xlsxwriter.xlsx: dynamic arrays as XlsxWriter writes them (a 0
+# for each, its range the first cell alone).
+xw = xlsxwriter.Workbook(f"{out}/dynamic_xlsxwriter.xlsx")
+d = xw.add_worksheet("Data")
+for i, r in enumerate([("Region", "Units"), ("North", 5), ("South", 7), ("North", 3), ("East", 1)]):
+    d.write_row(i, 0, r)
+d.write_dynamic_array_formula("D1", "=UNIQUE(A2:A5)")
+d.write_formula("E1", "=SUM(B2:B5)")
+d.write_dynamic_array_formula("F1", "=SORT(B2:B5,1,-1)")
+xw.close()
