@@ -8,6 +8,51 @@ import (
 	"github.com/eemax/sheets/internal/grid"
 )
 
+// Moving cells that array formulas read (legacy and dynamic, in one cell
+// or several) leaves them arrays of the same kind, over the same ranges.
+func TestMoveInputsKeepsArrays(t *testing.T) {
+	kinds := func(wb *grid.Workbook) string {
+		var out []string
+		for _, s := range wb.Sheets {
+			for _, a := range s.Arrays {
+				out = append(out, "array "+a.String())
+			}
+			for _, a := range s.Spills {
+				out = append(out, "spill "+grid.CellName(a.R1, a.C1))
+			}
+		}
+		sort.Strings(out)
+		return fmt.Sprint(out)
+	}
+	for _, c := range []struct{ file, sheet, src string }{
+		{"arrays_rows.xlsx", "Sheet", "B1:B4"},
+		{"arrays_openpyxl.xlsx", "S", "A1:B4"},
+		{"arrays_xlsxwriter.xlsx", "S", "A2:B4"},
+		{"dynamic_xlsxwriter.xlsx", "Data", "A2:B5"},
+	} {
+		data := checkData(t, c.file, openFixture(t, c.file)).Data
+		before, err := ReadBytes(data)
+		must(t, err)
+		src, _ := grid.ParseRange(c.src)
+		e, err := OpenEditorData(c.file, data)
+		must(t, err)
+		if _, err := e.MoveRange(c.sheet, src, c.sheet, grid.Range{R1: 20, C1: 20, R2: 20, C2: 20}); err != nil {
+			t.Fatalf("%s: %v", c.file, err)
+		}
+		out, err := e.Render()
+		must(t, err)
+		after, err := ReadBytes(out)
+		must(t, err)
+		if kinds(after) != kinds(before) {
+			t.Errorf("%s: arrays %s, were %s", c.file, kinds(after), kinds(before))
+		}
+		res := checkData(t, c.file, out)
+		for _, u := range res.Unknown {
+			t.Errorf("%s: %s unknown: %s", c.file, grid.CellName(u.Row, u.Col), u.Why)
+		}
+	}
+}
+
 // After any edit of rows or columns, in either editor, the array formulas
 // (legacy and dynamic) are the ones there were, where their cells went,
 // and no other formula has become one.

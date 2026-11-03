@@ -824,7 +824,7 @@ func (e *Editor) rewriteFormula(sheet string, row, col int, text string) error {
 		return e.f.SetCellFormula(sheet, cell, formula.ToFile(text), excelize.FormulaOpts{Type: &t, Ref: &ref})
 	}
 	if lay := e.layouts[sheet]; lay != nil {
-		if sp, ok := lay.spills[[2]int{row, col}]; ok && dynamicFormula(formula.ToFile(text)) {
+		if sp, ok := lay.spills[[2]int{row, col}]; ok {
 			// A dynamic array keeps the range its result fills, until it
 			// is computed again: its old result there is its own, not in
 			// its way.
@@ -839,5 +839,6 @@ func (e *Editor) rewriteFormula(sheet string, row, col int, text string) error {
 			return nil
 		}
 	}
-	return e.setFormula(sheet, cell, text)
+	// Otherwise as it was: a dynamic array as one, any other formula plain.
+	return e.putBack(sheet, cell, text, e.wasDynamic(sheet, cell))
 }
