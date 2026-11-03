@@ -145,6 +145,28 @@ type zipPart struct {
 	data []byte
 }
 
+// writeWorkbook writes a workbook, which the editor goes on editing after.
+//
+// Writing trims the empty rows from every worksheet excelize holds in
+// memory, but excelize finds row n at index n-1, so it then drops the
+// sheets it read from the file, to read them again, dense, on their next
+// edit. A sheet made in this session (NewSheet) it keeps, trimmed: the
+// next edit finds row n in another row's place, and the sheet saves with
+// rows out of order, or twice, which Excel repairs. Every worksheet was
+// just written to the package, so writeWorkbook drops them all, and each
+// is read back as a sheet from the file is.
+func writeWorkbook(f *excelize.File) (*bytes.Buffer, error) {
+	buf, err := f.WriteToBuffer()
+	if err != nil {
+		return nil, err
+	}
+	f.Sheet.Range(func(k, _ any) bool {
+		f.Sheet.Delete(k)
+		return true
+	})
+	return buf, nil
+}
+
 // serialize writes the workbook and applies the patches:
 //
 //   - AutoFilter marks a sheet as having a filter applied (filterMode)
@@ -163,7 +185,7 @@ func serialize(f *excelize.File, pt *patches) ([]byte, error) {
 			return nil, err
 		}
 	}
-	buf, err := f.WriteToBuffer()
+	buf, err := writeWorkbook(f)
 	if err != nil {
 		return nil, err
 	}
