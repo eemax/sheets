@@ -194,7 +194,7 @@ func (j *judge) static(v int) string {
 func unprefixedNote(text string) string {
 	fns := formula.Unprefixed(text)
 	return strings.Join(fns, ", ") + map[bool]string{true: " is", false: " are"}[len(fns) == 1] +
-		" stored without the _xlfn. prefix Excel needs, so Excel shows #NAME? until the formula is entered again (sheets set adds it)"
+		" stored without the _xlfn. prefix Excel needs, so Excel shows #NAME? until the formula is entered again (sheets check --fix adds it)"
 }
 
 // calcOf is the text the engine computes for f.

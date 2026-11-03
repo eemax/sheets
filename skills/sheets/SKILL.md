@@ -68,11 +68,14 @@ reads give computed values, and it saves once, as one undo step.
 
 1. Read each command's output. It lists formula errors with their cells,
    and formulas only Excel can compute (shown as `?`), with the reason.
-2. Run `sheets lint book.xlsx`: errors, `#REF!`, formulas that break their
-   column's pattern or are missing from rows, totals that leave out rows
-   or count a total twice, lines that read another line than their label
-   names, numbers stored as text, functions a script stored without the
-   prefix Excel needs (`#NAME?` in Excel).
+2. Run `sheets check book.xlsx` (`sheets lint` without the results):
+   errors, `#REF!`, formulas that break their column's pattern or are
+   missing from rows, totals that leave out rows or count a total twice,
+   lines that read another line than their label names, numbers stored as
+   text. On a workbook a script wrote (openpyxl, XlsxWriter), run
+   `sheets check --fix book.xlsx`: it stores the formula results the
+   script left out and adds the prefix Excel needs to newer functions
+   (`#NAME?` in Excel otherwise).
 3. `sheets diff book.xlsx` shows what the last command changed, and
    `sheets undo book.xlsx` takes it back.
 4. After formatting a sheet or adding a chart, look at it:
@@ -135,7 +138,7 @@ Before a task, read its part of the guide:
 | Clearing, copying, moving, sorting, find and replace | [references/ranges.md](references/ranges.md) |
 | Notes and hyperlinks | [references/notes.md](references/notes.md) |
 | CSV and TSV files, converting | [references/csv.md](references/csv.md) |
-| Checking a workbook (`lint`, `diff`) | [references/check.md](references/check.md) |
+| Checking a workbook (`check`, `lint`, `diff`) | [references/check.md](references/check.md) |
 | Charts | [references/charts.md](references/charts.md) |
 | Looking at a sheet as an image (`render`) | [references/render.md](references/render.md) |
 | Dry runs and undo | [references/safety.md](references/safety.md) |

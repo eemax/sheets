@@ -253,3 +253,44 @@ with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(info, data)
     z.writestr("xl/threadedComments/threadedComment1.xml", threads)
     z.writestr("xl/persons/person.xml", persons)
+
+# stale.xlsx: formulas as XlsxWriter writes them: a 0 stored for each, which
+# the recalculation flag marks as out of date; a function added after Excel
+# 2007 without its prefix; a function the sheets calculator lacks
+# (BAHTTEXT) and a formula reading it; an error; an array formula.
+xw = xlsxwriter.Workbook(f"{out}/stale.xlsx")
+data = xw.add_worksheet("Data")
+data.write_row(0, 0, ["Region", "Units"])
+for i, (region, units) in enumerate([("North", 5), ("South", 7), ("North", 3)], 1):
+    data.write_row(i, 0, [region, units])
+data.write_formula("C2", "=SUM(B2:B4)")
+data.write_formula("C3", '=MAXIFS(B2:B4,A2:A4,"North")')
+data.write_formula("C4", "=BAHTTEXT(B2)")
+data.write_formula("C5", '=C4&"!"')
+data.write_formula("C6", "=1/0")
+data.write_array_formula("C7:C7", "{=SUM(B2:B4*B2:B4)}")
+data.write_formula("C8", "=C2*2")
+xw.close()
+
+# vouched.xlsx: results as Excel saves them (no recalculation flag), one of
+# which the sheets calculator does not agree with (999 stored for =B2*2),
+# and one formula stored without its result.
+xw = xlsxwriter.Workbook(f"{out}/vouched.xlsx")
+data = xw.add_worksheet("Data")
+data.write_row(0, 0, ["Region", "Units"])
+for i, (region, units) in enumerate([("North", 5), ("South", 7), ("East", 3)], 1):
+    data.write_row(i, 0, [region, units])
+data.write_formula("C2", "=SUM(B2:B4)", None, 15)
+data.write_formula("C3", "=B2*2", None, 999)
+data.write_formula("C4", "=B4*3", None, 0)
+xw.close()
+path = f"{out}/vouched.xlsx"
+with zipfile.ZipFile(path) as z:
+    items = [(i, z.read(i.filename)) for i in z.infolist()]
+with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+    for info, data in items:
+        if info.filename == "xl/workbook.xml":
+            data = data.replace(b' fullCalcOnLoad="1"', b"")
+        elif info.filename == "xl/worksheets/sheet1.xml":
+            data = data.replace(b'<c r="C4"><f>B4*3</f><v>0</v></c>', b'<c r="C4"><f>B4*3</f></c>')
+        z.writestr(info, data)
