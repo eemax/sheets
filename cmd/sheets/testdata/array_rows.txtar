@@ -1,0 +1,74 @@
+# Edits of rows and columns keep every formula as it was: an array stays
+# an array, over its range where it now stands, and no other formula
+# becomes one (one landing where an array's first cell was included); the
+# next edit then leaves the cells around them alone. Separate commands,
+# and one batch.
+fixture arrays_rows.xlsx
+exec sheets check --fix arrays_rows.xlsx
+cp arrays_rows.xlsx batch.xlsx
+
+exec sheets rows insert arrays_rows.xlsx Sheet!1 -n 2
+exec sheets read arrays_rows.xlsx Sheet!A3:D6 --formulas
+stdout '^3	=B3:B4\*100	1	=B3\+100	=SUM\(B3:B3\*2\)$'
+stdout '^4		2	keep me	=SUM\(B4:B4\*2\)$'
+stdout '^5		3	=B3:B4\*3	=SUM\(B5:B5\*2\)$'
+exec sheets set arrays_rows.xlsx Sheet!B3 50
+exec sheets read arrays_rows.xlsx Sheet!C3:C6
+stdout '^3	150$'
+stdout '^4	keep me$'
+stdout '^5	150$'
+stdout '^6	6$'
+# A plain formula stays plain (implicit intersection in its own row).
+exec sheets read arrays_rows.xlsx Sheet!A3
+stdout '^3	5000$'
+exec sheets check arrays_rows.xlsx
+stdout ', 0 missing, 0 stale$'
+! stdout 'unknown|#SPILL'
+! exec sheets set arrays_rows.xlsx Sheet!C6 1
+stderr 'Sheet!C6 lies inside the array formula Sheet!C5:C6'
+
+# An array's first cell written over, then rows inserted: no array where
+# it was.
+exec sheets set arrays_rows.xlsx Sheet!D3 =B3*2
+exec sheets rows insert arrays_rows.xlsx Sheet!1
+exec sheets set arrays_rows.xlsx Sheet!B5 9
+exec sheets read arrays_rows.xlsx Sheet!C4:D7
+stdout '^5	keep me	18$'
+
+# The same as one batch.
+stdin batch.txt
+exec sheets do batch.xlsx
+exec sheets read batch.xlsx Sheet!C4:D7
+stdout '^5	keep me	18$'
+stdout '^4	150	100$'
+exec sheets check batch.xlsx
+! stdout 'unknown|#SPILL'
+
+# Arrays in single cells sort with their rows; one over several cells
+# does not.
+exec sheets sort arrays_rows.xlsx Sheet!D4:D5 D:desc
+stdout 'sorted Sheet!D4:D5'
+! exec sheets sort arrays_rows.xlsx Sheet!B5:C7 B
+stderr 'takes in the array formula Sheet!C6:C7 .*Excel sorts no cell of an array'
+
+# A dynamic array's inputs moved: it keeps the range its result fills,
+# and computes again over it (no #SPILL! from its own old result).
+stdin nums.tsv
+exec sheets write n.xlsx S
+exec sheets set n.xlsx S!D1 '=A1:A3*2'
+exec sheets move n.xlsx S!A1:A3 S!B1
+exec sheets set n.xlsx S!B2 7
+exec sheets read n.xlsx S!D1:D3
+stdout '^2	14$'
+stdout '^3	6$'
+
+-- nums.tsv --
+1
+2
+3
+-- batch.txt --
+rows insert Sheet!1 -n 2
+set Sheet!B3 50
+set Sheet!D3 =B3*2
+rows insert Sheet!1
+set Sheet!B5 9

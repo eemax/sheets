@@ -285,7 +285,11 @@ func (e *Editor) put(sheet string, row, col int, h *taken, text string, what pas
 				e.patches.errorCells[sheet][cell] = true
 			}
 		default:
-			err = e.f.SetCellDefault(sheet, cell, "")
+			// No formula left behind either (excelize keeps an array
+			// formula's, one marked to calculate always among them).
+			if err = e.f.SetCellFormula(sheet, cell, ""); err == nil {
+				err = e.f.SetCellDefault(sheet, cell, "")
+			}
 		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", grid.FormatRef(sheet, grid.Range{R1: row, C1: col, R2: row, C2: col}), err)
@@ -1138,7 +1142,7 @@ func (e *Editor) MoveRange(from string, src grid.Range, to string, at grid.Range
 		if text == f.text {
 			continue
 		}
-		if err := e.setFormula(f.sheet, grid.CellName(f.row, f.col), text); err != nil {
+		if err := e.rewriteFormula(f.sheet, f.row, f.col, text); err != nil {
 			return res, err
 		}
 		e.touch(f.sheet, f.row, f.col)

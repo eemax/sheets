@@ -279,7 +279,11 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 	// keeps its first cell alone, and its result is unknown.
 	arrays := e.legacyArrays()
 	moved := map[cellKey]grid.Range{}
+	// Each formula goes back as it was: a dynamic array as one, any other
+	// as a plain formula, however its text reads.
+	dynamic := map[cellKey]bool{}
 	for _, f := range all {
+		wasDynamic := e.wasDynamic(f.sheet, grid.CellName(f.row, f.col))
 		if err := e.f.SetCellFormula(f.sheet, grid.CellName(f.row, f.col), ""); err != nil {
 			return err
 		}
@@ -305,6 +309,8 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 		}
 		if isArray {
 			moved[keyOf(m.sheet, m.row, m.col)] = rg
+		} else if wasDynamic {
+			dynamic[keyOf(m.sheet, m.row, m.col)] = true
 		}
 		keep = append(keep, m)
 		if e.recompute[keyOf(f.sheet, f.row, f.col)] || movedResult(rs, f.sheet, f.row, f.col, f.text, target, hit) {
@@ -453,7 +459,7 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 			}
 			continue
 		}
-		if err := e.setFormula(m.sheet, cell, m.text); err != nil {
+		if err := e.putBack(m.sheet, cell, m.text, dynamic[keyOf(m.sheet, m.row, m.col)]); err != nil {
 			return err
 		}
 	}
@@ -943,4 +949,22 @@ func headerGone(ref, target string, hit func(grid.Range) bool, cols bool) bool {
 		head = grid.Range{R1: r.R1, C1: r.C1, R2: r.R2, C2: r.C1}
 	}
 	return hit(head)
+}
+
+// putBack writes a formula an edit of rows or columns moved: a dynamic
+// array as one, any other as a plain formula, as it was.
+func (e *Editor) putBack(sheet, cell, text string, dynamic bool) error {
+	if dynamic {
+		return e.setFormulaAs(sheet, cell, text, true)
+	}
+	if err := e.f.SetCellDefault(sheet, cell, ""); err != nil {
+		return err
+	}
+	if err := e.f.SetCellFormula(sheet, cell, formula.ToFile(text)); err != nil {
+		return err
+	}
+	if e.wasDynamic(sheet, cell) {
+		e.patches.markCell(sheet, cell, false)
+	}
+	return nil
 }

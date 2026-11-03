@@ -371,3 +371,20 @@ for r in range(1, 4):
 ws["E1"] = ArrayFormula("E1:E3", "=A1:A3*3")
 ws["E3"] = "=A1+100"
 wb.save(f"{out}/arrays_inside.xlsx")
+
+# arrays_rows.xlsx: arrays and plain formulas next to them, for edits of rows
+# and columns: a plain formula over a range (implicit intersection), a
+# legacy array over two cells below a plain formula and a value, and
+# arrays in single cells, one per row.
+wb = Workbook()
+ws = wb.active
+ws.title = "Sheet"
+for r in range(1, 5):
+    ws.cell(r, 2, r)
+ws["A1"] = "=B1:B2*100"
+ws["C1"] = "=B1+100"
+ws["C2"] = "keep me"
+ws["C3"] = ArrayFormula("C3:C4", "=B1:B2*3")
+for r in range(1, 4):
+    ws.cell(r, 4).value = ArrayFormula(f"D{r}", f"=SUM(B{r}:B{r}*2)")
+wb.save(f"{out}/arrays_rows.xlsx")
