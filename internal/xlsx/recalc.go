@@ -768,7 +768,7 @@ func (e *Editor) stateNow() (*grid.Workbook, error) {
 		}
 		data = b
 	} else {
-		b, err := e.f.WriteToBuffer()
+		b, err := writeWorkbook(e.f)
 		if err != nil {
 			return nil, err
 		}

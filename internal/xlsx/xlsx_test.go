@@ -406,6 +406,7 @@ func TestModernFormulas(t *testing.T) {
 			t.Errorf("missing %s in\n%s", want, xml)
 		}
 	}
+	validPackage(t, path)
 	if md := sheetXML(t, path, "xl/metadata.xml"); !strings.Contains(md, `name="XLDAPR"`) {
 		t.Errorf("metadata = %q", md)
 	}
@@ -441,12 +442,94 @@ func TestOverwriteSpillAnchor(t *testing.T) {
 	if err := e.Save(false); err != nil {
 		t.Fatal(err)
 	}
+	validPackage(t, path)
 	wb, _ := Read(path)
 	if c := wb.Sheets[0].Get(2, 3); !c.IsEmpty() {
 		t.Errorf("C2 kept spilled value %+v", c)
 	}
 	if strings.Contains(sheetXML(t, path, "xl/worksheets/sheet1.xml"), `cm="`) {
 		t.Error("cm left on overwritten anchor")
+	}
+}
+
+// A sheet made in the session, edited after the workbook was written out
+// (to compute formulas, or to lay out a dynamic array): excelize kept such
+// a sheet with its empty rows trimmed, so a later edit landed in another
+// row's place, and the sheet saved with rows out of order or twice.
+func TestEditNewSheetAfterWrite(t *testing.T) {
+	type session interface {
+		AddSheet(name, before, after string) error
+		Set(sheet string, row, col int, v input.Value) error
+		Evaluate(sheet string, row, col int) (grid.Cell, string, bool)
+		Save(dryRun bool) error
+		Close() error
+	}
+	opens := map[string]func(path string) (session, error){
+		"full": func(path string) (session, error) { return OpenEditor(path, false) },
+		"stream": func(path string) (session, error) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+			return OpenAuto(path, data)
+		},
+	}
+	set := func(t *testing.T, e session, cell, v string) {
+		t.Helper()
+		r, c, _ := grid.ParseCell(cell)
+		must(t, e.Set("S", r, c, input.Parse(v, false)))
+	}
+	for name, open := range opens {
+		t.Run(name+"/spill", func(t *testing.T) {
+			path := writeBook(t, [][]string{{"Name"}, {"d"}, {"b"}})
+			e, err := open(path)
+			must(t, err)
+			must(t, e.AddSheet("S", "", ""))
+			set(t, e, "A1", "x")
+			set(t, e, "B3", "=SEQUENCE(4)")
+			set(t, e, "B8", "u")
+			must(t, e.Save(false))
+			e.Close()
+			validPackage(t, path)
+			xml := sheetXML(t, path, "xl/worksheets/sheet2.xml")
+			if !strings.Contains(xml, `<f t="array" ref="B3:B6">`) || strings.Count(xml, `r="B3"`) != 1 {
+				t.Errorf("anchor in\n%s", xml)
+			}
+			s := read(t, path).Sheet("S")
+			for cell, want := range map[string]grid.Cell{
+				"A1": {Kind: grid.Text, Text: "x"},
+				"B4": {Kind: grid.Number, Num: 2},
+				"B6": {Kind: grid.Number, Num: 4},
+				"B8": {Kind: grid.Text, Text: "u"},
+			} {
+				r, c, _ := grid.ParseCell(cell)
+				if got := s.Get(r, c); got.Kind != want.Kind || got.Num != want.Num || got.Text != want.Text {
+					t.Errorf("%s = %+v, want %+v", cell, got, want)
+				}
+			}
+		})
+		t.Run(name+"/evaluate", func(t *testing.T) {
+			path := writeBook(t, [][]string{{"Name"}, {"d"}})
+			e, err := open(path)
+			must(t, err)
+			must(t, e.AddSheet("S", "", ""))
+			set(t, e, "A1", "=1+1")
+			set(t, e, "A5", "v")
+			if v, _, ok := e.Evaluate("S", 1, 1); !ok || v.Num != 2 {
+				t.Fatalf("A1 = %+v", v)
+			}
+			set(t, e, "A3", "w")
+			must(t, e.Save(false))
+			e.Close()
+			validPackage(t, path)
+			s := read(t, path).Sheet("S")
+			if got := s.Get(3, 1).Text; got != "w" {
+				t.Errorf("A3 = %q", got)
+			}
+			if got := s.Get(5, 1).Text; got != "v" {
+				t.Errorf("A5 = %q", got)
+			}
+		})
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/eemax/sheets/internal/grid"
 	"github.com/eemax/sheets/internal/input"
+	"github.com/eemax/sheets/internal/xlsxtest"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -100,6 +101,10 @@ func validPackage(t *testing.T, path string) {
 				t.Errorf("content type for missing part %s", m[1])
 			}
 		}
+	}
+	// Rows and cells in order, each once, or Excel repairs the file.
+	if err := xlsxtest.CheckOrder(data); err != nil {
+		t.Error(err)
 	}
 }
 
