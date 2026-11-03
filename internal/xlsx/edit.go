@@ -266,14 +266,6 @@ func (e *Editor) setFormula(sheet, cell, text string) error {
 	if err := e.f.SetCellDefault(sheet, cell, ""); err != nil {
 		return err
 	}
-	if row, col, ok := grid.ParseCell(cell); ok {
-		if rg, legacy := e.legacyArrays()[keyOf(sheet, row, col)]; legacy {
-			// A legacy array formula rewritten (references moved, text
-			// replaced) stays one, over its range.
-			t, ref := excelize.STCellFormulaTypeArray, rg.String()
-			return e.f.SetCellFormula(sheet, cell, stored, excelize.FormulaOpts{Type: &t, Ref: &ref})
-		}
-	}
 	dynamic := dynamicFormula(stored)
 	var opts []excelize.FormulaOpts
 	if dynamic {
@@ -816,4 +808,36 @@ func (e *Editor) arraysOn(sheet string) []grid.Range {
 		return out[i].C1 < out[j].C1
 	})
 	return out
+}
+
+// rewriteFormula writes a formula's new text where it stands (its
+// references moved, say): a legacy array formula anchored there stays one,
+// over its range. Only for a formula rewritten in place: the arrays are
+// tracked where they stand now.
+func (e *Editor) rewriteFormula(sheet string, row, col int, text string) error {
+	cell := grid.CellName(row, col)
+	if rg, legacy := e.legacyArrays()[keyOf(sheet, row, col)]; legacy {
+		if err := e.f.SetCellDefault(sheet, cell, ""); err != nil {
+			return err
+		}
+		t, ref := excelize.STCellFormulaTypeArray, rg.String()
+		return e.f.SetCellFormula(sheet, cell, formula.ToFile(text), excelize.FormulaOpts{Type: &t, Ref: &ref})
+	}
+	if lay := e.layouts[sheet]; lay != nil {
+		if sp, ok := lay.spills[[2]int{row, col}]; ok && dynamicFormula(formula.ToFile(text)) {
+			// A dynamic array keeps the range its result fills, until it
+			// is computed again: its old result there is its own, not in
+			// its way.
+			if err := e.f.SetCellDefault(sheet, cell, ""); err != nil {
+				return err
+			}
+			t, ref := excelize.STCellFormulaTypeArray, sp.String()
+			if err := e.f.SetCellFormula(sheet, cell, formula.ToFile(text), excelize.FormulaOpts{Type: &t, Ref: &ref}); err != nil {
+				return err
+			}
+			e.patches.markCell(sheet, cell, true)
+			return nil
+		}
+	}
+	return e.setFormula(sheet, cell, text)
 }

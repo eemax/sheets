@@ -128,7 +128,7 @@ func (e *Editor) ExtendTable(sheet string, body grid.Range, n int) {
 			if grown == f.text {
 				continue
 			}
-			if err := e.setFormula(f.sheet, grid.CellName(f.row, f.col), grown); err != nil {
+			if err := e.rewriteFormula(f.sheet, f.row, f.col, grown); err != nil {
 				e.warnings = append(e.warnings, "could not extend "+grid.FormatRef(f.sheet, grid.Range{R1: f.row, C1: f.col, R2: f.row, C2: f.col})+": "+err.Error())
 				continue
 			}

@@ -63,9 +63,10 @@ func (e *Editor) SortRange(sheet string, r grid.Range, keys []SortKey) (SortResu
 	if err := e.checkSort(s, r); err != nil {
 		return res, err
 	}
-	// Excel sorts no cell of an array formula, whole or in part.
+	// Excel sorts no cell of an array formula over several cells, whole or
+	// in part; one in a single cell moves with its row.
 	for _, rg := range e.arraysOn(sheet) {
-		if !rg.Intersect(r).Empty() {
+		if rg.Rows()*rg.Cols() > 1 && !rg.Intersect(r).Empty() {
 			what := " takes in part of"
 			if within([]grid.Range{rg}, r) {
 				what = " takes in"
@@ -156,6 +157,7 @@ func (e *Editor) SortRange(sheet string, r grid.Range, keys []SortKey) (SortResu
 	if err != nil {
 		return res, err
 	}
+	e.dropArrays(sheet, r) // arrays in one cell go with their rows (see put)
 	moved := map[[2]int]*taken{}
 	for k, h := range b.cells {
 		moved[[2]int{to[k[0]], k[1]}] = h

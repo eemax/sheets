@@ -1138,7 +1138,7 @@ func (e *Editor) MoveRange(from string, src grid.Range, to string, at grid.Range
 		if text == f.text {
 			continue
 		}
-		if err := e.setFormula(f.sheet, grid.CellName(f.row, f.col), text); err != nil {
+		if err := e.rewriteFormula(f.sheet, f.row, f.col, text); err != nil {
 			return res, err
 		}
 		e.touch(f.sheet, f.row, f.col)
