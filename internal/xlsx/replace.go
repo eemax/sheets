@@ -101,6 +101,15 @@ func (e *Editor) Replace(sheet string, r *grid.Range, fn func(string) (string, b
 			return nil, err
 		}
 		for _, ch := range todo {
+			if rg, ok := e.legacyArrays()[keyOf(s.Name, ch.row, ch.col)]; ok && ch.v.Formula != "" {
+				// An array formula's text replaced: still an array, over
+				// its range.
+				if err := e.SetArray(s.Name, rg, ch.v.Formula); err != nil {
+					return nil, err
+				}
+				out = append(out, ch.rep)
+				continue
+			}
 			if err := e.Set(s.Name, ch.row, ch.col, ch.v); err != nil {
 				return nil, err
 			}

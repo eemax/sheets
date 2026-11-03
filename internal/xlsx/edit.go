@@ -266,6 +266,14 @@ func (e *Editor) setFormula(sheet, cell, text string) error {
 	if err := e.f.SetCellDefault(sheet, cell, ""); err != nil {
 		return err
 	}
+	if row, col, ok := grid.ParseCell(cell); ok {
+		if rg, legacy := e.legacyArrays()[keyOf(sheet, row, col)]; legacy {
+			// A legacy array formula rewritten (references moved, text
+			// replaced) stays one, over its range.
+			t, ref := excelize.STCellFormulaTypeArray, rg.String()
+			return e.f.SetCellFormula(sheet, cell, stored, excelize.FormulaOpts{Type: &t, Ref: &ref})
+		}
+	}
 	dynamic := dynamicFormula(stored)
 	var opts []excelize.FormulaOpts
 	if dynamic {

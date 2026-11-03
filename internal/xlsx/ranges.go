@@ -785,13 +785,9 @@ func (e *Editor) CopyRange(from string, src grid.Range, to string, at grid.Range
 			return res, err
 		}
 	}
-	if what.contents {
-		if err := e.checkArrays(from, src, "copy", func(rg grid.Range) error {
-			if o.Values {
-				return nil // its values alone
-			}
-			return arrayNotCopied(from, rg, "copy")
-		}); err != nil {
+	if what.contents && !o.Values {
+		// Values alone read an array as it shows, part of it too.
+		if err := e.checkArrays(from, src, "copy", func(rg grid.Range) error { return arrayNotCopied(from, rg, "copy") }); err != nil {
 			return res, err
 		}
 	}
@@ -1327,6 +1323,10 @@ func (e *Editor) MoveRange(from string, src grid.Range, to string, at grid.Range
 // arrayNotCopied refuses to copy or move a whole legacy array formula,
 // which sheets would turn into a plain one.
 func arrayNotCopied(sheet string, rg grid.Range, verb string) error {
-	return fmt.Errorf("%s holds the array formula %s (entered with Ctrl+Shift+Enter), which sheets cannot %s as an array yet: %s it in Excel, or %s with --values",
-		grid.FormatRef(sheet, rg), grid.FormatRef(sheet, rg), verb, verb, map[bool]string{true: "copy it", false: "copy it, then clear it,"}[verb == "copy"])
+	instead := "copy it with --values"
+	if verb != "copy" {
+		instead = "copy it with --values, then clear it"
+	}
+	return fmt.Errorf("%s holds the array formula %s (entered with Ctrl+Shift+Enter), which sheets cannot %s as an array yet: %s it in Excel, or %s",
+		grid.FormatRef(sheet, rg), grid.FormatRef(sheet, rg), verb, verb, instead)
 }
