@@ -8,8 +8,8 @@ This file is the plan: a status board, then Horizon 1 as work packages.
 
 | Package | What | Wave | Status |
 |---|---|---|---|
-| WP-01 | `sheets check` | 1 | auditing |
-| WP-07a | Excel check, round 2: what sheets writes today | 1 | auditing |
+| WP-01 | `sheets check` | 1 | fixing |
+| WP-07a | Excel check, round 2: what sheets writes today | 1 | fixing |
 | WP-08 | Evals that measure the claims | 1 | planned |
 | WP-02 | Experiment: does `check` cut Python's silent defects? | 2 | planned |
 | WP-05 | `explain` and `trace` | 2 | planned |
@@ -23,6 +23,7 @@ This file is the plan: a status board, then Horizon 1 as work packages.
 | WP-12 | Fix: a dynamic array set on a sheet the same command adds is saved corrupt | 1 | auditing |
 | WP-13 | Fix: render computes what read calls unknown; dates written into narrow columns show ######## | — | planned |
 | WP-14 | Engine: what it computes unlike Excel becomes unknown, so check --fix never stores it | — | planned |
+| WP-15 | Fix: spills lost by a script's sheet copy, and after deleting a row inside a spill | — | planned |
 
 **Gate after wave 2.** WP-02's verdict decides whether the position holds
 (see the kill criterion in the vision). Max reviews it before wave 3.
@@ -289,6 +290,19 @@ the definition of done in [orchestration.md](orchestration.md).
     difference outside spaces;
   - the engine corpus test does not get worse;
   - tests cover each class.
+
+### WP-15 Fix: two spill bugs
+
+- **Found by:** the wave-1 audit. Both predate it.
+- **A script's sheet copy:** in `sheets script`, `ws.copy()` after
+  `setFormula("=SEQUENCE(3)")` gives a copy whose array formula has no
+  `cm` mark and no value. Excel would show a one-cell legacy array. The
+  same copy through `do` (`sheet copy`) is fine.
+- **A row deleted inside a spill:** `rows delete Data!3` inside a spill
+  D1:D4 leaves the old spilled values as plain values, so D1 becomes
+  `#SPILL!`. Excel would spill a, c, d again.
+- **Acceptance:** both cases match Excel in both editors; tests; XML order
+  checked with `internal/xlsxtest`.
 
 ### WP-11 An Excel oracle (waiting on Max)
 
