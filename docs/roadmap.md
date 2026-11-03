@@ -3,6 +3,7 @@
 Where sheets is going, and why, is in [vision.md](vision.md). How the work
 is run (workers, audits, merging) is in [orchestration.md](orchestration.md).
 This file is the plan: a status board, then Horizon 1 as work packages.
+Where the last session left off is in [handover.md](handover.md).
 
 ## Board
 
