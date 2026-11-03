@@ -282,6 +282,10 @@ the definition of done in [orchestration.md](orchestration.md).
     - `ERROR.TYPE` inside `IF`;
     - `SUMIFS` with `DATE` criteria.
   - **The full list** is in `~/sheets-evals/wp01/corpus-op-out/unlike-excel.txt`.
+- **Also:** in 1904-date workbooks, date results are unknown for now (WP-01).
+  Teach the engine the 1904 system instead. A date written as text in a
+  criterion (`SUMIF(A1:A2,"<1/2/2020")`) is mishandled in both date
+  systems.
 - **Goal:** each class either matches Excel or gives unknown, never a
   value Excel would not show. Month and day names, and other formats
   that depend on Excel's language, are unknown (the language rule).
