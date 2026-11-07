@@ -1,0 +1,20 @@
+# sheets' checks, for `portal check` (~/portal/docs/spec-check-ledger.md): `fast` while working,
+# `full` before a build reports. Both run scripts/check.sh; its last line is the total `count:`
+# reads (tests passed, subtests included, summed over each `go test` it runs). Both key on the
+# whole repo (.claude/worktrees/, other sessions' checkouts, is in .gitignore).
+#
+# Every test is self-contained: fixtures in testdata, temp dirs, no network, no Excel. Kept out
+# (each needs data or tools outside the repo, set by env var, and skips without it):
+# TestEngineCorpus (SHEETS_CALC_CORPUS, Excel's results over ~/sheets-evals), the check corpus
+# (SHEETS_CHECK_CORPUS, LibreOffice), the probe (SHEETS_PROBE_FILE), STREAM_ROUNDS' longer
+# random comparison, and scripts/excel-check.sh (a manual look in real Excel).
+# No per-area check: the whole plain suite runs in ~10 s, so narrowing paths buys nothing.
+checks:
+  fast:   # go vet, go test ./... (go's test cache on)
+    run: scripts/check.sh fast
+    toolchain: go version && python3 --version
+    count: 'check: (\d+) tests passed'
+  full:   # go vet; go test -count=1 ./...; the same with SHEETS_STREAM=always on cmd, xlsx, cli; -race ./...
+    run: scripts/check.sh full
+    toolchain: go version && python3 --version
+    count: 'check: (\d+) tests passed'

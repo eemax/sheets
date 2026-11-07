@@ -42,6 +42,11 @@ and CSV files without Excel. Module `github.com/eemax/sheets`.
   - `go vet ./...` and `go test ./...`;
   - `SHEETS_STREAM=always go test ./cmd/... ./internal/xlsx/... ./internal/cli/...`;
   - `go test -race` on what you touched.
+
+  `~/portal/bin/portal check fast` runs vet and the tests while you work;
+  `portal check full` (all three above, `-race` on everything) before a
+  build reports. Each records a pass on the code, so no other role reruns
+  it (`.portal-checks.yaml`, `scripts/check.sh`).
 - **The agent guide** is `internal/cli/agent-docs.md`. The skill
   (`skills/sheets`) is generated from it with
   `go run ./cmd/sheets skill --install --dir skills`, and a test fails
