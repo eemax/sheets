@@ -1,4 +1,4 @@
-# sheets' checks, for `portal check` (~/portal/docs/spec-check-ledger.md): `fast` while working,
+# sheets' checks, for `portal check` (~/portal/docs/check.md): `fast` while working,
 # `full` before a build reports. Both run scripts/check.sh; its last line is the total `count:`
 # reads (tests passed, subtests included, summed over each `go test` it runs). Both key on the
 # whole repo (.claude/worktrees/, other sessions' checkouts, is in .gitignore).
