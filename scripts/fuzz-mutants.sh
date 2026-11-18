@@ -2,23 +2,26 @@
 # scripts/fuzz-mutants.sh OUT [--only NAME]: checks the fuzzer finds each of
 # wave 1's bugs, put back into sheets (internal/fuzz/mutants/NAME.patch).
 #
-# For each mutant it copies the working tree as it is (tracked and untracked
-# files, ignored ones left out: uncommitted work included; never HEAD, a
-# branch or a worktree of this checkout) into a temporary folder, applies the
-# patch there, and runs the fuzzer's long mode on it until its first finding
-# known.txt does not list, for at most 4 minutes (SHEETS_FUZZ_UNTIL=new,
-# SHEETS_FUZZ_TIME=4m). The seed is long mode's run in known.txt (7), so the
-# findings of the code as it is are all listed, and a new one is the mutant's.
-# A mutant is found when the run stops at such a finding, shrunk.
+# It copies the working tree as it is (tracked and untracked files, ignored
+# ones left out: uncommitted work included; never HEAD, a branch or a
+# worktree of this checkout) into a temporary folder: once as it is, the
+# base, whose fuzz test binary it builds, and for each mutant once more, with
+# its patch applied. It runs the fuzzer's long mode on the patched copy
+# until the mutant's finding, for at most 4 minutes (SHEETS_FUZZ_UNTIL=new,
+# SHEETS_FUZZ_TIME=4m): the first finding known.txt does not list (by its
+# signature, or as a bug it names) whose sequence the base makes with no
+# finding (SHEETS_FUZZ_BASE: a finding the code makes without the mutant is
+# not the mutant's, whatever the seed). A mutant is found when the run stops
+# at such a finding, shrunk.
 #
 # It writes OUT/NAME.log for each (the mutant, the seed, the repro, the time
 # to the finding, the run's log) and OUT/summary.txt, and exits 0 only if
 # every mutant is found. When uv cannot make long mode's pools (no uv, or no
 # network for openpyxl and XlsxWriter), each mutant runs the default mode on
-# the committed pool instead (seed 1, 2,000 edits, its findings all in
-# known.txt), and the logs say so.
+# the committed pool instead (seed 1, at most 2,000 edits, with the same stop
+# and the same base), and the logs say so.
 #
-#   SHEETS_FUZZ_MUTANT_SEED   the seed (default 7: long mode's in known.txt)
+#   SHEETS_FUZZ_MUTANT_SEED   the seed (default 7)
 #   SHEETS_FUZZ_MUTANT_TIME   the cap (default 4m)
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -52,6 +55,16 @@ copy_tree() {
     tar --null -T - -cf -) | tar -xf - -C "$1"
 }
 
+# The base: the working tree without a mutant, its fuzz test binary built, to
+# replay the sequence of each finding a mutant's run does not know.
+base="$tmp/base"
+mkdir -p "$base"
+copy_tree "$base"
+if ! (cd "$base" && go test -c -o internal/fuzz/fuzz.test ./internal/fuzz) >"$tmp/base.log" 2>&1; then
+  echo "the working tree's fuzz tests do not build: $(tail -3 "$tmp/base.log")" >&2
+  exit 2
+fi
+
 # Long mode needs fresh pools: can uv make one?
 mode=long
 probe=$(cd "$root" && uv run --no-project --with openpyxl==3.1.5 --with xlsxwriter==3.3.1 \
@@ -65,9 +78,9 @@ summary="$out/summary.txt"
 {
   echo "fuzz-mutants $(date -u +%Y-%m-%dT%H:%M:%SZ), from $root ($(git -C "$root" rev-parse --short HEAD), working tree as it is)"
   if [ $mode = long ]; then
-    echo "mode: long, seed $seed, cap $cap, stopping at the first finding known.txt does not list"
+    echo "mode: long, seed $seed, cap $cap, stopping at the mutant's finding: the first known.txt does not list whose sequence the tree without the mutant makes with no finding"
   else
-    echo "mode: default (uv could not make pools), seed 1, 2,000 edits on the committed pool"
+    echo "mode: default (uv could not make pools), seed 1, at most 2,000 edits on the committed pool, with the same stop"
   fi
 } > "$summary"
 for patch in "$mutants"/*.patch; do
@@ -88,30 +101,34 @@ for patch in "$mutants"/*.patch; do
     continue
   fi
   if [ $mode = long ]; then
-    echo "run: SHEETS_FUZZ=long SHEETS_FUZZ_SEED=$seed SHEETS_FUZZ_TIME=$cap SHEETS_FUZZ_UNTIL=new go test ./internal/fuzz -run 'TestFuzz\$' -count=1 -v" >> "$log"
+    echo "run: SHEETS_FUZZ=long SHEETS_FUZZ_SEED=$seed SHEETS_FUZZ_TIME=$cap SHEETS_FUZZ_UNTIL=new SHEETS_FUZZ_BASE=BASE go test ./internal/fuzz -run 'TestFuzz\$' -count=1 -v" >> "$log"
   else
-    echo "run: go test ./internal/fuzz -run 'TestFuzz\$' -count=1 -v (default mode: uv could not make pools)" >> "$log"
+    echo "run: SHEETS_FUZZ_UNTIL=new SHEETS_FUZZ_BASE=BASE go test ./internal/fuzz -run 'TestFuzz\$' -count=1 -v (default mode: uv could not make pools)" >> "$log"
   fi
+  echo "(BASE: a copy of the working tree without the mutant, its fuzz test binary built)" >> "$log"
   echo >> "$log"
   start=$(date +%s)
   set +e
   if [ $mode = long ]; then
-    (cd "$dir" && SHEETS_FUZZ=long SHEETS_FUZZ_SEED=$seed SHEETS_FUZZ_TIME=$cap SHEETS_FUZZ_UNTIL=new \
+    (cd "$dir" && SHEETS_FUZZ=long SHEETS_FUZZ_SEED=$seed SHEETS_FUZZ_TIME=$cap SHEETS_FUZZ_UNTIL=new SHEETS_FUZZ_BASE="$base" \
       go test ./internal/fuzz -run 'TestFuzz$' -count=1 -v -timeout 20m) >> "$log" 2>&1
   else
-    (cd "$dir" && go test ./internal/fuzz -run 'TestFuzz$' -count=1 -v -timeout 20m) >> "$log" 2>&1
+    (cd "$dir" && SHEETS_FUZZ_UNTIL=new SHEETS_FUZZ_BASE="$base" \
+      go test ./internal/fuzz -run 'TestFuzz$' -count=1 -v -timeout 20m) >> "$log" 2>&1
   fi
   rc=$?
   set -e
   secs=$(($(date +%s) - start))
   rm -rf "$dir"
-  # Found: the run failed on a finding known.txt does not list, shrunk.
-  first=$(grep -m1 "a finding not in known.txt, shrunk" "$log" || true)
-  if [ $rc -ne 0 ] && [ -n "$first" ]; then
-    sig=$(grep -m1 -A1 "a finding not in known.txt, shrunk" "$log" | sed -n 's/^ *finding //p')
-    after=$(echo "$first" | sed -n 's/.*shrunk, after \([0-9]*s\).*/\1/p')
-    repro=$(echo "$first" | sed -n 's/.*(replay: \(.*\)):$/\1/p')
-    line="$name: found, $sig, after $after (the run took ${secs}s with shrinking); repro: $repro"
+  # Found: the run stopped at the mutant's finding (one known.txt does not
+  # list, whose sequence the base makes with no finding), and shrank it.
+  stop=$(grep -m1 "the mutant's finding: " "$log" || true)
+  sig=$(echo "$stop" | sed -n "s/.*the mutant's finding: \(.*\), after \([0-9]*\)s: .*/\1/p")
+  after=$(echo "$stop" | sed -n "s/.*the mutant's finding: .*, after \([0-9]*\)s: .*/\1/p")
+  shrunk=$(grep -B1 "^ *finding $sig\$" "$log" | grep -m1 "a finding not in known.txt, shrunk" || true)
+  if [ $rc -ne 0 ] && [ -n "$sig" ] && [ -n "$shrunk" ]; then
+    repro=$(echo "$shrunk" | sed -n 's/.*(replay: \(.*\)):$/\1/p')
+    line="$name: found, $sig, after ${after}s (the run took ${secs}s with shrinking); repro: $repro"
     found=$((found + 1))
   else
     line="$name: NOT FOUND (exit $rc, ${secs}s)"
@@ -119,6 +136,10 @@ for patch in "$mutants"/*.patch; do
   fi
   echo "result: $line" >> "$log"
   echo "$line" | tee -a "$summary"
+  others=$(grep -c "and the tree without the mutant makes its sequence with a finding too" "$log" || true)
+  if [ "$others" -gt 0 ]; then
+    echo "  ($others findings known.txt does not list were the code's, not the mutant's: the base makes their sequences with a finding too; see $name.log)" | tee -a "$summary"
+  fi
 done
 echo "$found found, $missed not" | tee -a "$summary"
 [ "$missed" -eq 0 ] && [ "$found" -gt 0 ]
