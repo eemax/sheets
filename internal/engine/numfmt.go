@@ -4,6 +4,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // FormatNumber renders a number with an Excel format code, as TEXT does:
@@ -52,6 +53,113 @@ func FormatNumber(v float64, code string, date1904 bool) string {
 		}
 	}
 	return out
+}
+
+// FormatLanguage tells why a format code's output depends on the
+// language Excel is set to, or "" when it does not (the language rule):
+// month and day names (mmm and longer, ddd and longer) and AM/PM or A/P
+// are written in Excel's language, unless the section carries the en-US
+// locale tag [$-409]; another locale tag sets another language; and a
+// letter en-US Excel does not know as a code (ÅÅÅÅ, JJJJ) is a code of
+// another language's Excel. Thousands and decimal separators are taken as
+// en-US. The text section (the fourth) shows text, and is not looked at.
+func FormatLanguage(code string) string {
+	secs := splitSections(code)
+	if len(secs) > 3 {
+		secs = secs[:3]
+	}
+	for _, sec := range secs {
+		if why := sectionLanguage(sec); why != "" {
+			return "its format " + strconv.Quote(code) + " " + why
+		}
+	}
+	return ""
+}
+
+func sectionLanguage(sec string) string {
+	enUS := false
+	names := ""
+	rs := []rune(sec)
+	upper := []rune(strings.ToUpper(sec))
+	if len(upper) != len(rs) {
+		upper = rs // a letter whose upper case is longer: compare as written
+	}
+	has := func(i int, s string) bool {
+		return i+len(s) <= len(upper) && string(upper[i:i+len(s)]) == s
+	}
+	for i := 0; i < len(rs); i++ {
+		ch := rs[i]
+		switch {
+		case ch == '"':
+			for i++; i < len(rs) && rs[i] != '"'; i++ {
+			}
+		case ch == '\\' || ch == '_' || ch == '*':
+			i++ // the next character is a literal, a space's width, or a fill
+		case ch == '[':
+			j := i + 1
+			for j < len(rs) && rs[j] != ']' {
+				j++
+			}
+			inner := string(rs[i+1 : min(j, len(rs))])
+			if strings.HasPrefix(inner, "$") {
+				if _, tag, ok := strings.Cut(inner, "-"); ok {
+					if !isEnUS(tag) {
+						return "has the locale tag [" + inner + "], which sets a language other than English (US)"
+					}
+					enUS = true
+				}
+			}
+			i = j
+		case has(i, "GENERAL"):
+			i += len("GENERAL") - 1
+		case has(i, "AM/PM"):
+			if names == "" {
+				names = "AM/PM"
+			}
+			i += len("AM/PM") - 1
+		case has(i, "A/P"):
+			if names == "" {
+				names = "A/P"
+			}
+			i += len("A/P") - 1
+		case ch == 'm' || ch == 'M' || ch == 'd' || ch == 'D':
+			j := i
+			for j < len(rs) && rs[j]|0x20 == ch|0x20 {
+				j++
+			}
+			if j-i >= 3 && names == "" {
+				if ch|0x20 == 'm' {
+					names = "month names"
+				} else {
+					names = "day names"
+				}
+			}
+			i = j - 1
+		case strings.ContainsRune("yYhHsS", ch):
+		case (ch == 'e' || ch == 'E') && i+1 < len(rs) && (rs[i+1] == '+' || rs[i+1] == '-'):
+			i++ // an exponent
+		case unicode.IsLetter(ch):
+			j := i
+			for j < len(rs) && unicode.IsLetter(rs[j]) {
+				j++
+			}
+			return "holds " + string(rs[i:j]) + ", not a format code of English (US) Excel: a code of another language's Excel"
+		}
+	}
+	if names != "" && !enUS {
+		return "writes " + names + ", which are in the language Excel is set to"
+	}
+	return ""
+}
+
+// isEnUS tells whether a locale tag's language part names English (US):
+// 409 (as hexadecimal, with no calendar or numeral bits) or en-US.
+func isEnUS(tag string) bool {
+	if strings.EqualFold(tag, "en-US") {
+		return true
+	}
+	n, err := strconv.ParseUint(tag, 16, 32)
+	return err == nil && n == 0x409
 }
 
 // formatSection renders a number with one section of a format code.
