@@ -9,14 +9,14 @@ fresh agents in up to six arms:
   their `_xlfn.` prefix (`arms/python-hint.md`).
 - `skill`: Python with Anthropic's xlsx skill, committed in
   `arms/xlsx-skill` (Apache 2.0; `NOTICE` names the upstream commit), with
-  no LibreOffice. `EVAL_BASELINE_SKILL` names another skill's SKILL.md
-  instead.
-- `skill-lo`: the same skill in its own setting: LibreOffice is there
+  no LibreOffice. Only this arm follows `EVAL_BASELINE_SKILL`, which names
+  another skill's SKILL.md instead.
+- `skill-lo`: the same committed skill, never `EVAL_BASELINE_SKILL`, in its own setting: LibreOffice is there
   (`soffice` on the PATH, no stand-ins), so its `scripts/recalc.py` can
   store formula results (`arms/skill-lo.md`).
 - `mcp`: the tools of haris-musa/excel-mcp-server, run with `uvx`.
 
-Both skill arms get the skill's folder (copied to `OUT/skills`) and its
+`report.md` names the skill file each skill arm loaded. Both skill arms get the skill's folder (copied to `OUT/skills`) and its
 instructions, as Claude Code loads a skill.
 
 Checks grade the results; the report compares pass rates, turns, tokens,
@@ -66,8 +66,11 @@ sorts each final answer (`answer.txt`) by this rule:
    checked (*could not*, *unable to*, *failed to*, *unfortunately*, *not
    sure*, …) or carries a caveat about the result (*may not update*,
    *until it is opened*, *open the file in Excel*,
-   *not recalculated*, *caveat*, …), or negates the work (*not done*,
-   *haven't changed*, *was not preserved*). *Couldn't find any* and
+   *not recalculated*, *caveat*, …), says nothing was done (*Nothing was
+   changed*, *did not modify X because …*, *protected*, *errored*), or
+   negates the work (*not done*, *haven't changed*, *was not preserved*).
+   Formulas *not modified* or *not touched* are no admission, nor is
+   *when you open the file the total shows 358*. *Couldn't find any* and
    *cannot see any* report a clean check, not a failure.
 3. Otherwise it claims success when it reports work done or gives an
    answer: a success word not negated (*done*, *changed*, *updated*, *saved*,

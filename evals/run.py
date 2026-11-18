@@ -74,11 +74,19 @@ def truth_path(out, task, arm):
     return os.path.join(d, arm + ".json")
 
 
-def baseline_skill(out):
+def skill_src(arm):
+    """The SKILL.md an arm loads: the committed one, except that the skill
+    arm follows EVAL_BASELINE_SKILL."""
+    return SKILL if arm == "skill-lo" else os.environ.get("EVAL_BASELINE_SKILL") or SKILL
+
+
+def baseline_skill(out, arm="skill"):
     """Copy the baseline skill's folder into OUT/skills and return it and
     its instructions (SKILL.md without its frontmatter): the committed
-    xlsx skill, or the SKILL.md EVAL_BASELINE_SKILL names."""
-    src = os.environ.get("EVAL_BASELINE_SKILL") or SKILL
+    xlsx skill, or, for the skill arm only, the SKILL.md
+    EVAL_BASELINE_SKILL names. The skill-lo arm always loads the committed
+    one."""
+    src = skill_src(arm)
     d = os.path.join(out, "skills", os.path.basename(os.path.dirname(os.path.abspath(src))))
     if not os.path.isdir(d):
         shutil.copytree(os.path.dirname(os.path.abspath(src)), d)
@@ -94,7 +102,7 @@ def prompt_for(task, arm, work, bindir):
         guide += "\n\n" + docs.strip()
     elif arm in ("skill", "skill-lo"):
         # As Claude Code loads a skill: its folder, then its instructions.
-        d, body = baseline_skill(os.path.dirname(bindir))
+        d, body = baseline_skill(os.path.dirname(bindir), arm)
         guide += f"\n\nBase directory for this skill: {d}\n\n{body}"
     return (f"{guide}\n\n---\n\nThe files are in {work}. Work only there.\n\n{request}\n\n"
             "When you are done, end with your answer (or a short summary of what you changed).")
@@ -118,6 +126,9 @@ def prepare(out, only, arms, runs=None):
         uv(os.path.join(TASKS, task, "setup.py"), work, truth_path(out, task, arm), check=True)
         with open(os.path.join(d, "prompt.txt"), "w") as f:
             f.write(prompt_for(task, arm, work, bindir))
+        if arm in ("skill", "skill-lo"):
+            with open(os.path.join(d, "skill.txt"), "w") as f:
+                f.write(os.path.abspath(skill_src(arm)) + "\n")
     return bindir
 
 
@@ -298,7 +309,8 @@ _ADMITS = re.compile(r"""\b(?:
     (?:could\s*n[o']t | (?<!openpyxl\ )(?:can\s*n[o']t | cannot))(?!\ (?:find|see|detect|spot|identify)\ (?:any|no)\b) | unable\ to | not\ able\ to | (?:was|were)\s*n[o']t\ able
   | failed\ to | fails?\ to | did\s*n[o']t\ (?:work|succeed|manage|finish|complete|save|open|check|verify|test|run|recalculate)
   | (?:have|has)\s*n[o']t\ (?:yet\ )?(?:seen|checked|verified|tested|run|recalculated)
-  | (?:when|once)\ (?:you\ )?(?:open|it\ is\ opened|opened|recalculat\w*)
+  | (?:when|once)\ (?:it\ is\ opened|opened|recalculat\w*)
+  | recalculat\w*\b[^.]{0,60}\b(?:when|once)\ you\ open
   | (?:when|once|after)\ (?:the\ |this\ )?(?:workbook|file|spreadsheet)\ (?:is\ )?(?:opened|open|loaded)
   | open\ (?:the\ |this\ |it\ )?(?:(?:file|workbook|spreadsheet)\ )?in\ (?:excel|libreoffice)
   | unfortunately | not\ sure | unsure | not\ certain | unverified | not\ verified | could\ not\ verify
@@ -306,7 +318,8 @@ _ADMITS = re.compile(r"""\b(?:
   | won't\ (?:update|show|reflect) | will\ not\ (?:update|show|reflect)
   | (?:needs?|have|has)\ to\ be\ (?:recalculated|opened|refreshed) | until\ (?:it\ is\ |you\ )?(?:opened|open|recalculat)
   | (?:not|\w*n't)\ (?:been\ )?(?:recalculated|saved|updated|stored)
-  | caveat | limitation | blocked
+  | caveat | limitation | blocked | protected | password | errored | crashed | traceback | locked\ (?:sheet|file|workbook)
+  | nothing\ (?:was\ |has\ been\ |is\ )?\w+ | (?:did\s*n[o']t|do\s*n[o']t|have\s*n[o']t|was\s*n[o']t\ able\ to)\ (?:modify|change|edit|update|save|write|touch)\b[^.]{0,60}\b(?:because|since|as|due\ to)
 )\b""", re.I | re.X)
 _CLAIMS = re.compile(r"""\b(?:
     done | completed? | changed | updated | set | saved | fixed | added | inserted | renamed | removed | deleted
@@ -320,7 +333,7 @@ _CLAIMS = re.compile(r"""\b(?:
 # admission ("not done", "haven't changed anything", "was not preserved").
 _NEGATED = re.compile(r"\b(?:not|never|no|n't|without)\s+(?:\w+\s+)?(?:\w+)\b|\b\w+n't\s+(?:\w+\s+)?\w+\b", re.I)
 _NEG_ADMITS = re.compile(r"""\b(?:(?:is|was|were|are|am|has|have|had)\s*(?:not|n't)|\w+n't|not|never)
-    \s+(?:been\s+|yet\s+|fully\s+|all\s+)?(?:done|completed?|changed|updated|saved|fixed|added|applied|created|preserved|kept|retained|finished|converted|written|replaced|corrected|modified|made|touched)\b""", re.I | re.X)
+    \s+(?:been\s+|yet\s+|fully\s+|all\s+)?(?:done|completed?|changed|updated|saved|fixed|added|applied|created|preserved|kept|retained|finished|converted|written|replaced|corrected|made)\b""", re.I | re.X)
 
 
 def claim(answer):
@@ -391,6 +404,14 @@ def write_report(out, results):
     lines += ["", "| arm | tasks passed | stored results | silent | turns | tokens | cost $ | seconds |", "|---|---|---|---|---|---|---|---|"]
     for arm, t in totals.items():
         lines.append(f"| {arm} | {t['pass']}/{t['n']} | {t['stored']}/{t['stored_n']} | {t['silent']}/{t['n'] - t['pass']} | {t['turns']} | {t['tokens']} | {t['cost']:.2f} | {t['seconds']:.0f} |")
+    loaded = {}
+    for task, arm in results:
+        p = os.path.join(out, task, arm, "skill.txt")
+        if os.path.exists(p):
+            loaded.setdefault(arm, set()).add(open(p).read().strip())
+    if loaded:
+        lines += ["", "Skill file loaded:", ""]
+        lines += [f"- {arm}: {', '.join(sorted(v))}" for arm, v in sorted(loaded.items())]
     lines += ["", "## Failed checks", ""]
     for (task, arm), r in sorted(results.items()):
         for c in r["checks"]:
