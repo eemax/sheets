@@ -185,19 +185,21 @@ func TestPoolSeed(t *testing.T) {
 // TestKnownLong: known.txt lists long mode's findings apart from the default
 // mode's: the same class, invariant and seed on another pool.
 func TestKnownLong(t *testing.T) {
-	known, err := ParseKnown("long move kinds 700012\nmove kinds 700012 # the committed pool\n")
+	known, err := ParseKnown("long move kinds 700012\nmove kinds 700012 # the committed pool\nlong set text 700001 700005\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	long, plain := Signature{"move", "kinds", 700012, true}, Signature{"move", "kinds", 700012, false}
-	if !known[long] || !known[plain] || len(known) != 2 {
+	if !known[long] || !known[plain] || !known[Signature{"set", "text", 700001, true}] || !known[Signature{"set", "text", 700005, true}] || len(known) != 4 {
 		t.Errorf("parsed %v", known)
 	}
 	if long.String() != "long move kinds 700012" || plain.String() != "move kinds 700012" {
 		t.Errorf("%s, %s", long, plain)
 	}
-	if _, err := ParseKnown("long move kinds\n"); err == nil {
-		t.Error("a long line without a seed parsed")
+	for _, bad := range []string{"long move kinds\n", "long move kinds 7 x\n", "long long move kinds 7\n"} {
+		if _, err := ParseKnown(bad); err == nil {
+			t.Errorf("%q parsed", bad)
+		}
 	}
 }
 

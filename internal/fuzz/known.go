@@ -6,9 +6,10 @@ import (
 	"strings"
 )
 
-// ParseKnown reads known.txt: one signature per line, "<edit class>
-// <invariant> <seed>", with # starting a comment. A line that starts with
-// "long" is a finding of long mode, on the pool it generated (see PoolSeed).
+// ParseKnown reads known.txt: "<edit class> <invariant> <seed>" on a line, or
+// several seeds of one class and invariant, with # starting a comment. A line
+// that starts with "long" holds findings of long mode, on the pools it
+// generated (see PoolSeed).
 func ParseKnown(text string) (map[Signature]bool, error) {
 	known := map[Signature]bool{}
 	for i, line := range strings.Split(text, "\n") {
@@ -23,12 +24,16 @@ func ParseKnown(text string) (map[Signature]bool, error) {
 		if long {
 			f = f[1:]
 		}
-		if len(f) != 3 {
-			return nil, fmt.Errorf("known.txt:%d: want <edit class> <invariant> <seed>, got %q", i+1, line)
+		if len(f) < 3 {
+			return nil, fmt.Errorf("known.txt:%d: want [long] <edit class> <invariant> <seed>..., got %q", i+1, line)
 		}
-		seed, err := strconv.ParseUint(f[2], 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("known.txt:%d: seed %q: %v", i+1, f[2], err)
+		var seeds []uint64
+		for _, w := range f[2:] {
+			seed, err := strconv.ParseUint(w, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("known.txt:%d: seed %q: %v", i+1, w, err)
+			}
+			seeds = append(seeds, seed)
 		}
 		if !knownClass(f[0]) {
 			return nil, fmt.Errorf("known.txt:%d: no edit class %q", i+1, f[0])
@@ -36,7 +41,9 @@ func ParseKnown(text string) (map[Signature]bool, error) {
 		if !knownInvariant(f[1]) {
 			return nil, fmt.Errorf("known.txt:%d: no invariant %q", i+1, f[1])
 		}
-		known[Signature{f[0], f[1], seed, long}] = true
+		for _, seed := range seeds {
+			known[Signature{f[0], f[1], seed, long}] = true
+		}
 	}
 	return known, nil
 }

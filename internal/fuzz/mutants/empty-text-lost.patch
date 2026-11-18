@@ -1,0 +1,16 @@
+Fixed in e7a9d5b (check, fix round 1): a formula's empty-text result
+(=IF(B2>1000,1,""), stored t="str" with an empty <v>) is lost when the full
+editor saves: excelize writes an empty <v></v> as no value, which reads as a
+formula with no result. Put back: keepEmptyText, which stores those results
+again, returns at once.
+
+--- a/internal/xlsx/recalc.go
++++ b/internal/xlsx/recalc.go
+@@ -915,6 +915,7 @@
+ // formulas not recomputed: excelize writes a cell's empty <v></v> as no
+ // value at all, which reads as a formula without its result.
+ func (e *Editor) keepEmptyText(res calcResult) {
++	return
+ 	for _, f := range e.resFormulas {
+ 		if f.pending || f.stored.Kind != grid.Text || f.stored.Text != "" {
+ 			continue
