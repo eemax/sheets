@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eemax/sheets/internal/grid"
 )
 
 // maxSamples is the most workbooks long mode sends LibreOffice, spread over
@@ -569,7 +571,14 @@ func TestKnownFaces(t *testing.T) {
 		// 664355, fuzzer-long's audit f1.1).
 		{"do", "kinds", `stream editor: sheet3.xml D2: =IF(N("p")=0,OR(E2,C2>250)) is stored as a dynamic array, not a plain formula`, batch("set 'Data 2!E9' '=IF(N(\"p\")=0,IF(B9>1000,1,\"\"))'\ncols insert 'Data 2!A' -n 2\n"), "insert-turns-dynamic"},
 		{"script", "kinds", `stream editor: sheet3.xml D2: =IF(N("p")=0,OR(E2,C2>250)) is stored as a dynamic array, not a plain formula`, script(`ws.getRange("E2").setFormula("=IF(N(\"p\")=0,OR(F2,D2>250))");`+"\n"+`ws.getRange("A:A").delete("Left");`), "insert-turns-dynamic"},
+		// The full editor keeping a dynamic array's metadata on a plain formula
+		// typed where one stood (seed 702553).
+		{"write", "editors", `Bob's Plan!dynamic arrays: stream has F5, full has F4 F5 (the full editor's alone: F4)`, Edit{Class: "write", Args: []string{"write", FileArg, "Bob's Plan!F4", "--from", "tsv"}, Stdin: "=IF(N(\"p\")=0,SUM(B2:B6))\n"}, "full-keeps-array-metadata"},
+		{"set", "editors", `Data!dynamic arrays: stream has none, full has F7 (the full editor's alone: F7)`, Edit{Class: "set", Args: []string{"set", FileArg, "Data!F7", `=IF(N("p")=0,NOT(F7))`}}, "full-keeps-array-metadata"},
 		// New: not a known bug's.
+		{"write", "editors", `Bob's Plan!dynamic arrays: stream has F4 F5, full has F5 (the streaming editor's alone: F4)`, Edit{Class: "write", Args: []string{"write", FileArg, "Bob's Plan!F4", "--from", "tsv"}, Stdin: "=IF(N(\"p\")=0,SUM(B2:B6))\n"}, ""},
+		{"write", "editors", `Bob's Plan!dynamic arrays: stream has F5, full has F4 (the streaming editor's alone: F5, the full editor's alone: F4)`, Edit{Class: "write", Args: []string{"write", FileArg, "Bob's Plan!F4", "--from", "tsv"}, Stdin: "=IF(N(\"p\")=0,SUM(B2:B6))\n"}, ""},
+		{"write", "editors", `Bob's Plan!dynamic arrays: stream has F5, full has F4 F5 (the full editor's alone: F4)`, Edit{Class: "write", Args: []string{"write", FileArg, "Bob's Plan!F4", "--from", "tsv"}, Stdin: "=IF(N(\"d\")=0,SEQUENCE(2))\n"}, ""},
 		{"do", "kinds", `stream editor: sheet3.xml D2: =IF(N("p")=0,OR(E2,C2>250)) is stored as a dynamic array, not a plain formula`, batch("set 'Data 2!E9' 5\nsort 'Data 2!A1:A4' A\n"), ""},
 		{"do", "kinds", `stream editor: sheet1.xml I2: =IF(N("p")=0,B3:B4*2) is stored as a dynamic array, not a plain formula`, batch("rows insert 'Data!2'\n"), ""},
 		// The mutant rewrite-loses-kind: a move rewrites a formula's kind.
@@ -854,5 +863,24 @@ echo "    fuzz_test.go:1: finding long copy kinds $SHEETS_FUZZ_REPRO (SHEETS_FUZ
 	}
 	if _, err := baseMakes(t.TempDir(), Finding{}); err == nil || !strings.Contains(err.Error(), "go test -c") {
 		t.Errorf("a base with no test binary: %v", err)
+	}
+}
+
+// TestCompareRanges: the editors' arrays, compared, say which ranges one
+// editor's file has alone, which full-keeps-array-metadata's face reads.
+func TestCompareRanges(t *testing.T) {
+	r := func(s string) grid.Range { g, _ := grid.ParseRange(s); return g }
+	for _, tc := range []struct {
+		a, b []grid.Range
+		want string
+	}{
+		{[]grid.Range{r("F5")}, []grid.Range{r("F4"), r("F5")}, "dynamic arrays: stream has F5, full has F4 F5 (the full editor's alone: F4)"},
+		{[]grid.Range{r("F4"), r("F5")}, nil, "dynamic arrays: stream has F4 F5, full has none (the streaming editor's alone: F4 F5)"},
+		{[]grid.Range{r("E2:E3")}, []grid.Range{r("E2:E4")}, "dynamic arrays: stream has E2:E3, full has E2:E4 (the streaming editor's alone: E2:E3, the full editor's alone: E2:E4)"},
+		{[]grid.Range{r("F5"), r("F4")}, []grid.Range{r("F4"), r("F5")}, ""},
+	} {
+		if got := compareRanges("dynamic arrays", tc.a, tc.b); got != tc.want {
+			t.Errorf("got %q, want %q", got, tc.want)
+		}
 	}
 }

@@ -164,3 +164,13 @@ bug table-header-renamed: replace reach; repro long 34156604779; detail : outsid
 # off the text, which holds no range now). A move that rewrites a formula and
 # changes its kind is another bug: the mutant rewrite-loses-kind.
 bug replace-loses-kind: replace kinds; repro long 6300201846; detail =IF\(N\("d"\)=0,.*#REF!.*\) is stored as a plain formula, not a dynamic array$
+
+# New (long mode, seed 702553): where a dynamic array's cell was written over
+# and moved, the full editor keeps the array's cell metadata on a plain
+# formula typed there, and stores it as a dynamic array; the streaming editor
+# stores it plain. A batch sets 'Bob''s Plan'!F2 to a dynamic array and then
+# 1,200 in one command, a script inserts rows 2:3, and a write of a plain
+# formula at F4 leaves F4 a dynamic array in the full editor's file alone.
+# (The editors' difference ends with the arrays one editor has alone, which
+# this face reads: one more array in the full editor's file, none fewer.)
+bug full-keeps-array-metadata: write,set,do editors; repro long 70255300604; detail ![^!]*dynamic arrays: stream has [^(]*, full has [^(]* \(the full editor's alone: [A-Z]+[0-9]+(:[A-Z]+[0-9]+)?\)$; edit N\("p"\)

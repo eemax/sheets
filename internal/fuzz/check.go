@@ -10,6 +10,7 @@ import (
 	"math"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -540,12 +541,38 @@ func value(c grid.Cell) string {
 	return s
 }
 
+// compareRanges says how two editors' arrays differ, and which ranges one
+// editor's file has alone ("(the full editor's alone: F4)"), so a known bug's
+// face can tell an array one editor adds from one it loses.
 func compareRanges(what string, a, b []grid.Range) string {
 	sa, sb := rangeList(a), rangeList(b)
-	if sa != sb {
-		return fmt.Sprintf("%s: stream has %s, full has %s", what, sa, sb)
+	if sa == sb {
+		return ""
 	}
-	return ""
+	alone := func(x, y []grid.Range) string {
+		var out []grid.Range
+		for _, r := range x {
+			if !slices.Contains(y, r) {
+				out = append(out, r)
+			}
+		}
+		if len(out) == 0 {
+			return ""
+		}
+		return rangeList(out)
+	}
+	var notes []string
+	if s := alone(a, b); s != "" {
+		notes = append(notes, "the streaming editor's alone: "+s)
+	}
+	if s := alone(b, a); s != "" {
+		notes = append(notes, "the full editor's alone: "+s)
+	}
+	d := fmt.Sprintf("%s: stream has %s, full has %s", what, sa, sb)
+	if len(notes) > 0 {
+		d += " (" + strings.Join(notes, ", ") + ")"
+	}
+	return d
 }
 
 func rangeList(rs []grid.Range) string {
