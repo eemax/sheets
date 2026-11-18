@@ -4,8 +4,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +16,8 @@ import (
 
 	"github.com/eemax/sheets/internal/grid"
 	"github.com/eemax/sheets/internal/undo"
+	"github.com/eemax/sheets/internal/words"
+	"github.com/eemax/sheets/internal/xlsx"
 )
 
 // The default mode, in every go test ./...: a fixed seed and a fixed number
@@ -516,6 +520,8 @@ func TestFuzz(t *testing.T) {
 	}
 }
 
+func readWorkbook(data []byte) (*grid.Workbook, error) { return xlsx.ReadBytes(data) }
+
 func mustZip(t *testing.T, data []byte) *zip.Reader {
 	t.Helper()
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -523,4 +529,142 @@ func mustZip(t *testing.T, data []byte) *zip.Reader {
 		t.Fatal(err)
 	}
 	return zr
+}
+
+// TestStreamed: the estimate of what the streaming editor takes itself, and
+// the workbooks it takes the edits on.
+func TestStreamed(t *testing.T) {
+	var plain, arrays *grid.Workbook
+	for _, wb := range loadPool(t) {
+		g, err := readWorkbook(wb.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if streamable(g) && plain == nil {
+			plain = g
+		}
+		if !streamable(g) && arrays == nil {
+			arrays = g
+		}
+	}
+	if plain == nil || arrays == nil {
+		t.Fatalf("the pool must hold workbooks the streaming editor takes and others: %v, %v", plain != nil, arrays != nil)
+	}
+	name := plain.Sheets[0].Name
+	for _, tc := range []struct {
+		name string
+		wb   *grid.Workbook
+		e    Edit
+		want bool
+	}{
+		{"set", plain, Edit{Class: "set", Args: []string{"set", FileArg, name + "!B2", "5", name + "!B3", "=IF(N(\"p\")=0,B2*2)"}}, true},
+		{"set a dynamic array", plain, Edit{Class: "set", Args: []string{"set", FileArg, name + "!B2", "=IF(N(\"d\")=0,SEQUENCE(2))"}}, false},
+		{"set on a new sheet", plain, Edit{Class: "set", Args: []string{"set", FileArg, "Nowhere!B2", "5"}}, false},
+		{"write", plain, Edit{Class: "write", Args: []string{"write", FileArg, name + "!B2", "--from", "tsv"}, Stdin: "1\t2\n"}, true},
+		{"write a dynamic array", plain, Edit{Class: "write", Args: []string{"write", FileArg, name + "!B2", "--from", "tsv"}, Stdin: "=IF(N(\"d\")=0,SEQUENCE(2))\n"}, false},
+		{"rows", plain, Edit{Class: "rows-delete", Args: []string{"rows", "delete", FileArg, name + "!3:4"}}, true},
+		{"copy", plain, Edit{Class: "copy", Args: []string{"copy", FileArg, name + "!B2", name + "!B9"}}, false},
+		{"set with arrays", arrays, Edit{Class: "set", Args: []string{"set", FileArg, arrays.Sheets[0].Name + "!B2", "5"}}, false},
+		{"rows with arrays", arrays, Edit{Class: "rows-insert", Args: []string{"rows", "insert", FileArg, arrays.Sheets[0].Name + "!3"}}, false},
+	} {
+		if got := streamed(tc.e, tc.wb); got != tc.want {
+			t.Errorf("%s: streamed = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestReadArea: a move or copy often starts at cells a formula reads.
+func TestReadArea(t *testing.T) {
+	s := grid.NewSheet("Data")
+	s.Set(2, 9, grid.Cell{Kind: grid.Number, Formula: `IF(N("p")=0,B3:B4*2)`})
+	s.Set(10, 7, grid.Cell{Kind: grid.Number, Formula: `IF(N("p")=0,SUM(B2:B9))`})
+	other := grid.NewSheet("Plan 2")
+	other.Set(2, 2, grid.Cell{Kind: grid.Number, Formula: `IF(N("p")=0,'Data'!C2:C3*10)`})
+	g := &gen{rng: rand.New(rand.NewPCG(3, 4)), wb: &grid.Workbook{Sheets: []*grid.Sheet{s, other}}}
+	seen := map[string]int{}
+	for range 400 {
+		sh, rg, ok := g.readArea()
+		if !ok {
+			t.Fatal("no cells read")
+		}
+		seen[sh.Name+"!"+rg.String()]++
+		in := func(name string, outer grid.Range) bool {
+			return sh.Name == name && rg.R1 >= outer.R1 && rg.R2 <= outer.R2 && rg.C1 >= outer.C1 && rg.C2 <= outer.C2
+		}
+		if !in("Data", grid.Range{R1: 3, C1: 2, R2: 4, C2: 2}) && !in("Data", grid.Range{R1: 2, C1: 2, R2: 9, C2: 2}) && !in("Data", grid.Range{R1: 2, C1: 3, R2: 3, C2: 3}) {
+			t.Fatalf("%s!%s is not read by any formula", sh.Name, rg)
+		}
+	}
+	for _, want := range []string{"Data!B3:B4", "Data!C2:C3", "Data!B2:B9"} {
+		if seen[want] == 0 {
+			t.Errorf("%s, the range a formula reads, was never picked in 400: %v", want, seen)
+		}
+	}
+	if g.wb.Sheets[0].Name != "Data" {
+		t.Error("the workbook changed")
+	}
+	if seen["Data!B3:B4"]+seen["Data!C2:C3"] < seen["Data!B2:B9"] {
+		t.Errorf("formulas that read a range where one value goes should be picked first: %v", seen)
+	}
+}
+
+// TestBatchesEditNewSheets: a do batch that makes a sheet goes on to edit it
+// (the lines are made from the sheets the batch makes, not only from the
+// workbook before it).
+func TestBatchesEditNewSheets(t *testing.T) {
+	var wb *grid.Workbook
+	for _, w := range loadPool(t) {
+		g, err := readWorkbook(w.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wb = g
+		break
+	}
+	rng := rand.New(rand.NewPCG(11, 12))
+	made, edited := 0, 0
+	for range 300 {
+		cp := *wb
+		cp.Sheets = slices.Clone(wb.Sheets)
+		g := &gen{rng: rng, wb: &cp}
+		e := g.edit("do")
+		lines := strings.Split(strings.TrimSuffix(e.Stdin, "\n"), "\n")
+		first, err := words.Texts(lines[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The sheet the first line makes: sheet add NAME, sheet copy FROM NAME,
+		// or a set or copy to a name the workbook does not have.
+		name := ""
+		switch {
+		case len(first) == 3 && first[0] == "sheet" && first[1] == "add":
+			name = first[2]
+		case len(first) == 4 && first[0] == "sheet" && first[1] == "copy":
+			name = first[3]
+		case first[0] == "set" || first[0] == "copy" || first[0] == "move":
+			for _, a := range first[1:] {
+				if i := strings.LastIndex(a, "!"); i > 0 && strings.HasSuffix(a[:i], "'") == strings.HasPrefix(a, "'") && wb.Sheet(strings.Trim(a[:i], "'")) == nil {
+					name = strings.Trim(a[:i], "'")
+				}
+			}
+		}
+		if name == "" {
+			continue
+		}
+		made++
+		for _, l := range lines[1:] {
+			ws, err := words.Texts(l)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if slices.ContainsFunc(ws, func(a string) bool { return a == name || strings.HasPrefix(a, name+"!") }) {
+				edited++
+				break
+			}
+		}
+	}
+	if made < 60 || edited < made/2 {
+		t.Errorf("of 300 batches, %d make a sheet, and %d of them go on to edit it", made, edited)
+	}
+	t.Logf("of 300 batches, %d make a sheet, and %d of them go on to edit it", made, edited)
 }

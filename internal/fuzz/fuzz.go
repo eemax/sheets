@@ -6,7 +6,8 @@
 //   - xml: every part is well-formed XML, and every worksheet lists its
 //     rows and the cells of each row in order, each once (xlsxtest);
 //   - kinds: every formula keeps its kind (plain, legacy array, dynamic
-//     array), by a model of what each edit does to kinds;
+//     array) and goes where the edit puts it, by a model of what each edit
+//     does to formulas (check.go, model.go);
 //   - editors: the streaming and the full editor give the same cells,
 //     formulas, kinds and values (and both take the edit, or both refuse);
 //   - undo: undo restores the bytes from before the edit, and an edit
