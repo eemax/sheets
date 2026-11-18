@@ -555,7 +555,10 @@ func TestKnownFaces(t *testing.T) {
 		{"write", "text", `Model!F6: typed the text "5 > 3 & 2 < 4", and the cell holds nothing`, plain("write"), "spill-overwrites"},
 		{"set", "kinds", `Summary!E3: the edit should leave a plain formula there, and it holds no formula (it was lost)`, Edit{Class: "set", Args: []string{"set", FileArg, "Summary!E3", `=IF(N("p")=0,COUNTIF(B2:B9,">3"))`, "Summary!E2", `=IF(N("p")=0,'A<B'!B2+1)`}}, "spill-overwrites"},
 		{"rows-insert", "kinds", `stream editor: sheet2.xml C5: =IF(N("p")=0,Data!A2&"!") is stored as a dynamic array, not a plain formula`, plain("rows-insert"), "insert-turns-dynamic"},
+		{"script", "editors", `Q 2026!F4: stream holds number 2, full holds text "!"`, Edit{Class: "script", Args: []string{"script", FileArg, "-e", "const ws = workbook.getWorksheet(\"Q 2026\");\nws.getRange(\"E4\").setFormula(\"=IF(N(\\\"d\\\")=0,SEQUENCE(1,2))\");\nws.getRange(\"F2\").setFormula(\"=IF(N(\\\"d\\\")=0,A2:A4&\\\"!\\\")\");\n"}}, "map-order"},
+		{"write", "editors", `R&D 2!E4: stream holds number 2, full holds text ""`, Edit{Class: "write", Args: []string{"write", FileArg, "R&D 2!D2", "--from", "tsv"}, Stdin: "=IF(N(\"p\")=0,OR(F2,D2>250))\t=IF(N(\"d\")=0,A2:A4&\"!\")\n=IF(N(\"d\")=0,SEQUENCE(1,2))\n"}, "map-order"},
 		// New: not a known bug's.
+		{"write", "editors", `Data!L2: stream holds text "", full holds nothing (pending)`, Edit{Class: "write", Args: []string{"write", FileArg, "Data!B2", "--from", "tsv"}, Stdin: "=IF(N(\"d\")=0,SEQUENCE(2))\n"}, ""},
 		// WP-12's mutant: a set on a new sheet loses a formula; no cell above
 		// it is typed after it.
 		{"set", "kinds", `Q1 "draft"!F7: the edit should leave a plain formula there, and it holds no formula (it was lost)`, Edit{Class: "set", Args: []string{"set", FileArg, `Q1 "draft"!F7`, `=IF(N("p")=0,IF(B7>3,"big",""))`, `Q1 "draft"!B9`, "5", `Q1 "draft"!A1`, `=IF(N("d")=0,SEQUENCE(2))`}}, ""},

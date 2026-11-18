@@ -88,14 +88,17 @@ bug sort-editors: do,script editors; repro long 701600; detail : stream holds .+
 # move or a batch (spillResults lays them out in map order). Shrunk, long move
 # repeat 700890 is sheets move book.xlsx 'Model!A4:C6' 'Model!D1' over the
 # array in E2:E3: the formula in E3 is there in one run and not in the other.
-# A script that sets a dynamic array and then pastes over it
-# (ws.getRange("C2").copyFrom("A1:C4") over C2, =A2:A4&"!") shows it through
-# the editors invariant: no array is removed net, so the repeat check does not
-# run, and the pasted values are missing at random in one editor's file or
-# the other's (Q 2026!C4: "Lime" or nothing; its repro shows it about one
-# replay in two, so a repro is replayed up to 10 times).
+# An edit that lays out two dynamic arrays whose results meet, or one and a
+# paste over it, shows it through the editors invariant: no array is removed
+# net, so the repeat check does not run, and the cells where they meet hold
+# one array's value or the other's, or nothing, at random, in one editor's
+# file or the other's. A script that sets C2 (=A2:A4&"!") and pastes over it
+# (ws.getRange("C2").copyFrom("A1:C4")): Q 2026!C4 holds "Lime" or nothing;
+# its repro shows it about one replay in two, so a repro is replayed up to
+# 10 times. A script setting E4 (=SEQUENCE(1,2)) and F2 (=A2:A4&"!"), and a
+# write of three arrays over E4 (seed 62001), the same.
 bug map-order: copy,move,do,script repeat; repro 100139; detail editor: the same edit on the same bytes saved two different workbooks: 
-bug map-order: script editors; repro long 701746; detail : stream holds .*, full holds ; edit setFormula\("=IF\(N\(\\+"d\\+"\).*copyFrom\(
+bug map-order: set,write,do,script editors; repro long 701746; detail : stream holds .*, full holds ; edit (?s)N\(\\*"d\\*"\).*(N\(\\*"d\\*"\)|copyFrom\()
 
 # Known (README, other seeds' findings: script kinds): a script that inserts
 # rows or columns leaves a legacy array with a dynamic array's cell metadata:
