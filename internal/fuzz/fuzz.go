@@ -155,6 +155,15 @@ type Result struct {
 	Taken, Streamed map[string]int
 }
 
+// seedMix is the second word of each sequence's random generator, mixed with
+// its seed: the golden ratio's bits, and 797, which was picked so that
+// sequence 100139 is a paste over dynamic arrays that sheets lays out
+// differently from one run to the next (copy repeat 100139 in known.txt).
+// That is the sequence wave 2's audit replays hundreds of times, to see
+// whether the repeat check ever misses it. Another mix makes other
+// sequences; the default run's findings in known.txt are then made again.
+var seedMix uint64 = 0x9e3779b97f4a7c15 + 797
+
 // SequenceSeed is the seed of sequence i of a run.
 func SequenceSeed(run uint64, i int) uint64 { return run*100000 + uint64(i) }
 
@@ -204,7 +213,7 @@ func Replay(pool []Workbook, seed uint64, dir string, steps int, log func(string
 // picks, and stops at the first finding. It counts what it saves and repeats
 // into res, when not nil.
 func sequence(pool []Workbook, seed uint64, dir string, steps, budget int, log func(string), res *Result) (f *Finding, made, applied int, err error) {
-	rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
+	rng := rand.New(rand.NewPCG(seed, seed^seedMix))
 	wb := pool[rng.IntN(len(pool))]
 	n := min(1+rng.IntN(steps), budget)
 	s, err := newSession(dir, wb.Data)
@@ -519,21 +528,32 @@ func (s *session) step(e Edit, i int) (outcome, error) {
 }
 
 // streamed tells whether the streaming editor could take an edit itself, on
-// the workbook it was made on: a set or a write that adds no dynamic array,
-// or the insert or delete of rows, on a workbook that holds no dynamic array
-// and no legacy array over several cells (see streamable). It is the
-// fuzzer's estimate from the edit and the workbook, not what the editor
-// reported: a set or rows edit inside a do batch or a script is not counted.
+// the workbook it was made on: a set or a write on a sheet that exists and
+// adds no dynamic array, or the insert or delete of rows, on a workbook that
+// holds no dynamic array and no legacy array over several cells (see
+// streamable). It is the fuzzer's estimate from the edit and the workbook,
+// not what the editor reported (that is the count in README.md): a set or
+// rows edit inside a do batch or a script is not counted.
 func streamed(e Edit, wb *grid.Workbook) bool {
 	switch e.Class {
 	case "set", "write":
-		for _, a := range e.Args {
+		if strings.Contains(e.Stdin, `N("d")`) {
+			return false
+		}
+		for i, a := range e.Args[2:] {
 			if marker(a) == Dynamic {
 				return false
 			}
-		}
-		if marker(e.Stdin) == Dynamic || strings.Contains(e.Stdin, `N("d")`) {
-			return false
+			// A cell to write: a sheet that is new needs the full editor.
+			if e.Class == "write" && i == 0 || e.Class == "set" && i%2 == 0 {
+				p, err := grid.ParseRef(a, func(n string) bool { return wb.Sheet(n) != nil })
+				if err != nil || p.Sheet != "" && wb.Sheet(p.Sheet) == nil {
+					return false
+				}
+			}
+			if e.Class == "write" {
+				break
+			}
 		}
 	case "rows-insert", "rows-delete":
 	default:

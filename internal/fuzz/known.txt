@@ -8,36 +8,27 @@
 # value goes (='Data'!C2:C3*10, kept plain: Excel shows it with @), or the
 # cells it reads, stores it as a dynamic array that spills. By move and
 # copy, and by do and script batches that move or copy.
-copy kinds 100090
-copy kinds 100240
-copy kinds 100270
-copy kinds 100308
-do kinds 100233
-move kinds 100084
-move kinds 100095
-move kinds 100152
-move kinds 100182
-move kinds 100203
-move kinds 100221
-move kinds 100261
-move kinds 100280
-
-# New: a sort that finds its rows already in order leaves the full editor's
-# formulas on that sheet as they were, while the streaming editor computes
-# and stores them all: the full editor's results are missing (pending) or
-# stale (the 0 XlsxWriter stores), the streaming editor's are right. A
-# formula whose result is a text (Data!L2: "FIG" against pending) is among
-# them.
-sort editors 100034
-sort editors 100045
-sort editors 100310
+copy kinds 100293
+do kinds 100150
+move kinds 100033
+move kinds 100071
+move kinds 100133
+move kinds 100157
+move kinds 100162
+move kinds 100179
+move kinds 100207
+move kinds 100255
+script kinds 100010
+script kinds 100072
+script kinds 100079
+script kinds 100088
 
 # New: sheets saves a different workbook from one run to the next when a
-# paste lands on dynamic arrays (copy Data!B10:B13 onto U10, over the array
-# in U10:U12): values it pasted are missing at random (Data!U11), by either
+# paste lands on dynamic arrays (copy over the arrays of a sheet): values it
+# pasted are missing at random (Q 2026!H7: "Pear" or nothing), by either
 # editor. It lays the results of dynamic arrays out in map order
 # (xlsx/spill.go, spillResults). The fuzzer makes an edit that removes a
 # dynamic array again, 20 times by each editor, on the same bytes, to see it
 # every run.
-copy repeat 100164
-copy repeat 100271
+copy repeat 100139
+copy repeat 100202

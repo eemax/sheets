@@ -36,13 +36,24 @@ sequences 100000, 100001, …).
 - A sequence ends at its first finding.
 - **Edit classes:** `set`, `write`, `clear`, `copy`, `move`, `sort`,
   `replace`, `rows-insert`, `rows-delete`, `cols-insert`, `cols-delete`,
-  `sheet-rename`, `sheet-copy`, `do` (a batch of 2 to 4 of the others) and
-  `script` (Office Scripts range operations: values, formulas, clear,
-  `copyFrom`, `moveTo`, insert and delete of rows and columns, sort).
+  `sheet-rename`, `sheet-copy`, `sheet-add`, `do` (a batch of 2 to 4 of the
+  others) and `script` (Office Scripts range operations: values, formulas,
+  clear, `copyFrom`, `moveTo`, insert and delete of rows and columns, sort).
 - **Targets:** a cell is often a formula's cell. The formula is picked by
   its group first (plain, plain reading a range, legacy array, dynamic
   array), so the few arrays get as many edits as the many filled-down
-  formulas.
+  formulas. The source of a copy or a move is, in three of ten, cells some
+  formula reads (the whole range it names, or part): moving those cells
+  rewrites the formula, which is where a formula can change its kind, and a
+  random cell is rarely one. Formulas that read a range where one value goes
+  (`=B3:B4*2`) are picked first.
+- **New sheets:** `set`, `write`, `copy` and `move` make the sheet they name
+  when it is new, and the fuzzer names a new one now and then. A `do` batch is
+  made from the workbook as it is before the batch *and from the sheets its
+  own lines make*: half of the batches start by making one (`sheet add`,
+  `sheet copy`, or a `set` or `copy` to a new name) and go on to edit it in
+  the same session. (A sheet made in a session and edited after the workbook
+  was written out saved with rows out of order in wave 1.)
 
 ## The invariants
 
