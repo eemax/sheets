@@ -133,6 +133,34 @@ stdout '^  Summary!B5 \(was B4\) +157.5 → 165 +input Data!B2$'
 ! stdout 'name (TaxRate|changed)'
 ! stdout 'unexplained:'
 
+# A spill that shrinks (or grows) leaves (or takes) cells nobody typed: they
+# moved with the input the array reads, which is their cause, and so is it
+# for what reads them. With cells below it, and at the bottom of the sheet,
+# where no rows were removed or added.
+exec sheets set spill.xlsx Data!A1 5 Data!B1 '=SEQUENCE(A1)' Data!D1 '=SUM(B1:B5)' Data!A10 end
+cp spill.xlsx spill2.xlsx
+exec sheets set spill2.xlsx Data!A1 3
+exec sheets check spill2.xlsx --against spill.xlsx
+stdout '^spill2.xlsx against spill.xlsx: 1 input changed, 0 formulas changed, 3 computed values moved \(each with its cause\), 0 unexplained,'
+stdout '^  Data!A1  input  5 → 3$'
+stdout '^  Data!D1 +15 → 6 +input Data!A1$'
+stdout '^  Data!B4 +4 → \(empty\) +input Data!A1$'
+stdout '^  Data!B5 +5 → \(empty\) +input Data!A1$'
+! stdout 'removed'
+exec sheets set spillbottom.xlsx Data!A1 5 Data!B1 '=SEQUENCE(A1)' Data!D1 '=SUM(B1:B5)'
+cp spillbottom.xlsx spillbottom2.xlsx
+exec sheets set spillbottom2.xlsx Data!A1 3
+exec sheets check spillbottom2.xlsx --against spillbottom.xlsx
+stdout ': 1 input changed, 0 formulas changed, 3 computed values moved'
+stdout '^  Data!D1 +15 → 6 +input Data!A1$'
+stdout '^  Data!B4 +4 → \(empty\) +input Data!A1$'
+! stdout 'removed'
+exec sheets check spillbottom.xlsx --against spillbottom2.xlsx
+stdout ': 1 input changed, 0 formulas changed, 3 computed values moved'
+stdout '^  Data!D1 +6 → 15 +input Data!A1$'
+stdout '^  Data!B5 +\(empty\) → 5 +input Data!A1$'
+! stdout 'added'
+
 # CSV files: values only, and rows moved.
 exec sheets check after.csv --against before.csv
 cmp stdout csv.out

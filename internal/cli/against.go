@@ -335,6 +335,9 @@ type report struct {
 	edits   []lineEdit
 	renames [][2]string
 	arrays  arrays
+	// newRow and newCol give, for the sheet being compared, the new number
+	// of each old row and column kept.
+	newRow, newCol map[int]int
 }
 
 // lineEdit is the rows and columns added (numbered as now) and removed
@@ -351,6 +354,10 @@ type candidate struct {
 	after  valueOf
 	was    string
 	note   string
+	// via is where an array formula now is whose result held the cell
+	// before and no longer does (a spill that shrank): what moved it moved
+	// the cell.
+	via *xlsx.At
 }
 
 // cause adds a change whose cells others follow: a cell's own (an input
@@ -521,6 +528,70 @@ func folded(f string) string {
 	return b.String()
 }
 
+// spillOnly tells whether a row holds, apart from empty cells, nothing but
+// the cells of array formulas' results (not the formulas themselves): a
+// row a result grew into or shrank out of.
+func (r *report) spillOnly(s *grid.Sheet, row int) bool {
+	u := s.Used()
+	n := 0
+	for c := u.C1; c <= u.C2; c++ {
+		cell := s.At(row, c)
+		if cell == nil || cell.IsEmpty() {
+			continue
+		}
+		if cell.Formula != "" {
+			return false
+		}
+		if _, _, ok := r.arrays.anchor(s, row, c); !ok {
+			return false
+		}
+		n++
+	}
+	return n > 0
+}
+
+// rowEmpty tells whether a row of a sheet holds nothing.
+func rowEmpty(s *grid.Sheet, row int) bool {
+	u := s.Used()
+	if row < u.R1 || row > u.R2 {
+		return true
+	}
+	for c := u.C1; c <= u.C2; c++ {
+		if cell := s.At(row, c); cell != nil && !cell.IsEmpty() {
+			return false
+		}
+	}
+	return true
+}
+
+// pairSpilled pairs, in place, the rows added or removed that hold only an
+// array formula's results where the other version has nothing: a result
+// that grew or shrank at the bottom of a sheet, not rows added or removed.
+func (r *report) pairSpilled(sa, sb *grid.Sheet, rows []diff.Pair) []diff.Pair {
+	oldTaken, newTaken := map[int]bool{}, map[int]bool{}
+	for _, q := range rows {
+		if q.Old > 0 {
+			oldTaken[q.Old] = true
+		}
+		if q.New > 0 {
+			newTaken[q.New] = true
+		}
+	}
+	out := make([]diff.Pair, 0, len(rows))
+	for _, q := range rows {
+		switch {
+		case q.New == 0 && !newTaken[q.Old] && rowEmpty(sb, q.Old) && r.spillOnly(sa, q.Old):
+			newTaken[q.Old] = true
+			q.New = q.Old
+		case q.Old == 0 && !oldTaken[q.New] && rowEmpty(sa, q.New) && r.spillOnly(sb, q.New):
+			oldTaken[q.New] = true
+			q.Old = q.New
+		}
+		out = append(out, q)
+	}
+	return out
+}
+
 // runs joins line numbers into runs.
 func runs(lines []int) [][2]int {
 	sort.Ints(lines)
@@ -605,6 +676,7 @@ func (r *report) compare() {
 			p.Moved = append(p.Moved, more...)
 			sort.Slice(p.Moved, func(i, j int) bool { return p.Moved[i].To < p.Moved[j].To })
 		}
+		p.Rows = r.pairSpilled(sa, sb, p.Rows)
 		// Where removed lines were, in the new version: the line after
 		// them, or after the last line kept above them.
 		gapAt := func(pairs []diff.Pair, removed []int, byCol bool) gap {
@@ -693,6 +765,15 @@ func (r *report) compare() {
 	}
 	sort.Slice(r.renames, func(i, j int) bool { return r.renames[i][0] < r.renames[j][0] })
 	for _, j := range jobs {
+		r.newRow, r.newCol = map[int]int{}, map[int]int{}
+		for _, q := range j.rows {
+			if q.Old > 0 && q.New > 0 {
+				r.newRow[q.Old] = q.New
+			}
+		}
+		for _, c := range j.cols {
+			r.newCol[c[0]] = c[1]
+		}
 		for _, q := range j.rows {
 			if q.Old == 0 || q.New == 0 {
 				continue
@@ -805,6 +886,7 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 	fa, fb := !xe && x.Formula != "", !ye && y.Formula != ""
 	ka, kb := r.arrays.computed(sa, ra, ca), r.arrays.computed(sb, rb, cb)
 	one := grid.Range{R1: rb, C1: cb, R2: rb, C2: cb}
+	var via *xlsx.At
 	switch {
 	case !ka && !kb:
 		// Inputs.
@@ -838,6 +920,12 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 		out.Changed = append(out.Changed, c)
 		r.cause(sb.Name, one, "formula "+here)
 		return
+	case ka && !kb && ye:
+		// An array's result that shrank: the cell it left moved, and
+		// what moved the array moved it.
+		if ar, ac, ok := r.arrays.anchor(sa, ra, ca); ok && r.newRow[ar] > 0 && r.newCol[ac] > 0 {
+			via = &xlsx.At{Sheet: sb.Name, Row: r.newRow[ar], Col: r.newCol[ac]}
+		}
 	case ka && !kb:
 		// A value where an array's result was.
 		out.Changed = append(out.Changed, changedCell{Cell: here, Was: was, Kind: "input", Before: va.text, After: vb.text})
@@ -866,7 +954,7 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 	if note != "" {
 		note = "computed by sheets: " + note
 	}
-	r.candidates = append(r.candidates, candidate{at: at, before: va, after: vb, was: was, note: note})
+	r.candidates = append(r.candidates, candidate{at: at, before: va, after: vb, was: was, note: note, via: via})
 }
 
 // repr shows a cell: its formula, or its value.
@@ -964,11 +1052,27 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	r.sources = append(r.sources, r.lineSources...)
 	r.causes = append(r.causes, r.lineCauses...)
 	causeOf := tr.Spread(r.sources)
+	// A value traces through the cell itself, or through the array formula
+	// whose result it was.
+	places := func(c candidate) []xlsx.At {
+		if c.via != nil {
+			return []xlsx.At{c.at, *c.via}
+		}
+		return []xlsx.At{c.at}
+	}
+	cause := func(m map[xlsx.At]int, c candidate) (int, bool) {
+		for _, at := range places(c) {
+			if k, ok := m[at]; ok {
+				return k, true
+			}
+		}
+		return 0, false
+	}
 	// What sheets cannot follow: formulas whose reads cannot be told, and
 	// those whose values are unknown.
 	var unknownOf map[xlsx.At]int
 	for _, c := range r.candidates {
-		if _, ok := causeOf[c.at]; ok {
+		if _, ok := cause(causeOf, c); ok {
 			continue
 		}
 		if unknownOf == nil {
@@ -979,10 +1083,12 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	for _, c := range r.candidates {
 		here := cellAt(c.at.Sheet, c.at.Row, c.at.Col)
 		at := c.at
-		if ar, ac, ok := r.arrays.anchor(r.B.wb.Sheet(at.Sheet), at.Row, at.Col); ok {
+		if c.via != nil {
+			at = *c.via
+		} else if ar, ac, ok := r.arrays.anchor(r.B.wb.Sheet(at.Sheet), at.Row, at.Col); ok {
 			at = xlsx.At{Sheet: at.Sheet, Row: ar, Col: ac}
 		}
-		if k, ok := causeOf[c.at]; ok {
+		if k, ok := cause(causeOf, c); ok {
 			out.Moved = append(out.Moved, movedValue{Cell: here, Was: c.was, Before: c.before.text, After: c.after.text, Cause: r.causes[k], Note: c.note})
 			continue
 		}
@@ -990,7 +1096,7 @@ func (r *report) trace(tr *xlsx.Tracer) {
 			out.Unknown = append(out.Unknown, unknownValue{Cell: here, Before: c.before.text, After: c.after.text, Why: "moved, and sheets cannot tell why: " + why})
 			continue
 		}
-		if k, ok := unknownOf[c.at]; ok {
+		if k, ok := cause(unknownOf, c); ok {
 			out.Unknown = append(out.Unknown, unknownValue{Cell: here, Before: c.before.text, After: c.after.text, Why: "moved, and sheets cannot tell why: it reads " + r.unknownWhy[k]})
 			continue
 		}
