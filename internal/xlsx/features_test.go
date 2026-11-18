@@ -1,6 +1,9 @@
 package xlsx
 
 import (
+	"bytes"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -8,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/eemax/sheets/internal/grid"
+	"github.com/xuri/excelize/v2"
 )
 
 func featuresOf(t *testing.T, name string) []Feature {
@@ -153,4 +157,41 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// A picture, a shape and a chart, each in an anchor of its own, as excelize
+// writes them.
+func TestFeaturesDrawn(t *testing.T) {
+	f := excelize.NewFile()
+	defer f.Close()
+	var img bytes.Buffer
+	if err := png.Encode(&img, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.AddPictureFromBytes("Sheet1", "B3", &excelize.Picture{Extension: ".png", File: img.Bytes(), Format: &excelize.GraphicOptions{AltText: "logo"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.AddShape("Sheet1", &excelize.Shape{Cell: "E5", Type: "rect", Width: 80, Height: 40}); err != nil {
+		t.Fatal(err)
+	}
+	f.SetSheetRow("Sheet1", "A1", &[]any{1, 2, 3})
+	if err := f.AddChart("Sheet1", "H2", &excelize.Chart{Type: excelize.Line, Series: []excelize.ChartSeries{{Values: "Sheet1!$A$1:$C$1"}}}); err != nil {
+		t.Fatal(err)
+	}
+	buf, err := f.WriteToBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs, err := Features(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, x := range fs {
+		got[x.Kind] = x.Sheet + "!" + x.Where
+	}
+	want := map[string]string{FeaturePicture: "Sheet1!B3", FeatureShape: "Sheet1!E5", FeatureChart: "Sheet1!H2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("drawn: %+v", fs)
+	}
 }
