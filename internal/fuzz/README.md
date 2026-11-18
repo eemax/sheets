@@ -11,13 +11,15 @@ each one.
 too.
 
 - **Seed and edits:** seed 1, and 2,000 edits.
-- **Time cap:** without `-race`, all 2,000 are made well inside the
-  90-second cap. That cap only guards a slow machine, and the run says when
-  it cut.
+- **No time cap without `-race`:** a plain run always makes its 2,000
+  edits, so two runs make the same edits. A slow machine (heavy load,
+  throttling) takes longer and never makes fewer; `go test`'s own timeout is
+  the backstop.
 - **Under `-race`:** each edit takes about fifteen times as long. The run
   detects `-race` (a build tag) and stops at a 40-second cap once at least
   200 edits are made. Those edits are a prefix of the plain run's, so they
-  make the same findings as far as they go.
+  make the same findings as far as they go. Only a race run's edit count
+  depends on the machine, and the test fails below 200.
 - **The log** (`go test -v ./internal/fuzz/`) prints the edit count, the
   edits applied, and each finding's signature. With one seed, two runs
   print the same.

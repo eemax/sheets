@@ -15,18 +15,18 @@ import (
 	"github.com/eemax/sheets/internal/undo"
 )
 
-// The default mode, in every go test ./...: a fixed seed, a fixed number
-// of edits, and a time cap that matters only under -race. See README.md.
+// The default mode, in every go test ./...: a fixed seed and a fixed number
+// of edits, and under -race a time cap. See README.md.
 const (
 	defaultSeed  = 1
 	defaultEdits = 2000
 	// Under -race each edit takes about ten times as long: the run stops
-	// at the cap, once raceMinEdits are made.
+	// at the cap, once raceMinEdits are made. Without -race there is no
+	// cap: a run always makes its defaultEdits, so two runs make the same
+	// edits and a slow machine takes longer instead of making fewer (go
+	// test's own timeout is the backstop).
 	raceCap      = 40 * time.Second
 	raceMinEdits = 200
-	// Without -race the run makes all its edits well inside the cap; the
-	// cap guards a slow machine, and the run says when it cut.
-	plainCap = 90 * time.Second
 	// New findings past this many are printed unshrunk.
 	maxShrunk = 5
 )
@@ -231,6 +231,30 @@ func TestEditsDeterministic(t *testing.T) {
 	}
 }
 
+// defaultOptions are the default mode's: a fixed number of edits, and under
+// -race (and only then) a time cap.
+func defaultOptions(dir string) (Options, string) {
+	o := Options{Seed: defaultSeed, Edits: defaultEdits, Dir: dir}
+	if raceOn {
+		o.Time, o.Min = raceCap, raceMinEdits
+		return o, "race"
+	}
+	return o, "plain"
+}
+
+// TestDefaultOptions: a plain run is never cut short by time, which would
+// pass it with fewer edits on a slow machine; only -race caps by time, and
+// still makes raceMinEdits.
+func TestDefaultOptions(t *testing.T) {
+	o, mode := defaultOptions(t.TempDir())
+	switch {
+	case !raceOn && (o.Time != 0 || o.Min != 0 || o.Edits != 2000 || mode != "plain"):
+		t.Errorf("a plain run is %d edits with no cap, not %+v", 2000, o)
+	case raceOn && (o.Time <= 0 || o.Min < 200 || mode != "race"):
+		t.Errorf("a race run is capped by time and makes 200 edits at least, not %+v", o)
+	}
+}
+
 // TestFuzz is the default mode. SHEETS_FUZZ_REPRO=<seed> replays one
 // sequence instead, printing every edit.
 func TestFuzz(t *testing.T) {
@@ -265,11 +289,7 @@ func TestFuzz(t *testing.T) {
 		return
 	}
 
-	o := Options{Seed: defaultSeed, Edits: defaultEdits, Time: plainCap, Dir: t.TempDir()}
-	mode := "plain"
-	if raceOn {
-		o.Time, o.Min, mode = raceCap, raceMinEdits, "race"
-	}
+	o, mode := defaultOptions(t.TempDir())
 	// Another seed or count is not the default mode: known.txt holds the
 	// default seed's findings only.
 	if v := os.Getenv("SHEETS_FUZZ_SEED"); v != "" {
@@ -331,7 +351,7 @@ func TestFuzz(t *testing.T) {
 	if len(stale) > 0 && !res.Capped && !custom {
 		t.Logf("known.txt lists %d findings this run did not make (fixed? then remove them): %s", len(stale), strings.Join(stale, "; "))
 	}
-	if !custom && !raceOn && !res.Capped && res.Edits < defaultEdits {
+	if !custom && !raceOn && res.Edits < defaultEdits {
 		t.Errorf("made %d edits, want %d", res.Edits, defaultEdits)
 	}
 	if !custom && raceOn && res.Edits < raceMinEdits {

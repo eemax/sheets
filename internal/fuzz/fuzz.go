@@ -127,7 +127,7 @@ func LoadPool(dir string) ([]Workbook, error) {
 type Options struct {
 	Seed  uint64        // the run's seed; sequence i has seed Seed*100000+i
 	Edits int           // stop after this many edits
-	Time  time.Duration // stop once this much time has passed...
+	Time  time.Duration // stop once this much time has passed (0: no cap)...
 	Min   int           // ...and at least this many edits are made
 	Steps int           // the most edits in a sequence (default 12)
 	Dir   string        // scratch directory
