@@ -115,6 +115,23 @@ func TestFolded(t *testing.T) {
 	if got := folded(`maxifs(a1:a2,'my sheet'!b1,"<>Mid")`); got != `MAXIFS(A1:A2,'MY SHEET'!B1,"<>Mid")` {
 		t.Errorf("folded %s", got)
 	}
+	// LibreOffice writes TRUE() and FALSE() for TRUE and FALSE.
+	for _, c := range []struct{ in, want string }{
+		{`VLOOKUP("k2",A1:B1,2,FALSE())`, `VLOOKUP("k2",A1:B1,2,FALSE)`},
+		{`IF(B1>0,TRUE(),false())`, `IF(B1>0,TRUE,FALSE)`},
+		{`AND(true(),NOT(FALSE()))`, `AND(TRUE,NOT(FALSE))`},
+		{`TRUE()`, `TRUE`},
+		{`if(a1,"TRUE()","x")`, `IF(A1,"TRUE()","x")`},
+		{`MYTRUE()+XFALSE()`, `MYTRUE()+XFALSE()`},
+		{`Sheet.TRUE()`, `SHEET.TRUE()`},
+	} {
+		if got := folded(c.in); got != c.want {
+			t.Errorf("folded %s = %s, want %s", c.in, got, c.want)
+		}
+	}
+	if folded(`IF(B1>0,TRUE,FALSE)`) != folded(`IF(B1>0,TRUE(),FALSE())`) {
+		t.Errorf("TRUE and TRUE() differ")
+	}
 }
 
 func TestPairReplaced(t *testing.T) {

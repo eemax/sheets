@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -552,20 +553,35 @@ func (r *report) pairAlike(sa, sb *grid.Sheet, rows []diff.Pair, cols [][2]int) 
 	return out
 }
 
-// folded is a formula as Excel compares it: letters outside text in
-// double quotes in one case (function names, references, sheet names).
+// boolCalls finds TRUE() and FALSE(), which LibreOffice writes for every
+// TRUE and FALSE typed in a formula (Excel reads them as the same).
+var boolCalls = regexp.MustCompile(`(^|[^A-Z0-9_.])(TRUE|FALSE)\(\)`)
+
+// folded is a formula as Excel compares it: letters outside text in double
+// quotes in one case (function names, references, sheet names), and TRUE()
+// and FALSE() as TRUE and FALSE.
 func folded(f string) string {
-	var b strings.Builder
+	var b, seg strings.Builder // seg is a stretch outside quotes
+	flush := func() {
+		b.WriteString(boolCalls.ReplaceAllString(seg.String(), "${1}${2}"))
+		seg.Reset()
+	}
 	in := false
 	for _, r := range f {
-		if r == '"' {
+		switch {
+		case r == '"':
+			if !in {
+				flush()
+			}
 			in = !in
+			b.WriteRune(r)
+		case in:
+			b.WriteRune(r)
+		default:
+			seg.WriteRune([]rune(strings.ToUpper(string(r)))[0])
 		}
-		if !in {
-			r = []rune(strings.ToUpper(string(r)))[0]
-		}
-		b.WriteRune(r)
 	}
+	flush()
 	return b.String()
 }
 

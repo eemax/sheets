@@ -179,6 +179,19 @@ stdout ': 0 inputs changed, 5 formulas changed, '
 stdout '^  Data!B6 \(was B7\)  =SUM\(B2:B6\) → =SUM\(B2:B6\)  .*Excel writes =SUM\(B2:B5\)\)$'
 stdout '^  Summary!B6  =MAX\(Data!B2:B6\) → =MAX\(Data!B2:B6\)  .*Excel writes =MAX\(Data!B2:B5\)\)$'
 
+# LibreOffice writes every TRUE and FALSE in a formula as TRUE() and FALSE():
+# Excel reads them alike, so it is no formula changed (and a value that
+# moved under one is a value with no cause, not a formula blamed).
+exec sheets set bool1.xlsx Data!A1 k2 Data!B1 5 Data!C1 '=VLOOKUP("k2",A1:B1,2,FALSE)' Data!C2 '=IF(B1>0,TRUE,FALSE)'
+exec sheets set bool2.xlsx Data!A1 k2 Data!B1 5 Data!C1 '=VLOOKUP("k2",A1:B1,2,FALSE())' Data!C2 '=IF(B1>0,TRUE(),FALSE())'
+exec sheets check bool2.xlsx --against bool1.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained,'
+cp bool2.xlsx bool3.xlsx
+exec sheets set bool3.xlsx Data!B1 6
+exec sheets check bool3.xlsx --against bool1.xlsx
+stdout ': 1 input changed, 0 formulas changed, 1 computed value moved'
+stdout '^  Data!C1 +5 → 6 +input Data!B1$'
+
 # A row inserted above a defined name's cell: Excel rewrites the name to
 # follow it, which is not a name changed. What reads the name is explained
 # by the input changed, not by the name.
