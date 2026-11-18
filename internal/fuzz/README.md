@@ -120,9 +120,10 @@ each, named by the invariant that must catch them. They cover a malformed
 part, rows out of order, a cell twice, a dynamic array or legacy array
 stored plain, and a plain formula stored as a dynamic array. Two
 `editors-*--<pool file>` cases differ from their pool file by a value or a
-formula. `TestRefuse` checks each is caught by its invariant. `TestPool`
-checks every pool file holds every invariant, and that every formula in it
-names its kind.
+formula. `TestRefuse` checks each is caught by its invariant. `TestUndoRefuses`
+does the same for undo: an undo with nothing recorded, and a journal that
+restores other bytes. `TestPool` checks every pool file holds every
+invariant, and that every formula in it names its kind.
 
 ## Findings and known.txt
 
@@ -135,6 +136,8 @@ sequence's seed (`move kinds 100037`).
   dropped, then lines of batches and scripts, each removal kept when the
   last edit still breaks the same invariant. The failure prints the seed,
   the workbook and the shrunk edits, as shell commands on `book.xlsx`.
+  Shrinking replays the edits many times, so only the first five new
+  findings of a run are shrunk; the rest print as the run made them.
 - **To replay one sequence**, printing every edit and its outcome, then
   the shrunk repro:
 

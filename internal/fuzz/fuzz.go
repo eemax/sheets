@@ -461,22 +461,33 @@ func (s *session) step(e Edit, i int) (outcome, error) {
 	}
 	s.cur = wb
 	if k := u; !bytes.Equal(before[k], after[k]) {
-		code, msg := run(editors[k].env, true, Edit{Args: []string{"undo", FileArg}}, s.paths[k])
-		got, err := os.ReadFile(s.paths[k])
+		v, err := checkUndo(k, s.paths[k], before[k], after[k])
 		if err != nil {
 			return o, err
 		}
-		switch {
-		case code != 0:
-			o.broken = append(o.broken, violation{"undo", editors[k].name + " editor: undo failed: " + firstLine(msg)})
-		case !bytes.Equal(got, before[k]):
-			o.broken = append(o.broken, violation{"undo", editors[k].name + " editor: undo did not restore the bytes: " + partsDiffer(before[k], got)})
-		}
-		if err := os.WriteFile(s.paths[k], after[k], 0o644); err != nil {
-			return o, err
+		if v != nil {
+			o.broken = append(o.broken, *v)
 		}
 	}
 	return o, nil
+}
+
+// checkUndo runs sheets undo on the file an edit with editor k changed
+// from before to after, checks it restores before, and puts after back.
+func checkUndo(k int, path string, before, after []byte) (*violation, error) {
+	code, msg := run(editors[k].env, true, Edit{Args: []string{"undo", FileArg}}, path)
+	got, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var v *violation
+	switch {
+	case code != 0:
+		v = &violation{"undo", editors[k].name + " editor: undo failed: " + firstLine(msg)}
+	case !bytes.Equal(got, before):
+		v = &violation{"undo", editors[k].name + " editor: undo did not restore the bytes: " + partsDiffer(before, got)}
+	}
+	return v, os.WriteFile(path, after, 0o644)
 }
 
 // panicked is the exit code run gives a command that panicked.

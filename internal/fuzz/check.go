@@ -393,6 +393,9 @@ func partsDiffer(want, got []byte) string {
 	if len(diff) == 0 {
 		return "the same parts, packed differently"
 	}
+	if len(diff) > 5 {
+		diff = append(diff[:5], fmt.Sprintf("and %d more", len(diff)-5))
+	}
 	return strings.Join(diff, ", ")
 }
 

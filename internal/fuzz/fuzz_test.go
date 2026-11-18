@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eemax/sheets/internal/undo"
 )
 
 // The default mode, in every go test ./...: a fixed seed, a fixed number
@@ -25,6 +27,8 @@ const (
 	// Without -race the run makes all its edits well inside the cap; the
 	// cap guards a slow machine, and the run says when it cut.
 	plainCap = 90 * time.Second
+	// New findings past this many are printed unshrunk.
+	maxShrunk = 5
 )
 
 func TestMain(m *testing.M) {
@@ -158,6 +162,41 @@ func TestRefuse(t *testing.T) {
 	}
 }
 
+// TestUndoRefuses: the undo check catches an undo that restores other
+// bytes than the edit's before, and one that fails.
+func TestUndoRefuses(t *testing.T) {
+	pool := loadPool(t)
+	before, after := pool[0].Data, pool[1].Data
+	path := filepath.Join(t.TempDir(), "book.xlsx")
+	if err := os.WriteFile(path, after, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := checkUndo(0, path, before, after); err != nil || v == nil || v.invariant != "undo" {
+		t.Fatalf("an undo with nothing recorded: %v, %v", v, err)
+	} else {
+		t.Log(v.detail)
+	}
+	// The journal records a third file as the state before.
+	if err := undo.Record(path, pool[2].Data, after, "sheets test"); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := checkUndo(1, path, before, after); err != nil || v == nil || v.invariant != "undo" {
+		t.Fatalf("an undo restoring other bytes: %v, %v", v, err)
+	} else {
+		t.Log(v.detail)
+	}
+	if got, _ := os.ReadFile(path); !bytes.Equal(got, after) {
+		t.Error("the check did not put the edit's bytes back")
+	}
+	// And the true before passes.
+	if err := undo.Record(path, before, after, "sheets test"); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := checkUndo(0, path, before, after); err != nil || v != nil {
+		t.Fatalf("a true undo: %v, %v", v, err)
+	}
+}
+
 func TestKnownParses(t *testing.T) {
 	text, err := os.ReadFile("known.txt")
 	if err != nil {
@@ -262,11 +301,16 @@ func TestFuzz(t *testing.T) {
 		}
 		newFindings++
 		lines = append(lines, "NEW   "+f.Signature.String())
-		g, err := Shrink(pool, f, o.Dir)
-		if err != nil {
-			t.Fatal(err)
+		// Shrinking replays the edits many times: the first few are shrunk,
+		// the rest printed as the run made them.
+		g, how := f, "as made"
+		if newFindings <= maxShrunk {
+			if g, err = Shrink(pool, f, o.Dir); err != nil {
+				t.Fatal(err)
+			}
+			how = "shrunk"
 		}
-		t.Errorf("a finding not in known.txt (replay: SHEETS_FUZZ_REPRO=%d go test ./internal/fuzz -run 'TestFuzz$' -v):\n%s", f.Seed, g.Report())
+		t.Errorf("a finding not in known.txt, %s (replay: SHEETS_FUZZ_REPRO=%d go test ./internal/fuzz -run 'TestFuzz$' -v):\n%s", how, f.Seed, g.Report())
 	}
 	sort.Strings(lines)
 	t.Logf("fuzz %s: %d edits (%d applied) in %d sequences, %.1fs, seed %d; %d findings, %d new",
