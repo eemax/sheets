@@ -95,6 +95,20 @@ exec sheets check --fix vol2.xlsx
 exec sheets check vol2.xlsx --against vol.xlsx
 cmp stdout unknown.out
 
+# A sheet renamed, to a name in any case: Excel rewrites the formulas that
+# read it, which are not changes.
+cp against_before.xlsx renamed.xlsx
+exec sheets sheet rename renamed.xlsx Data Facts
+exec sheets check renamed.xlsx --against against_before.xlsx
+stdout '^renamed.xlsx against against_before.xlsx: 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown$'
+stdout '^  sheet renamed: Data → Facts$'
+cp against_before.xlsx renamed2.xlsx
+exec sheets sheet rename renamed2.xlsx Data 'My Facts'
+exec sheets set renamed2.xlsx 'My Facts!B2' 6
+exec sheets check renamed2.xlsx --against against_before.xlsx
+stdout ': 1 input changed, 0 formulas changed, '
+stdout ', 0 unexplained,'
+
 # CSV files: values only, and rows moved.
 exec sheets check after.csv --against before.csv
 cmp stdout csv.out

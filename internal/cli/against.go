@@ -907,7 +907,8 @@ func (r *report) adjusted(old, home, now string, row, col int) bool {
 			}
 		}
 	}
-	pf, _ := formula.Pattern(f, row, col)
+	// A sheet's new name goes in as typed: fold it, as old and now are.
+	pf, _ := formula.Pattern(folded(f), row, col)
 	pn, _ := formula.Pattern(now, row, col)
 	return pf == pn
 }
