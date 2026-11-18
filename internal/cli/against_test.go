@@ -102,6 +102,33 @@ func TestRuns(t *testing.T) {
 	}
 }
 
+// TestSameRef checks that a name Excel rewrote for lines added and removed
+// and sheets renamed is the same name, and one that points elsewhere is not.
+func TestSameRef(t *testing.T) {
+	r := &report{
+		edits:   []lineEdit{{sheet: "Summary", rowsAdded: [][2]int{{1, 1}}}, {sheet: "Facts", rowsRemoved: [][2]int{{6, 6}}}},
+		renames: [][2]string{{"data", "Facts"}},
+	}
+	for _, c := range []struct {
+		old, now string
+		same     bool
+	}{
+		{"Summary!$B$1", "Summary!$B$1", true},
+		{"Summary!$B$1", "Summary!$B$2", true},         // a row added above
+		{"Summary!$B$1", "Summary!$B$3", false},        // moved elsewhere
+		{"Data!$B$2:$B$6", "Facts!$B$2:$B$5", true},    // renamed, and its last row removed
+		{"Data!$B$2:$B$6", "Facts!$B$2:$B$6", false},   // renamed, but not shrunk
+		{"Data!$B$2:$B$6", "Summary!$B$2:$B$6", false}, // another sheet
+	} {
+		if got := r.sameRef(c.old, c.now); got != c.same {
+			t.Errorf("%s → %s: %v, want %v", c.old, c.now, got, c.same)
+		}
+	}
+	if (&report{}).sameRef("Summary!$B$1", "Summary!$B$2") {
+		t.Errorf("nothing was added, yet the name moved")
+	}
+}
+
 // TestCheckAgainstLarge checks that check --against stays bounded, and
 // records its time, on 150,000 rows of which every tenth changed. Run
 // with SHEETS_LARGE=1.

@@ -717,7 +717,7 @@ func (r *report) compare() {
 		case !ok:
 			label = "name " + n.Name + " added"
 			out.Structure = append(out.Structure, structureEntry{"name added", n.Name + " = " + n.Ref})
-		case !sameRef(o.Ref, n.Ref, r.renamed):
+		case !r.sameRef(o.Ref, n.Ref):
 			label = "name " + n.Name + " changed"
 			out.Structure = append(out.Structure, structureEntry{"name changed", n.Name + ": " + o.Ref + " → " + n.Ref})
 		default:
@@ -767,18 +767,14 @@ func lessAt(a, b xlsx.At) bool {
 	return a.Col < b.Col
 }
 
-// sameRef tells whether a name refers to the same thing, its sheets
-// renamed.
-func sameRef(old, now string, renamed map[string]string) bool {
+// sameRef tells whether a name refers to the same thing, as Excel rewrites
+// it for the sheets renamed and the rows and columns added and removed.
+func (r *report) sameRef(old, now string) bool {
 	if strings.EqualFold(old, now) {
 		return true
 	}
-	for from, to := range renamed {
-		if to != "" && !strings.EqualFold(from, to) {
-			old = formula.RenameSheet(old, from, to)
-		}
-	}
-	return strings.EqualFold(old, now)
+	f, ok := r.replay(old, "")
+	return ok && strings.EqualFold(f, now)
 }
 
 // cell compares one cell in its two versions.
@@ -884,16 +880,16 @@ func repr(c *grid.Cell, v valueOf) string {
 // adjustedLimit bounds the runs of lines replayed on a formula.
 const adjustedLimit = 200
 
-// adjusted tells whether a formula (now in row, col of sheet home) is its
-// old self rewritten as Excel does for the sheets renamed and the rows and
-// columns added and removed.
-func (r *report) adjusted(old, home, now string, row, col int) bool {
+// replay rewrites a formula, or a name's reference (home ""), as Excel does
+// for the sheets renamed and the rows and columns added and removed. It
+// says false when there is nothing to replay, or too much.
+func (r *report) replay(old, home string) (string, bool) {
 	n := 0
 	for _, e := range r.edits {
 		n += len(e.rowsRemoved) + len(e.rowsAdded) + len(e.colsRemoved) + len(e.colsAdded)
 	}
 	if n == 0 && len(r.renames) == 0 || n > adjustedLimit {
-		return false
+		return "", false
 	}
 	f := old
 	for _, rn := range r.renames {
@@ -911,6 +907,17 @@ func (r *report) adjusted(old, home, now string, row, col int) bool {
 				f = formula.InsertLines(f, home, e.sheet, dim.cols, a[0], a[1]-a[0]+1)
 			}
 		}
+	}
+	return f, true
+}
+
+// adjusted tells whether a formula (now in row, col of sheet home) is its
+// old self rewritten as Excel does for the sheets renamed and the rows and
+// columns added and removed.
+func (r *report) adjusted(old, home, now string, row, col int) bool {
+	f, ok := r.replay(old, home)
+	if !ok {
+		return false
 	}
 	// A sheet's new name goes in as typed: fold it, as old and now are.
 	pf, _ := formula.Pattern(folded(f), row, col)

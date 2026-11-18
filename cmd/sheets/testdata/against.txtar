@@ -121,6 +121,18 @@ stdout ': 0 inputs changed, 0 formulas changed, '
 ! stdout '=SUM\(B2:B6\) → =SUM\(B2:B6\)'
 stdout ', 0 unexplained,'
 
+# A row inserted above a defined name's cell: Excel rewrites the name to
+# follow it, which is not a name changed. What reads the name is explained
+# by the input changed, not by the name.
+cp against_before.xlsx named.xlsx
+exec sheets rows insert named.xlsx Summary!1
+exec sheets set named.xlsx Data!B2 6
+exec sheets check named.xlsx --against against_before.xlsx
+stdout ': 1 input changed, 0 formulas changed, 8 computed values moved'
+stdout '^  Summary!B5 \(was B4\) +157.5 → 165 +input Data!B2$'
+! stdout 'name (TaxRate|changed)'
+! stdout 'unexplained:'
+
 # CSV files: values only, and rows moved.
 exec sheets check after.csv --against before.csv
 cmp stdout csv.out
