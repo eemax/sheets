@@ -688,7 +688,7 @@ func (r *report) compare() {
 			B.wb.Sheets[0].Name = A.wb.Sheets[0].Name
 		}
 	}
-	al := diff.Align(A.wb, B.wb, diff.Options{Moves: true, LostRefs: true, Dates: true})
+	al := diff.Align(A.wb, B.wb, diff.Options{Moves: true, LostRefs: true, ColumnShifts: true, Dates: true})
 	r.renamed = map[string]string{}
 	r.formulaSrc = map[xlsx.At]string{}
 	var tr *xlsx.Tracer
@@ -995,7 +995,13 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 		pb, _ := formula.Pattern(folded(y.Formula), rb, cb)
 		if pa != pb && !r.adjusted(folded(x.Formula), sb.Name, folded(y.Formula), rb, cb) {
 			c := changedCell{Cell: here, Was: was, Kind: "formula", Before: "=" + x.Formula, After: "=" + y.Formula}
-			c.Flag = brokenRow(sb, rb, cb, pa, pb)
+			// The rows around it keep what Excel would have written for the
+			// old formula, columns inserted or deleted included.
+			want := pa
+			if f, ok := r.replay(folded(x.Formula), sb.Name, false); ok {
+				want, _ = formula.Pattern(folded(f), rb, cb)
+			}
+			c.Flag = brokenRow(sb, rb, cb, want, pb)
 			out.Changed = append(out.Changed, c)
 			r.cause(sb.Name, one, "formula "+here)
 			return

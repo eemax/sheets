@@ -206,6 +206,30 @@ stdout ': 1 input changed, '
 stdout '^  Data!A1  input  2024-01-31 → 2024-02-01$'
 ! stdout 'unexplained:'
 
+# A column inserted between the columns a formula column reads: Excel
+# rewrites =B2*C2 to =B2*D2, so the column is the same one moved right (the
+# column added is Discount), no formula changed, and what Summary read of it
+# is not a changed formula either. Its values are compared: an input moves
+# them; one row of it broken is flagged, unlike the rows around it.
+cp against_before.xlsx colins.xlsx
+exec sheets cols insert colins.xlsx Data!C
+exec sheets check colins.xlsx --against against_before.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved'
+stdout '^  column added: Data!C$'
+! stdout 'column removed'
+cp colins.xlsx colinput.xlsx
+exec sheets set colinput.xlsx Data!C1 Discount Data!B2 6
+exec sheets check colinput.xlsx --against against_before.xlsx
+stdout ': 1 input changed, 0 formulas changed, 8 computed values moved'
+stdout '^  Data!E2 \(was D2\) +150 → 180 +input Data!B2$'
+cp colins.xlsx colbroken.xlsx
+exec sheets set colbroken.xlsx Data!C1 Discount Data!E4 '=B4*D3'
+exec sheets check colbroken.xlsx --against against_before.xlsx
+stdout ': 0 inputs changed, 1 formula changed, 4 computed values moved'
+stdout '^  Data!E4 \(was D4\)  =B4\*C4 → =B4\*D3  \(unlike the rows around it, which compute =B\{r\}\*D\{r\}\)$'
+stdout '^  Summary!B3 +630 → 540 +formula Data!E4$'
+! stdout 'unexplained:'
+
 # A row inserted above a defined name's cell: Excel rewrites the name to
 # follow it, which is not a name changed. What reads the name is explained
 # by the input changed, not by the name.

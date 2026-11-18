@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -89,6 +90,12 @@ type Options struct {
 	// same column or row, not one removed and another added. sheets diff
 	// leaves it off; check --against turns it on.
 	LostRefs bool
+	// ColumnShifts pairs formulas by what they do, not which columns they
+	// read, so a column inserted between the columns a formula reads
+	// (=B2*C2 becomes =B2*D2) leaves it paired with its old self, not one
+	// column removed and another added. sheets diff leaves it off; check
+	// --against turns it on.
+	ColumnShifts bool
 	// Dates pairs dates by the date they are, whatever date system each
 	// workbook uses (a Mac workbook counts from 1904, the rest from 1900):
 	// rows holding the same dates are the same rows. sheets diff leaves it
@@ -371,8 +378,8 @@ type side struct {
 	wb *grid.Workbook
 	s  *grid.Sheet
 	// epoch counts the dates of a 1904 workbook as the 1900 system does,
-	// for alignment.
-	epoch bool
+	// for alignment; loose describes formulas without their columns.
+	epoch, loose bool
 }
 
 // epochDays are the days between the 1900 and the 1904 date systems.
@@ -380,6 +387,9 @@ const epochDays = 1462
 
 // key describes a cell for alignment: constants by value, formulas by their
 // pattern relative to the cell (so a formula moved with its row matches).
+// columnRefs finds the columns in a formula's pattern (C[-2], C3).
+var columnRefs = regexp.MustCompile(`C(?:\[-?\d+\]|\d+)`)
+
 func (x side) key(row, col int) string {
 	c := x.s.At(row, col)
 	if c == nil || c.IsEmpty() {
@@ -387,6 +397,9 @@ func (x side) key(row, col int) string {
 	}
 	if c.Formula != "" {
 		k, _ := formula.Pattern(c.Formula, row, col)
+		if x.loose {
+			k = columnRefs.ReplaceAllString(k, "C")
+		}
 		return "=" + k
 	}
 	if x.epoch && c.Kind == grid.Number {
@@ -472,6 +485,7 @@ type sheetAlign struct {
 // both have.
 func alignSheet(A, B side, opts Options) sheetAlign {
 	A.epoch, B.epoch = opts.Dates && A.wb.Date1904, opts.Dates && B.wb.Date1904
+	A.loose, B.loose = opts.ColumnShifts, opts.ColumnShifts
 	ua, ub := A.s.Used(), B.s.Used()
 	ra, rb := max(ua.R2, 0), max(ub.R2, 0)
 	ca, cb := max(ua.C2, 0), max(ub.C2, 0)
