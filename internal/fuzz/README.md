@@ -171,12 +171,37 @@ They judge files, never a command's output text.
    other cell is followed through the edit (rows and columns inserted or
    deleted move it, a sheet renamed takes it along) and must hold what it
    held, where it stands now; an empty one must stay empty, and no sheet may
-   appear that the edit does not name. Two changes are expected:
+   appear that the edit does not name. It must be shown as it was, too: a
+   cell outside the reach keeps its number format (the format, not its
+   index), whether its value may change or not (a date shown as a plain
+   46022 passed every invariant before: fuzzer-long's audit, f0.5). Two
+   changes are expected:
    - **shifted references:** an edit that moves cells (move, rows and
      columns, a script's `moveTo`, `insert` and `delete`) or renames a sheet
-     may rewrite the formulas that read them, in their references only (each
-     reference, or `#REF!`, reads as one token). Any other edit leaves every
-     formula outside its reach as it was, letter for letter.
+     rewrites the formulas that read them, in their references only, and each
+     reference as the edit's shift puts it. A model of each edit's rewrites
+     (`xform` in `reach.go`, in order through a batch or a script) does what
+     Excel does: a reference wholly inside a moved block follows it (to its
+     sheet), one wholly inside the cells it lands on becomes `#REF!`, the
+     rest stay; lines inserted move each end at or past them (a range across
+     them grows); lines deleted make a cell in them, or a range wholly in
+     them, `#REF!`, shrink a range partly in them and move the ends past
+     them; a sheet renamed renames the references to it. Each reference of
+     the formula saved must name the same cells as the model's (its sheet
+     resolved, its dollars kept), and a reference left as it was where the
+     model moves it is a finding too. Any other edit leaves every formula
+     outside its reach as it was, letter for letter. The references are read
+     by a scanner that skips strings and names (`LOG10`, `_xlfn.SEQUENCE`).
+
+     The first version took any rewrite of a formula's references, by any
+     edit that moves cells. A slip in `formula.MoveRefs` that reads
+     unqualified references as on the moved block's sheet made 109 wrong
+     rewrites in the default run (the audit's count), and none was a reach
+     finding (fuzzer-long's audit, f0.2). It is found now, as `move reach`,
+     `do reach` and `script reach`: after
+     `sheets move book.xlsx 'Q 2026!D3' 'Q 2026!A3'`, `Data!G2` holds
+     `=IF(N("p")=0,'Q 2026'!B2*'Q 2026'!C2)`, and the edit's shift of
+     references gives `=IF(N("p")=0,B2*C2)`.
    - **recomputed dependents:** a formula's value may change when it reads a
      cell whose value may (in the reach, or a formula whose value may, to a
      fixpoint), when its references were rewritten, when it uses a defined
@@ -187,15 +212,19 @@ They judge files, never a command's output text.
      cuts through it.
 
    So a slip that writes a cell the edit does not name, moves one it should
-   not, loses or rewrites a formula elsewhere, or recomputes one with nothing
-   it reads changed, is a finding. `TestReach` holds 45 cases, right and
-   wrong, and `TestModelReadsGeneratedEdits` that the model reads every edit
-   the generator makes on the pool. The default run makes no reach finding
-   on today's code; a scratch mutation in which `clear` takes one more column
-   is found as `clear reach` (`Data!L1: outside the edit's reach, it held
-   text "Label", and holds nothing now`, after `sheets clear book.xlsx
-   'Data!K1'`), and WP-12's mutant (How the fuzzer was checked) is found by
-   it first in the default run.
+   not, loses or rewrites a formula elsewhere (or shifts a reference other
+   than the edit does), recomputes one with nothing it reads changed, or
+   shows a cell another way, is a finding. `TestReach` holds 63 cases, right
+   and wrong (18 of them the shifts), `TestReachFormats` the formats,
+   `TestRefToken` what the scanner reads, and `TestModelReadsGeneratedEdits`
+   that the model reads every edit the generator makes on the pool. The
+   default run makes no reach finding on today's code, with the shifts and
+   the formats as with the first version. A scratch mutation in which
+   `clear` takes one more column is found as `clear reach`: after
+   `sheets clear book.xlsx 'Data!K1'`,
+   `Data!L1: outside the edit's reach, it held text "Label", and holds nothing now`.
+   WP-12's mutant (How the fuzzer was checked) is found by it first in the
+   default run.
 
    Two slips of the model were found by running it, and fixed. Its first
    version took a defined name's range as it stands after the edit, and
@@ -551,6 +580,36 @@ no longer reached; the last sequence counts only when the edit count did not
 cut it short). It never fails on them. The default mode does not list them
 under `-race`, whose 3 repeats may miss what 20 see.
 
+**Bug lines** name a known bug by its findings' face, for long mode, whose
+fresh seeds make findings no list of seeds can hold:
+
+    bug <name>: <class>[,<class>...] <invariant>; repro [long] <seed>; detail <pattern>[; edit <pattern>]
+
+A finding shows the bug when its edit class is one of those, its invariant
+is that one, the first line of its detail matches the detail pattern (a Go
+regular expression), and with an edit pattern its last edit as a shell
+command matches that too (`(?m)^sort |getSort\(\)`: a batch or a script
+holding a sort). A bug may have several faces, one line each (the escape: a
+`text` finding, and an `editors` one where a formula reads the text). Where
+a face needs what the edit does not show, the invariant says it: a typed
+text, or a formula lost, in a dynamic array's results (before the edit or
+after) ends its detail with
+`, in the results of the dynamic array at U2:U4`,
+which the bug `spill-overwrites` reads (a face on what the cell held could
+not take a text the array put there without hiding every slip of the text
+writer). The repro is a sequence that shows it, `long` for
+one on long mode's pools; a long run replays each at its end, up to 10 times
+(the map-order bug's editors face shows one replay in two), and
+`TestBugRepros` replays those on the committed pool in every `go test`
+(all of them with `SHEETS_FUZZ=long`). Faces are kept narrow, so a new bug of
+the same class and invariant still reads as new, and so do the mutants':
+`TestKnownFaces` holds real findings of each bug, and findings that no face
+may take (WP-12's mutant's formula lost by a set on a new sheet, the
+rows-insert mutant's formula reading a range turned dynamic, a dynamic array
+lost by a move, a text typed and stored upper case, a sheet's part not XML,
+a script's paste with no array set before it). The default mode does not
+read them: its findings are listed by seed, as before.
+
 ## Long mode
 
 `SHEETS_FUZZ=long go test ./internal/fuzz -count=1 -v -timeout 30m` runs the
@@ -571,25 +630,39 @@ fuzzer for a time, not a count, over pools it makes fresh.
 - **The variables:** `SHEETS_FUZZ_TIME` (default 10m; the run finishes the
   sequence it is in), `SHEETS_FUZZ_SEED` (default a fresh one, printed),
   `SHEETS_FUZZ_EDITS` (a cap), `SHEETS_FUZZ_UNTIL=new` (stop at the first
-  finding known.txt does not list: the mutants), and `SHEETS_FUZZ_SOFFICE`
-  (LibreOffice, when `soffice` is not on PATH).
-- **The same edits and invariants** as the default mode. A finding known.txt
-  does not list fails the run, the first five shrunk; long mode's are listed
-  there as `long` lines.
+  finding known.txt does not list: the mutants), `SHEETS_FUZZ_BASE` (with
+  it, for the mutants: a copy of the tree without the mutant whose test
+  binary is built; see The mutants), and `SHEETS_FUZZ_SOFFICE` (LibreOffice,
+  when `soffice` is not on PATH).
+- **The same edits and invariants** as the default mode. A finding is known
+  when known.txt lists its signature or it shows one of the bugs known.txt
+  names (bug lines, above); one that is neither fails the run, the first
+  five shrunk. A fresh seed's findings of known bugs pass, then, and a new
+  bug's stand out. (The first version knew long findings by their seeds
+  alone, which only the seed they were listed from could ever meet: every run
+  of a fresh seed failed on about 115 known findings per 10,000 edits, among
+  which a new bug looked like any other; fuzzer-long's audit, f0.1.)
 - **The log** gives the rate of findings per 10,000 edits, by edit class and
-  invariant, the entries of known.txt for the run's seed that no longer
-  reproduce (fixed: reported, never a failure), and LibreOffice's second
-  opinion.
+  invariant, and by the bug they show; the bugs whose repro no longer shows
+  them (each bug line's repro is replayed at the run's end) and the entries
+  of known.txt for the run's seed no longer made (fixed: reported, never a
+  failure); and LibreOffice's second opinion.
 - **No uv, or no network:** when uv cannot make a pool (or fetch openpyxl and
   XlsxWriter), that round runs on the committed pool instead, the log says
-  why, and its findings are not long ones. `TestPoolsFallBack` holds the
-  case. `TestFreshPools` (with `SHEETS_FUZZ=long` only: it runs uv, and the
-  default tests use no network) checks that a seed's pool is the same each
-  time and another seed's another, with files from both producers that hold
-  the invariants and name their kinds.
+  why and for how many sequences, and their findings are not long ones. The
+  bugs known.txt names are known there too, and a long entry whose sequence
+  ran on the committed pool is not reported fixed: its own pool never ran.
+  The repros on long mode's pools cannot be replayed, and the log says which.
+  (The first version failed such a run on known bugs and called 12 long
+  entries fixed, two of them bugs that still reproduce: f0.4.)
+  `TestPoolsFallBack` and `TestFixed` hold the cases. `TestFreshPools`
+  (with `SHEETS_FUZZ=long` only: it runs uv, and the default tests use no
+  network) checks that a seed's pool is the same each time and another
+  seed's another, with files from both producers that hold the invariants
+  and name their kinds.
 - **LibreOffice's second opinion:** up to 120 workbooks the sequences leave,
-  spread over the run, are recalculated by LibreOffice (`soffice
-  --convert-to xlsx`, recalculating on load), and the values sheets stored
+  spread over the run, are recalculated by LibreOffice
+  (`soffice --convert-to xlsx`, recalculating on load), and the values sheets stored
   for plain formulas (not arrays, not pending) are compared with LibreOffice's.
   Only workbooks that started from an openpyxl file are sent: openpyxl stores
   no results, so each one in them is sheets' own (XlsxWriter stores 0 for a
@@ -598,15 +671,16 @@ fuzzer for a time, not a count, over pools it makes fresh.
   reads a `#REF!` in a formula's text as a name it does not know and gives
   `#NAME?`, so sheets' `#REF!` and its `#NAME?` count as agreeing.
 
-**Seed 7, 20 minutes** (`SHEETS_FUZZ=long SHEETS_FUZZ_SEED=7 SHEETS_FUZZ_TIME=20m
-go test ./internal/fuzz -count=1 -v -timeout 30m`, 2026-11-19, on Max's
-MacBook; the logs are in `~/sheets-evals/wave2/fuzz/`):
+**Seed 7, 20 minutes**
+(`SHEETS_FUZZ=long SHEETS_FUZZ_SEED=7 SHEETS_FUZZ_TIME=20m go test ./internal/fuzz -count=1 -v -timeout 30m`,
+2026-11-19, on Max's MacBook; the logs are in `~/sheets-evals/wave2/fuzz/`):
 
 - **The first run** (`long-seed7-20m-baseline.log`): 70,934 edits (65,929
   applied) in 11,477 sequences, on 29 fresh pools; 864 findings, 121.8 per
   10,000 edits. Eight were the reach model's own slip (a sheet named with
-  double quotes, fixed; each replays clean). known.txt lists the other 856,
-  by the bug each shows:
+  double quotes, fixed; each replays clean). known.txt listed the other 856
+  by their seeds (it names their bugs now, in bug lines), by the bug each
+  shows:
   - **540, known:** the `_x005F_x0041_` escape (`set text`, `write text`, and
     a formula reading such a text, which each editor computes from another
     text: `write editors`, `script editors`);
@@ -622,10 +696,15 @@ MacBook; the logs are in `~/sheets-evals/wave2/fuzz/`):
   - **1, new:** a text written into a dynamic array's results is lost to
     them (`long write text 711157`: `_x0041_` written into O3, which the
     dynamic array in O2 fills, is saved as the array's 18; Excel keeps what is
-    typed, and shows `#SPILL!`);
-  - **1, new:** a script that sets a dynamic array and then pastes over it
-    (`ws.getRange("C2").copyFrom("A1:C4")`) saves other cells in each editor
-    (`long script editors 701746`).
+    typed, and shows `#SPILL!`; the bug `spill-overwrites`, with the formula
+    seed 40016 found lost the same way);
+  - **1, the repeat's after all:** a script that sets a dynamic array and
+    then pastes over it (`ws.getRange("C2").copyFrom("A1:C4")`) saves other
+    cells in each editor (`long script editors 701746`). It comes and goes,
+    one replay in two, the pasted values missing in one editor's file or the
+    other's: map order, seen by the editors invariant, as the repeat check
+    does not run on an edit that removes no array net (the bug `map-order`,
+    with the repeat's findings).
 - **The run again, on the code as it is now** (`long-seed7-20m.log`, the Mac
   running the mutants beside it): 61,912 edits (57,623 applied) in 9,996
   sequences on 25 pools; 755 findings, all in known.txt (0 new), 121.9 per
@@ -644,6 +723,52 @@ MacBook; the logs are in `~/sheets-evals/wave2/fuzz/`):
   Excel, which ranks a boolean above any number; LibreOffice 0); `ISNUMBER`
   of a cell the two read otherwise; and `=SUM(Units)`, 121 against 122, once.
   Reported, not judged: they are for a look with the Excel oracle (WP-11).
+
+**Fresh seeds** (fuzzer-long's fix round 1, 2026-11-19, on Max's MacBook,
+several runs side by side; the logs are in `~/sheets-evals/wave2/fuzz/fix1/`
+and `~/sheets-evals/wave2/fuzz/`). Before the bug lines, the audit's 3-minute
+run of seed 40016 made 114 findings in 9,733 edits, every one of them new to
+known.txt; the same run now makes 124 in 10,708, of which 123 show a known
+bug. Each run's findings that no face took were looked at, and known.txt
+named their bugs (or a new face of one), each with a repro:
+
+| runs | edits | findings | per 10,000 | not known then | what they were |
+|---|---|---|---|---|---|
+| seed 40016, 3 minutes | 10,708 | 124 | 115.8 | 1 | spill-overwrites (a formula lost to a spill) |
+| seeds 61001 to 61004, 6 minutes each | 52,176 | 628 | 120.4 | 3 | spill-overwrites twice (a text lost, a formula), insert-turns-dynamic |
+| seeds 62001 and 62002 | 34,018 | 370 | 108.8 | 2 | map-order (two arrays meeting, by the editors invariant) |
+| seeds 63001 and 63002 | 27,589 | 291 | 105.5 | 1 | replace-loses-kind |
+| seeds 64001 and 64002 | 24,837 | 308 | 124.0 | 0 | |
+| seed 341566, 20 minutes (fresh) | 49,048 | 555 | 113.2 | 4 | replace-loses-kind (named during the run), table-header-renamed, insert-turns-dynamic, spill-overwrites (a text the array put there) |
+| seed 757171, 20 minutes (fresh) | 47,432 | 529 | 111.5 | 1 | sort-editors (the full editor's result empty, not pending: the face widened) |
+| seed 341566 again, 20 minutes | 46,878 | 518 | 110.5 | 0 | |
+
+- **The rate** is about 115 findings per 10,000 edits, nearly all the
+  escape (60 to 67% of each run's) and sort editors (32 to 36%), then map
+  order (up to 3%). The other bugs made 30 findings in the 198,376 edits of
+  the table's first six rows, about 1.5 per 10,000: table-header-control 10,
+  spill-overwrites 7, script-legacy-dynamic 4, replace-loses-kind 3,
+  insert-turns-dynamic 3, map-order's editors face 2 (counted here), and
+  table-header-renamed 1, counting each once, as named now.
+- **Faces that must not hide a mutant:** the rows-insert mutant turns a
+  formula that reads a range dynamic, so insert-turns-dynamic takes only one
+  that reads none; WP-12's mutant loses a formula on a new sheet, in no
+  array's results, so spill-overwrites takes only one in an array's results.
+  The seven mutants are found with every face in place (The mutants).
+- **The 20-minute runs** are `SHEETS_FUZZ=long SHEETS_FUZZ_TIME=20m go test ./internal/fuzz -count=1 -v -timeout 30m`
+  (`long-fresh-20m-fix1.log`, seed 341566, and `long-fresh-20m-fix1-b.log`,
+  seed 757171, each a fresh seed, 20 fresh pools of openpyxl and XlsxWriter
+  files), and the first again with `SHEETS_FUZZ_SEED=341566` once known.txt
+  named its four (`long-seed341566-20m-fix1-again.log`): it passes, 518
+  findings in 46,878 edits, every one a known bug's, and each of the 13 bug
+  lines' repros still shows its bug. The second's one finding no face took
+  replays as sort-editors now. A fresh seed may still find a bug known.txt
+  does not name, about one in 10,000 to 50,000 edits by these runs: that is
+  what the run is for, and it fails until known.txt names it.
+- **LibreOffice's second opinion**, in the three 20-minute runs: 116
+  workbooks each; 3,984, 4,068 and 4,231 plain formulas with a result sheets
+  stored, of which 15, 12 and 11 differ (the same kinds of difference as
+  seed 7's).
 
 ## Timings
 
@@ -701,8 +826,8 @@ margin of 9 to 17 s at a load of 3 to 5.
   s. If 2,000 plain edits still don't fit, report the numbers. Never weaken
   the invariants.
 
-**With the reach invariant** (fuzzer-long, 2026-11-19), `time scripts/check.sh
-full` on the same MacBook, alternating with this run's base commit
+**With the reach invariant** (fuzzer-long, 2026-11-19),
+`time scripts/check.sh full` on the same MacBook, alternating with this run's base commit
 (5803d77: fuzzer-core and kinds-spills, without the reach invariant, long
 mode and the mutants), other sessions running tests beside it:
 
@@ -724,6 +849,15 @@ mode and the mutants), other sessions running tests beside it:
   an edit, 200 before), its length set by the 200-edit minimum, not the 40 s
   cap. Lowering the cap would gain nothing, and the minimum is fuzzer-core's,
   so it stays.
+
+**After fix round 1** (the reach invariant's shifts and formats, known.txt's
+bug lines and `TestBugRepros`, `TestKnownFaces`, `TestUntilNew`),
+`time scripts/check.sh full` on the same MacBook, 2026-11-19, at a load
+average of 2.1 to 3.6: **115 s** (1,372 tests), the fuzz package 46.2 s in
+the plain step and 62.3 s in the race step, 20 s under the bar. The shifts
+and formats cost no time a run can see (the default run's 2,000 edits in
+36 s, as before), and `TestBugRepros` replays three sequences on the
+committed pool in under a second.
 
 ## How the fuzzer was checked
 
@@ -753,44 +887,69 @@ nearest patch that puts the same bug back: the cells a move empties keep the
 array formulas it took (in one cell, legacy or dynamic), as the old excelize
 kept them, so the formula stands where it went and where it was.
 
-`scripts/fuzz-mutants.sh OUT [--only NAME]` checks the fuzzer finds each. For
-each mutant it copies the working tree as it is (`git ls-files -co
---exclude-standard`: uncommitted work included; never HEAD, a branch or a
-worktree) into a temporary folder, applies the patch there, and runs long
-mode with seed 7 (whose findings on today's code known.txt lists, so a new one
-is the mutant's) until its first finding known.txt does not list, for at
-most 4 minutes (`SHEETS_FUZZ_UNTIL=new`, `SHEETS_FUZZ_TIME=4m`). It writes
-`OUT/NAME.log` for each (the mutant, the seed, the shrunk repro, the time)
-and `OUT/summary.txt`, and exits 0 only if every mutant is found. When uv
-cannot make long mode's pools, each mutant runs the default mode on the
-committed pool instead (seed 1, its findings all in known.txt), and the logs
-say so. `TestMutantsApply` checks in every `go test ./...` that each patch
+`scripts/fuzz-mutants.sh OUT [--only NAME]` checks the fuzzer finds each. It
+copies the working tree as it is (`git ls-files -co --exclude-standard`:
+uncommitted work included; never HEAD, a branch or a worktree) into a
+temporary folder: once as it is, the base, whose fuzz test binary it builds,
+and for each mutant once more, with its patch applied. On the mutated copy it
+runs long mode with seed 7 until the mutant's finding, for at most 4 minutes
+(`SHEETS_FUZZ_UNTIL=new`, `SHEETS_FUZZ_TIME=4m`, `SHEETS_FUZZ_BASE`): the first
+finding known.txt does not list, by its signature or as a bug it names,
+whose sequence the base makes with no finding. A finding the code makes
+without the mutant is logged as the code's (a bug for known.txt), and the
+run goes on. It writes `OUT/NAME.log` for each (the mutant, the seed, the
+shrunk repro, the time) and `OUT/summary.txt`, and exits 0 only if every
+mutant is found. When uv cannot make long mode's pools, each mutant runs the
+default mode on the committed pool instead (seed 1, at most 2,000 edits,
+with the same stop and the same base), and the logs say so.
+
+(The first version took the first finding known.txt did not list for the
+mutant's, and never looked at the code without it. That held only while
+known.txt listed exactly what seed 7 made on today's code: with seed 40016,
+`rewrite-loses-kind` was "found" as `long sort editors 4001600015`, the known
+sort bug, which the unpatched tree makes too; and a change to sheets that
+moved seed 7's findings would have let every mutant pass with nothing found:
+fuzzer-long's audit, f0.3. A known bug's findings are known now whatever
+their seed, and the base must make the sequence clean.)
+
+`TestMutantsApply` checks in every `go test ./...` that each patch
 still applies to the tree (`git apply --check`), so a change to the code a
 mutant patches fails the suite until the mutant is written again, putting
 back the same bug; `TestMutantsApplyRefuses` holds a stale one.
 
 **All seven are found**, each well within its 4 minutes: on Max's MacBook,
 2026-11-19, `scripts/fuzz-mutants.sh ~/sheets-evals/wave2/fuzz-mutants` took
-55 s in all, building each copy included, and exited 0. The logs are in
-`~/sheets-evals/wave2/fuzz-mutants/`. Each finding, as shrunk (replay one on
-the mutated copy with `SHEETS_FUZZ=long SHEETS_FUZZ_REPRO=<seed>`):
+55 s in all, building each copy included, and exited 0 (the first round's
+logs are in `~/sheets-evals/wave2/fuzz-mutants/first-round/`). Run again with
+the check against the tree without the mutant (fuzzer-long's fix round 1),
+it took 66 s, building the base's test binary included, and found the same
+seven findings, each one whose sequence the base makes with no finding; no
+finding was the code's. The logs are in `~/sheets-evals/wave2/fuzz-mutants/`.
+With the seed the audit used, 40016, `rewrite-loses-kind` is found as
+`long move kinds 4001600026` after 3 s, which replays with no finding on the
+tree as it is (`seed40016-rewrite-loses-kind/` there); the first version
+took the known `long sort editors 4001600015` for it. Each finding of seed
+7, as shrunk (replay one on the mutated copy with
+`SHEETS_FUZZ=long SHEETS_FUZZ_REPRO=<seed>`):
 
 | mutant | found after | finding | shrunk repro |
 |---|---|---|---|
-| `wp12-sheet-rows` | 13 s | `long set kinds 700123` | `sheets set book.xlsx 'Q1 "draft"!F7' '=IF(N("p")=0,IF(B7>3,"big",""))' 'Q1 "draft"!B9' … 'Q1 "draft"!A1' '=IF(N("d")=0,SEQUENCE(2))'`: a set on a new sheet that spills loses F7's formula |
+| `wp12-sheet-rows` | 15 s | `long set kinds 700123` | `sheets set book.xlsx 'Q1 "draft"!F7' '=IF(N("p")=0,IF(B7>3,"big",""))' 'Q1 "draft"!B9' … 'Q1 "draft"!A1' '=IF(N("d")=0,SEQUENCE(2))'`: a set on a new sheet that spills loses F7's formula |
 | `rows-insert-arrays` | 1 s | `long cols-insert kinds 700000` | a batch that sets cells on `Backup` and renames it, then `sheets cols insert book.xlsx 'Q 2027!U' -n 2`: `Data!I2`, `=B3:B4*2`, is stored as a dynamic array |
 | `rewrite-loses-kind` | 2 s | `long move kinds 700012` | `sheets move book.xlsx 'Data!C2:C3' 'Plan!H6'`: the formula reading them, rewritten `=Plan!H6:H7*2`, is stored as a dynamic array |
 | `one-cell-array-moved-plain` | 1 s | `long copy kinds 700005` | `sheets copy book.xlsx 'Summary!D2:D3' 'Summary!D2'`: the one-cell legacy array in D2 is stored plain |
 | `move-leaves-formula` | 1 s | `long move kinds 700006` | `sheets move book.xlsx 'Data!I2:J3' 'Old!A5'`: J3 still holds its legacy array |
 | `empty-text-lost` | 2 s | `long write editors 700017` | `sheets cols delete book.xlsx 'Data!Q:Q'`, then a write: `Data!L2` holds an empty text in the streaming editor's file, no result in the full editor's |
-| `part-of-legacy-array` | 13 s | `long move kinds 700119` | `sheets move book.xlsx 'Data!T2' 'Data!G7'`, the first cell of the legacy array T2:T3: G7 is stored plain |
+| `part-of-legacy-array` | 14 s | `long move kinds 700119` | `sheets move book.xlsx 'Data!T2' 'Data!G7'`, the first cell of the legacy array T2:T3: G7 is stored plain |
 
-The default run (seed 1, 2,000 edits) finds each of the seven as well, with
-7, 496, 20, 19, 13, 72 and 3 new findings in the order above
+The default run (seed 1, 2,000 edits) finds each of the seven as well
+(counted in the first round), with 7, 496, 20, 19, 13, 72 and 3 new findings
+in the order above
 (`move-leaves-formula`'s first is `script kinds 100010`:
 `ws.getRange("J4").moveTo("M3")` leaves J4's legacy array behind). Of WP-12's
-seven, two are the reach invariant's, and the first by sequence (`set reach
-100026`, `do reach 100091`; then `sheet-copy xml 100029` and the others).
+seven, two are the reach invariant's, and the first by sequence
+(`set reach 100026`, `do reach 100091`; then `sheet-copy xml 100029` and the
+others).
 
 ### Earlier mutations
 
