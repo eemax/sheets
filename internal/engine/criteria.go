@@ -67,7 +67,7 @@ func parseCriterionOf(v Value) criterion {
 	if s == "" {
 		return criterion{op: op, kind: Empty}
 	}
-	if n, ok := universalNumber(strings.TrimSpace(s)); ok {
+	if n, ok := universalNumberOf(strings.TrimSpace(s), false); ok {
 		return criterion{op: op, kind: Number, num: n, text: foldCase(s)}
 	}
 	// A month's name alone ("March") is text to match: Excel matches it
@@ -77,7 +77,7 @@ func parseCriterionOf(v Value) criterion {
 		return criterion{op: op, kind: Text, text: foldCase(s),
 			why: "its criterion " + strconv.Quote(v.Str) + " holds a date written as text, which Excel reads by its language setting (write it as a DATE, or as 2020-01-02)"}
 	}
-	if n, ok := textNumber(s); ok && digits {
+	if n, ok := textNumberOf(s, false); ok && digits {
 		return criterion{op: op, kind: Number, num: n, text: foldCase(s)}
 	}
 	switch strings.ToUpper(s) {
@@ -120,7 +120,7 @@ func (cr criterion) match(v Value) bool {
 			if cr.op != "=" && cr.op != "<>" {
 				return false // only = and <> read text as a number
 			}
-			n, ok, dependent := readNumber(v.Str)
+			n, ok, dependent := readNumberOf(v.Str, false)
 			if dependent && cr.unknown != nil {
 				// Read by Excel's language: whether it matches cannot
 				// be told.

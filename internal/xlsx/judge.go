@@ -264,6 +264,7 @@ func show(c grid.Cell) string {
 	return "nothing"
 }
 
-// date1904Note says why a result that turns serials into dates has no
-// value in a workbook of the 1904 date system.
-const date1904Note = "it works with dates, and this workbook counts dates in the 1904 system, which the sheets calculator does not"
+// date1904Note says why a result that reads a date written as text as a
+// number (arithmetic on one, VALUE) has no value in a workbook of the 1904
+// date system: the calculator reads it as a serial of the 1900 system.
+const date1904Note = "it reads a date written as text as a number, and this workbook counts dates in the 1904 system, which the sheets calculator does not do for text"

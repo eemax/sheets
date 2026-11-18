@@ -348,17 +348,17 @@ func TestCheckLegacyArrays(t *testing.T) {
 	})
 }
 
-// In a workbook counting dates from 1904, what turns serials into dates
-// is unknown rather than computed in the 1900 system; plain arithmetic
-// and TEXT, which knows the system, are computed.
+// In a workbook counting dates from 1904, the date functions count in
+// its system (2020-01-01 is 42369, not 43831), as do plain arithmetic and
+// TEXT.
 func TestCheck1904(t *testing.T) {
 	data := openFixture(t, "dates1904.xlsx") // A1 2020-01-01; B1 =YEAR(A1), C1 =DATE(2020,1,1), D1 =A1+1, E1 =TEXT(A1,"yyyy-mm-dd")
 	bothEditors(t, func(t *testing.T) {
 		res := checkData(t, "d.xlsx", data)
-		if got := fmt.Sprint(valuesAt(t, res.Data, "S", grid.Range{R1: 1, C1: 2, R2: 1, C2: 5})); got != `[? ? 42370 "2020-01-01"]` {
+		if got := fmt.Sprint(valuesAt(t, res.Data, "S", grid.Range{R1: 1, C1: 2, R2: 1, C2: 5})); got != `[2020 42369 42370 "2020-01-01"]` {
 			t.Errorf("B1:E1: %s", got)
 		}
-		if len(res.Unknown) != 2 || !strings.Contains(res.Unknown[0].Why, "1904") {
+		if len(res.Unknown) != 0 {
 			t.Errorf("unknown: %+v", res.Unknown)
 		}
 		fixedTwice(t, data, res)

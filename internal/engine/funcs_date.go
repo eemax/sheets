@@ -6,17 +6,20 @@ import (
 	"time"
 )
 
-// dateArg reads a date: a serial, or text Excel reads as a date. Negative
-// serials and ones past 9999 are #NUM!.
-func dateArg(v Value) (float64, *Value) {
+// dateArg reads a date, as a serial of the 1900 system (see dateOut): a
+// serial of the workbook's system, or text Excel reads as a date.
+// Negative serials and ones past 9999 are #NUM!.
+func dateArg(c *ctx, v Value) (float64, *Value) {
 	if v.Kind == Text {
-		n, ok, dependent := readNumber(v.Str)
+		n, ok, dependent := readNumberOf(v.Str, false)
 		switch {
 		case dependent:
 			e := languageDependent(v.Str)
 			return 0, &e
+		case ok && isISODateText(v.Str):
+			return n, nil // a date: read in the 1900 system
 		case ok:
-			return n, nil
+			return n + c.shift(), nil // a number or a time
 		}
 		e := errv(ErrValue)
 		return 0, &e
@@ -25,11 +28,11 @@ func dateArg(v Value) (float64, *Value) {
 	if err != nil {
 		return 0, err
 	}
-	if n < 0 || n >= 2958466 {
+	if n < 0 || n+c.shift() >= 2958466 {
 		e := errv(ErrNum)
 		return 0, &e
 	}
-	return n, nil
+	return n + c.shift(), nil
 }
 
 func dateFn(min, max int, f func(c *ctx, d []float64, a []Value) Value) *fnSpec {
@@ -39,7 +42,7 @@ func dateFn(min, max int, f func(c *ctx, d []float64, a []Value) Value) *fnSpec 
 			if i >= min && isMissing(v) {
 				break
 			}
-			n, err := dateArg(v)
+			n, err := dateArg(c, v)
 			if err != nil {
 				return *err
 			}
@@ -59,7 +62,7 @@ func init() {
 			}
 			n[i] = x
 		}
-		return dateSerial(n[0], n[1], n[2])
+		return c.dateOut(dateSerial(n[0], n[1], n[2]))
 	}})
 	reg("TIME", &fnSpec{min: 3, max: 3, f: func(c *ctx, a []Value) Value {
 		var n [3]float64
@@ -81,12 +84,14 @@ func init() {
 		if err != nil {
 			return *err
 		}
-		n, ok, dependent := readNumber(s)
+		n, ok, dependent := readNumberOf(s, false)
 		switch {
 		case dependent:
 			return languageDependent(s)
+		case ok && isISODateText(s):
+			return c.dateOut(num(math.Floor(n)))
 		case ok:
-			return num(math.Floor(n))
+			return num(math.Floor(n)) // a time alone: day 0
 		}
 		return notNumber(s)
 	}})
@@ -95,7 +100,7 @@ func init() {
 		if err != nil {
 			return *err
 		}
-		n, ok, dependent := readNumber(s)
+		n, ok, dependent := readNumberOf(s, false)
 		switch {
 		case dependent:
 			return languageDependent(s)
@@ -115,11 +120,11 @@ func init() {
 	reg("SECOND", part(func(v float64) float64 { _, _, s := timeOf(v); return float64(s) }))
 	reg("TODAY", &fnSpec{min: 0, max: 0, f: func(c *ctx, a []Value) Value {
 		t := c.e.Now()
-		return num(serialOf(t.Year(), int(t.Month()), t.Day()))
+		return c.dateOut(num(serialOf(t.Year(), int(t.Month()), t.Day())))
 	}})
 	reg("NOW", &fnSpec{min: 0, max: 0, f: func(c *ctx, a []Value) Value {
 		t := c.e.Now()
-		return num(serialOf(t.Year(), int(t.Month()), t.Day()) + float64(t.Hour()*3600+t.Minute()*60+t.Second())/86400)
+		return c.dateOut(num(serialOf(t.Year(), int(t.Month()), t.Day()) + float64(t.Hour()*3600+t.Minute()*60+t.Second())/86400))
 	}})
 	reg("WEEKDAY", dateFn(1, 2, func(c *ctx, d []float64, a []Value) Value {
 		typ, err := numArg(a, 1, 1)
@@ -162,7 +167,7 @@ func init() {
 	reg("ISOWEEKNUM", dateFn(1, 1, func(c *ctx, d []float64, a []Value) Value { return num(float64(isoWeek(d[0]))) }))
 	months := func(end bool) *fnSpec {
 		return &fnSpec{min: 2, max: 2, f: func(c *ctx, a []Value) Value {
-			d, err := dateArg(a[0])
+			d, err := dateArg(c, a[0])
 			if err != nil {
 				return *err
 			}
@@ -170,7 +175,7 @@ func init() {
 			if err != nil {
 				return *err
 			}
-			return addMonths(d, m, end)
+			return c.dateOut(addMonths(d, m, end))
 		}}
 	}
 	reg("EDATE", months(false))
@@ -186,11 +191,11 @@ func init() {
 		return num(days360(d[0], d[1], eu))
 	}))
 	reg("DATEDIF", &fnSpec{min: 3, max: 3, f: func(c *ctx, a []Value) Value {
-		s, err := dateArg(a[0])
+		s, err := dateArg(c, a[0])
 		if err != nil {
 			return *err
 		}
-		e, err := dateArg(a[1])
+		e, err := dateArg(c, a[1])
 		if err != nil {
 			return *err
 		}
@@ -415,12 +420,12 @@ func holidays(c *ctx, v Value) (map[float64]bool, *Value) {
 	c.each(v, func(x Value, _ bool) bool {
 		switch x.Kind {
 		case Number:
-			h[math.Floor(x.Num)] = true
+			h[math.Floor(x.Num)+c.shift()] = true
 		case Error:
 			bad = &x
 			return false
 		case Text:
-			if n, ok := parseDateTime(x.Str); ok {
+			if n, ok := parseDateTimeOf(strings.TrimSpace(x.Str)); ok {
 				h[math.Floor(n)] = true
 			}
 		}
@@ -437,11 +442,11 @@ func isWorkday(serial float64, mask string, hol map[float64]bool) bool {
 }
 
 func networkDays(c *ctx, a []Value, mask string) Value {
-	s, err := dateArg(a[0])
+	s, err := dateArg(c, a[0])
 	if err != nil {
 		return *err
 	}
-	e, err := dateArg(a[1])
+	e, err := dateArg(c, a[1])
 	if err != nil {
 		return *err
 	}
@@ -468,7 +473,7 @@ func networkDays(c *ctx, a []Value, mask string) Value {
 }
 
 func workday(c *ctx, a []Value, mask string) Value {
-	s, err := dateArg(a[0])
+	s, err := dateArg(c, a[0])
 	if err != nil {
 		return *err
 	}
@@ -499,5 +504,5 @@ func workday(c *ctx, a []Value, mask string) Value {
 			return errv(ErrNum)
 		}
 	}
-	return num(d)
+	return c.dateOut(num(d))
 }

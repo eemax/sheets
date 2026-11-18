@@ -35,8 +35,9 @@
   recompute (a link to another workbook among them) is removed rather
   than vouched for. An array formula over several cells, entered with
   Ctrl+Shift+Enter or spilling, gets every cell of its result. In a
-  workbook counting dates from 1904, results that work with dates stay
-  unknown. Running it again changes nothing; a file that needs nothing is
+  workbook counting dates from 1904, dates count in its system; only a
+  date written as text and read as a number stays unknown there. Running
+  it again changes nothing; a file that needs nothing is
   not written. `--dry-run` shows the changes without saving. On a CSV
   file, `check` runs lint.
 - On 150,000 rows (300,000 formulas openpyxl left without results),

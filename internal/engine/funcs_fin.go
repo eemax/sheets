@@ -284,7 +284,7 @@ func pairs(c *ctx, values, dates Value) ([]float64, []float64, *Value) {
 		if err != nil {
 			return nil, nil, err
 		}
-		t, err := dateArg(d.V[i])
+		t, err := dateArg(c, d.V[i])
 		if err != nil {
 			return nil, nil, err
 		}
