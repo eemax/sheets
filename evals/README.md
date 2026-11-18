@@ -1,12 +1,23 @@
 # A/B evaluation
 
 Does `sheets` make agents better at spreadsheet work? Each task is done by
-fresh agents in up to four arms:
+fresh agents in up to six arms:
 
 - `sheets`: the CLI and its agent skill's instructions (what `sheets agent-docs` prints).
 - `python`: openpyxl and pandas, the way agents work without it.
-- `skill`: Python with a spreadsheet skill. `EVAL_BASELINE_SKILL` names its SKILL.md, for example Anthropic's xlsx skill.
+- `python-hint`: `python`, plus one line on writing newer functions with
+  their `_xlfn.` prefix (`arms/python-hint.md`).
+- `skill`: Python with Anthropic's xlsx skill, committed in
+  `arms/xlsx-skill` (Apache 2.0; `NOTICE` names the upstream commit), with
+  no LibreOffice. `EVAL_BASELINE_SKILL` names another skill's SKILL.md
+  instead.
+- `skill-lo`: the same skill in its own setting: LibreOffice is there
+  (`soffice` on the PATH, no stand-ins), so its `scripts/recalc.py` can
+  store formula results (`arms/skill-lo.md`).
 - `mcp`: the tools of haris-musa/excel-mcp-server, run with `uvx`.
+
+Both skill arms get the skill's folder (copied to `OUT/skills`) and its
+instructions, as Claude Code loads a skill.
 
 Checks grade the results; the report compares pass rates, turns, tokens,
 cost and time.
@@ -17,17 +28,54 @@ evals/run.py run OUT --arms sheets python skill mcp --jobs 8
 evals/run.py run OUT --tasks 03 09 --model haiku      # some tasks, another model
 evals/run.py prepare OUT                              # inputs and prompts only, to run agents another way
 evals/run.py check OUT                                # grade OUT/*/*/work, write OUT/report.md
+evals/run.py run OUT --tasks 13 --arms sheets --timeout 40  # a longer limit per agent
+evals/run.py run OUT --arms sheets python --more      # only the runs not finished yet
+evals/run.py run OUT --redo 13/sheets 02/python       # rerun these two
+evals/run.py validate OUT --tasks 10                  # check the checks with known solutions
 ```
 
 `run` builds `sheets` into `OUT/bin`, puts it on the `sheets` arm's PATH
 (and keeps it off the others'), and runs each agent in its own folder with
 a spending cap (`--budget`, USD per run) and a model (`--model`, default
-`sonnet`). An agent still running after 20 minutes is stopped, with its
-tools, and counts as failed (an MCP server once hung for three hours).
+`sonnet`). An agent still running after 20 minutes (`--timeout MIN`) is
+stopped, with its tools, and counts as failed (an MCP server once hung for
+three hours).
 Agents run without user or project settings, skills or MCP
 servers, so each arm gets only what it is given. Each agent's transcript
 is kept in `transcript.jsonl` beside its work, and `meta.json` counts its
 tool calls (shell commands by program).
+
+A run is finished once its agent has written `meta.json` (a stopped or
+failed agent writes one too). `run --more` prepares and runs only the
+task/arm folders of `--tasks` and `--arms` without one, and leaves
+finished runs untouched: after an interruption, or to add an arm.
+`run --redo TASK/ARM …` (a task prefix naming one task, then an arm)
+re-prepares and reruns only those runs, keeping the old `meta.json` as
+`meta.prev.json`. Either way `check` then grades every run of the tasks,
+so the report holds the kept results beside the new ones.
+
+### The silent column
+
+`report.md` counts *silent* failures per arm: a failed run whose final
+answer claims success, the defect a user would not notice. `run.claim`
+sorts each final answer (`answer.txt`) by this rule:
+
+1. An empty answer, or a run that ended in an error (stopped, out of
+   budget), makes no claim.
+2. An answer admits failure when it says the work could not be done or
+   checked (*could not*, *unable to*, *failed to*, *unfortunately*, *not
+   sure*, …) or carries a caveat about the result (*may not update*,
+   *until it is opened*, *not recalculated*, *partial*, *caveat*, …).
+3. Otherwise it claims success when it reports work done or gives an
+   answer: a success word (*done*, *changed*, *updated*, *saved*,
+   *added*, *now*, *total*, …) or a number.
+4. Otherwise it makes no claim.
+
+Admitting wins over claiming: an answer that does both is not silent. A
+run is silent when it failed (the task's checks) and its answer claims
+success. The rule's examples are doctests
+(`python3 -m doctest evals/run.py`); it errs on the side of not calling a
+run silent.
 
 ## Tasks
 
@@ -66,6 +114,18 @@ previews read them; it is reported apart from the task's pass or fail.
 Write the three files; then check the check both ways before trusting it:
 untouched inputs must fail (`prepare`, then `check`), and a correct
 solution, by either tool, must pass.
+
+To keep that check, add `solutions/right.py` (a correct solution) and
+`solutions/wrong.py` (a plausible mistake the check must catch).
+`validate OUT --tasks …` runs each task's setup, then each solution as
+`uv run --with openpyxl --with xlsxwriter python SOLUTION WORK_DIR` on a
+fresh copy of the inputs (in `OUT/<task>/solution-right` and `solution-wrong`),
+with this checkout's `sheets` first on the PATH and in `SHEETS_BIN`. The
+solution's stdout is saved as `answer.txt` and graded as an agent's reply.
+It prints a line per task and solution, and exits 0 only when every right
+solution passes and every wrong one fails (a solution that exits non-zero
+counts as a failure of `validate`). Tasks without `solutions/` are
+skipped; `10-downstream-values` has the first pair.
 
 ## Does the skill trigger?
 
