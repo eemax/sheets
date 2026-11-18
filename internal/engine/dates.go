@@ -72,6 +72,28 @@ func timeOf(serial float64) (h, mi, s int) {
 	return secs / 3600, secs / 60 % 60, secs % 60
 }
 
+// epoch1904 is the days from the 1900 date system's day 0 to the 1904
+// system's: a workbook counting from 1904 gives a date this much lower.
+const epoch1904 = 1462
+
+// dateText tells whether text reads as a date or time other than the
+// plain numbers it may also be (without counting as a use of the epoch).
+func dateText(s string) bool {
+	t := strings.TrimSpace(s)
+	if _, ok := plainNumber(t); ok {
+		return false
+	}
+	_, ok := parseDateTimeOf(t)
+	return ok
+}
+
+// isISODateText tells whether text is an ISO date, with a time or not:
+// the only dates in text every language of Excel reads alike.
+func isISODateText(s string) bool {
+	t := strings.TrimSpace(s)
+	return isISODate(t) || isISODateTime(t)
+}
+
 func validDateSerial(serial float64) bool { return serial >= 0 && serial < 2958466 }
 
 var monthNames = []string{"january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"}
