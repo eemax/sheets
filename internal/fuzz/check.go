@@ -2,6 +2,7 @@ package fuzz
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"encoding/xml"
 	"fmt"
@@ -87,30 +88,118 @@ func wellFormed(zf *zip.File) error {
 		return err
 	}
 	defer r.Close()
-	d := xml.NewDecoder(r)
-	depth, roots := 0, 0
+	return strictXML(r)
+}
+
+// strictXML reads a part as XML 1.0 with namespaces, and returns what is not
+// well-formed. Go's decoder (Token) accepts two kinds of XML that expat and
+// Excel refuse as corrupt, so this reads raw tokens and checks them itself:
+//
+//   - an attribute twice on one element, by name (<c r="B2" r="B2">) or by
+//     namespace and local name (two prefixes bound to one namespace);
+//   - a prefix no namespace declaration in scope binds (<zz:x/>).
+//
+// A streaming editor that rewrites a cell's attributes with a regular
+// expression, and misses one the cell already has, writes the first.
+func strictXML(r io.Reader) error {
+	br := bufio.NewReader(r)
+	if b, _ := br.Peek(3); bytes.Equal(b, []byte("\xef\xbb\xbf")) {
+		br.Discard(3) // a byte order mark is no text
+	}
+	d := xml.NewDecoder(br)
+	type open struct {
+		name xml.Name // as written: the prefix is in Space
+		ns   map[string]string
+	}
+	var stack []open
+	roots, tokens := 0, 0
+	// bound is the namespace a prefix names where the element is.
+	bound := func(prefix string) (string, bool) {
+		if prefix == "xml" {
+			return "http://www.w3.org/XML/1998/namespace", true
+		}
+		for i := len(stack) - 1; i >= 0; i-- {
+			if uri, ok := stack[i].ns[prefix]; ok {
+				return uri, true
+			}
+		}
+		return "", false
+	}
 	for {
-		tok, err := d.Token()
+		tok, err := d.RawToken()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return err
 		}
-		switch tok.(type) {
+		tokens++
+		switch t := tok.(type) {
 		case xml.StartElement:
-			if depth == 0 {
-				roots++
+			if len(stack) == 0 {
+				if roots++; roots > 1 {
+					return fmt.Errorf("more than one root element, <%s> the second", showName(t.Name))
+				}
 			}
-			depth++
+			ns := map[string]string{}
+			for _, a := range t.Attr {
+				switch {
+				case a.Name.Space == "xmlns":
+					ns[a.Name.Local] = a.Value
+				case a.Name.Space == "" && a.Name.Local == "xmlns":
+					ns[""] = a.Value
+				}
+			}
+			stack = append(stack, open{t.Name, ns})
+			if t.Name.Space != "" {
+				if _, ok := bound(t.Name.Space); !ok {
+					return fmt.Errorf("<%s>: the prefix %q is not declared", showName(t.Name), t.Name.Space)
+				}
+			}
+			seen := map[xml.Name]bool{}
+			for _, a := range t.Attr {
+				key := a.Name // declarations and unprefixed attributes: by name as written
+				if a.Name.Space != "" && a.Name.Space != "xmlns" {
+					uri, ok := bound(a.Name.Space)
+					if !ok {
+						return fmt.Errorf("<%s>: the prefix %q of attribute %s is not declared", showName(t.Name), a.Name.Space, showName(a.Name))
+					}
+					key = xml.Name{Space: uri, Local: a.Name.Local}
+				}
+				if seen[key] {
+					return fmt.Errorf("<%s>: attribute %s twice", showName(t.Name), showName(a.Name))
+				}
+				seen[key] = true
+			}
 		case xml.EndElement:
-			depth--
+			if len(stack) == 0 {
+				return fmt.Errorf("</%s> closes nothing", showName(t.Name))
+			}
+			if top := stack[len(stack)-1]; top.name != t.Name {
+				return fmt.Errorf("<%s> closed by </%s>", showName(top.name), showName(t.Name))
+			}
+			stack = stack[:len(stack)-1]
+		case xml.CharData:
+			if len(stack) == 0 && len(bytes.TrimSpace(t)) > 0 {
+				return fmt.Errorf("text outside the root element")
+			}
+		case xml.ProcInst:
+			if t.Target == "xml" && tokens > 1 {
+				return fmt.Errorf("the xml declaration is not first")
+			}
 		}
 	}
-	if depth != 0 || roots != 1 {
-		return fmt.Errorf("%d root elements, %d left open", roots, depth)
+	if len(stack) != 0 || roots != 1 {
+		return fmt.Errorf("%d root elements, %d left open", roots, len(stack))
 	}
 	return nil
+}
+
+func showName(n xml.Name) string {
+	if n.Space != "" {
+		return n.Space + ":" + n.Local
+	}
+	return n.Local
 }
 
 // formulaCell is a formula as a worksheet stores it.

@@ -197,6 +197,47 @@ func TestUndoRefuses(t *testing.T) {
 	}
 }
 
+// TestStrictXML: strictXML refuses the XML Go's decoder lets through and
+// expat refuses (each case's verdict is expat's, with namespaces on), and
+// passes what is well-formed.
+func TestStrictXML(t *testing.T) {
+	for _, c := range []struct {
+		name, doc string
+		ok        bool
+	}{
+		{"declaration and namespaces", "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<a xmlns=\"u\" xmlns:r=\"v\" r:id=\"1\"><b/></a>", true},
+		{"two prefixes for one namespace, distinct names", `<a xmlns:x="u" xmlns:y="u"><b x:p="1" y:q="1" q="1"/></a>`, true},
+		{"xml:space", `<a xml:space="preserve"><b/></a>`, true},
+		{"a prefix of an ancestor", `<a xmlns:x="u"><b><x:c/></b></a>`, true},
+		{"a prefix redeclared", `<a xmlns:x="u"><b xmlns:x="v"><x:c/></b></a>`, true},
+		{"a byte order mark", "\ufeff<?xml version=\"1.0\"?><a/>", true},
+		{"a comment after the root", "<a/>\n<!-- c -->\n", true},
+		{"one local name, prefixed and not", `<a xmlns:x="u" x:p="1" p="2"/>`, true},
+		{"an attribute twice", `<c r="B2" r="B2"/>`, false},
+		{"an attribute twice by namespace", `<a xmlns:x="u" xmlns:y="u" x:p="1" y:p="2"/>`, false},
+		{"a declaration twice", `<a xmlns:x="u" xmlns:x="v"/>`, false},
+		{"an element with an undeclared prefix", `<a><zz:x/></a>`, false},
+		{"an attribute with an undeclared prefix", `<a zz:x="1"/>`, false},
+		{"a prefix used past its element", `<a><b xmlns:x="u"/><x:c/></a>`, false},
+		{"text after the root", `<a/>junk`, false},
+		{"two roots", `<a/><b/>`, false},
+		{"mismatched tags", `<a></b>`, false},
+		{"an element left open", `<a>`, false},
+		{"a late declaration", `<a/><?xml version="1.0"?>`, false},
+		{"space before the declaration", ` <?xml version="1.0"?><a/>`, false},
+		{"an end tag with no start", `</a>`, false},
+		{"nothing", ``, false},
+	} {
+		err := strictXML(strings.NewReader(c.doc))
+		if c.ok && err != nil {
+			t.Errorf("%s: refused: %v", c.name, err)
+		}
+		if !c.ok && err == nil {
+			t.Errorf("%s: not refused", c.name)
+		}
+	}
+}
+
 func TestKnownParses(t *testing.T) {
 	text, err := os.ReadFile("known.txt")
 	if err != nil {
