@@ -774,7 +774,7 @@ func (rc *reach) checkNames(after *grid.Workbook, display func(k string) string)
 	}
 	for _, n := range after.Names {
 		if k := key(n); !was[k] && !(k[1] != "" && rc.copies[k[1]]) {
-			return fmt.Sprintf("the edit defined the name %s (=%s), and names no such name", scoped(n), n.Ref)
+			return fmt.Sprintf("the edit made a defined name, %s (=%s), it does not name", scoped(n), n.Ref)
 		}
 	}
 	return ""
