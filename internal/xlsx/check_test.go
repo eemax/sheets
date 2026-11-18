@@ -348,21 +348,82 @@ func TestCheckLegacyArrays(t *testing.T) {
 	})
 }
 
-// In a workbook counting dates from 1904, what turns serials into dates
-// is unknown rather than computed in the 1900 system; plain arithmetic
-// and TEXT, which knows the system, are computed.
+// In a workbook counting dates from 1904, the date functions count in
+// its system (2020-01-01 is 42369, not 43831), as do plain arithmetic and
+// TEXT.
 func TestCheck1904(t *testing.T) {
 	data := openFixture(t, "dates1904.xlsx") // A1 2020-01-01; B1 =YEAR(A1), C1 =DATE(2020,1,1), D1 =A1+1, E1 =TEXT(A1,"yyyy-mm-dd")
 	bothEditors(t, func(t *testing.T) {
 		res := checkData(t, "d.xlsx", data)
-		if got := fmt.Sprint(valuesAt(t, res.Data, "S", grid.Range{R1: 1, C1: 2, R2: 1, C2: 5})); got != `[? ? 42370 "2020-01-01"]` {
+		if got := fmt.Sprint(valuesAt(t, res.Data, "S", grid.Range{R1: 1, C1: 2, R2: 1, C2: 5})); got != `[2020 42369 42370 "2020-01-01"]` {
 			t.Errorf("B1:E1: %s", got)
 		}
-		if len(res.Unknown) != 2 || !strings.Contains(res.Unknown[0].Why, "1904") {
+		if len(res.Unknown) != 0 {
 			t.Errorf("unknown: %+v", res.Unknown)
 		}
 		fixedTwice(t, data, res)
 	})
+}
+
+// Each class WP-01 found computed unlike Excel (unlike_excel.xlsx, sheet
+// Cases: the class in A, the formula in B, what Excel shows in C, a
+// formula reading B in D) gets Excel's result or none, with the reason, in
+// either editor; a formula reading an unknown one is unknown too.
+func TestCheckUnlikeExcel(t *testing.T) {
+	data := openFixture(t, "unlike_excel.xlsx")
+	why := map[int]string{
+		1:  `its format "mmmm" writes month names`,
+		2:  `its format "dddd" writes day names`,
+		3:  `its format "h:mm AM/PM" writes AM/PM`,
+		4:  `the locale tag [$-41D]`,
+		6:  `holds ÅÅÅÅ, not a format code of English (US) Excel`,
+		7:  `an array formula in one cell whose result is 6×2`,
+		11: `its criterion "<1/2/2020" holds a date written as text`,
+	}
+	bothEditors(t, func(t *testing.T) {
+		res := checkData(t, "u.xlsx", data)
+		got := valuesAt(t, res.Data, "Cases", grid.Range{R1: 1, C1: 2, R2: 12, C2: 4})
+		for r := 1; r <= 12; r++ {
+			b, excel, d := got[(r-1)*3], strings.Trim(got[(r-1)*3+1], `"`), got[(r-1)*3+2]
+			want := excel
+			if excel == "unknown" {
+				want = "?" // no result stored
+			}
+			if strings.Trim(b, `"`) != want || d != b {
+				t.Errorf("row %d: B %s, D %s; Excel shows %s", r, b, d, excel)
+			}
+		}
+		found := map[int]string{}
+		for _, u := range res.Unknown {
+			if u.Sheet == "Cases" && u.Col == 2 {
+				found[u.Row] = u.Why
+			}
+		}
+		for r, w := range why {
+			if !strings.Contains(found[r], w) {
+				t.Errorf("B%d: unknown because %q, want %q", r, found[r], w)
+			}
+		}
+		if len(found) != len(why) {
+			t.Errorf("unknown in B: %v", found)
+		}
+		fixedTwice(t, data, res)
+	})
+}
+
+// Reading gives the unknown the check leaves unknown: an array formula in
+// one cell whose result is larger (B7, and D7 reading it) has no value in
+// the read-side resolver either.
+func TestReadUnlikeExcelOneCellArray(t *testing.T) {
+	wb, err := ReadBytes(openFixture(t, "unlike_excel.xlsx"))
+	must(t, err)
+	s := wb.Sheet("Cases")
+	wb.ResolveRange(s, grid.Range{R1: 1, C1: 2, R2: 12, C2: 4})
+	for _, at := range [][2]int{{7, 2}, {7, 4}} {
+		if c := s.At(at[0], at[1]); c == nil || !c.Pending {
+			t.Errorf("%s reads a value, want unknown: %+v", grid.CellName(at[0], at[1]), c)
+		}
+	}
 }
 
 // The editors agree on volatile formulas (TODAY), INDIRECT, and a ROWS

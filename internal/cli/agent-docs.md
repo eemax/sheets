@@ -49,7 +49,10 @@ command.
   on Excel's language is not guessed either: text such as `1,200`,
   `1.5`, `03/05/2026` or `May 2026` reads as a number or date differently
   in other languages, so a formula computing with it is left to Excel.
-  Write numbers and ISO dates as values, and the calculator computes.
+  So is `TEXT` with month or day names (`mmmm`, `ddd`), `AM/PM`, a locale
+  tag other than `[$-409]`, or another language's codes (`ÅÅÅÅ`), and a
+  criterion holding a date as text (`"<1/2/2020"`). Write numbers and ISO
+  dates as values, and the calculator computes.
   Circular references are reported and get no result.
 - A report laid out in sections under one header (a heading row such as
   `West`, its lines, a subtotal; then `North`, ...) reads as one table:
@@ -300,6 +303,11 @@ naming a table that does not exist is refused.
   all, as in Excel: writing, clearing, copying or moving part of its
   range, or inserting or deleting rows or columns through it, is refused,
   and the message names the array. Copy a whole one with `--values`.
+- `copy`, `move` and `sort` keep each formula as it was stored: plain
+  (`=B1:B2*100` stays plain, reading one cell of the range), an array
+  entered with Ctrl+Shift+Enter, or a dynamic array. `sort` takes rows
+  holding a dynamic array in one cell, and refuses one over several cells
+  or its result, as Excel does.
 
 ## Notes and links
 
@@ -368,9 +376,12 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   nothing but results and prefixes changes; a stale result sheets cannot
   recompute (a link to another workbook among them) is removed rather
   than vouched for. An array formula over several cells, entered with
-  Ctrl+Shift+Enter or spilling, gets every cell of its result. In a
-  workbook counting dates from 1904, results that work with dates stay
-  unknown. Running it again changes nothing; a file that needs nothing is
+  Ctrl+Shift+Enter or spilling, gets every cell of its result; one in a
+  single cell whose result is larger stays unknown (Excel shows its first
+  value, or spills it if it was a dynamic array whose mark openpyxl
+  dropped). In a workbook counting dates from 1904, dates count in its
+  system; only a date written as text and read as a number stays unknown
+  there. Running it again changes nothing; a file that needs nothing is
   not written. `--dry-run` shows the changes without saving. On a CSV
   file, `check` runs lint.
 - On 150,000 rows (300,000 formulas openpyxl left without results),

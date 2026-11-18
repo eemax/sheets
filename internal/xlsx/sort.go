@@ -1,7 +1,10 @@
 package xlsx
 
 import (
+	"cmp"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -200,8 +203,8 @@ func compareSort(x, y sortValue) int {
 }
 
 // checkSort refuses ranges Excel would not sort, or that sorting would
-// break: merged cells, hidden rows, dynamic arrays, and part of an Excel
-// table.
+// break: merged cells, hidden rows, dynamic arrays over several cells (and
+// their results), and part of an Excel table.
 func (e *Editor) checkSort(s *grid.Sheet, r grid.Range) error {
 	sheet := s.Name
 	ms, err := e.f.GetMergeCells(sheet)
@@ -225,10 +228,55 @@ func (e *Editor) checkSort(s *grid.Sheet, r grid.Range) error {
 			map[bool]string{true: "", false: "s"}[len(hidden) == 1], listOf(hidden, 5), map[bool]string{true: "is", false: "are"}[len(hidden) == 1],
 			map[bool]string{true: "it", false: "them"}[len(hidden) == 1], shellWord(sheet), hidden[0], hidden[len(hidden)-1], map[bool]string{true: "it", false: "them"}[len(hidden) == 1])
 	}
-	for a, sp := range e.spillsOn(sheet) {
-		if !sp.Intersect(r).Empty() {
-			return fmt.Errorf("%s holds the dynamic array formula in %s or its result (%s), which cannot be sorted; sort its source instead, or wrap it in SORT()", grid.FormatRef(sheet, r), grid.CellName(a[0], a[1]), sp)
+	// A dynamic array in one cell (Excel 365 stores many formulas that use
+	// arrays so) sorts as a plain formula does, with its row; Excel
+	// sorts no dynamic array over several cells, nor its result. The
+	// first one in the sheet's order is named, so the message is the same
+	// from one run to the next.
+	var spilled [][2]int
+	fills := maps.Clone(e.spillsOn(sheet))
+	// A dynamic array the file stores with no result yet (XlsxWriter's
+	// write_formula, with the range of its own cell) spills over cells the
+	// file does not say: work out how far, as Excel does on open.
+	var pending [][2]int
+	for a, sp := range fills {
+		if sp.Rows()*sp.Cols() == 1 {
+			if c := s.At(a[0], a[1]); c != nil && c.Pending {
+				pending = append(pending, a)
+			}
 		}
+	}
+	if len(pending) > 0 {
+		// In the sheet's order, so the one named is the same on every run.
+		slices.SortFunc(pending, func(x, y [2]int) int { return cmp.Or(cmp.Compare(x[0], y[0]), cmp.Compare(x[1], y[1])) })
+		res, err := e.results()
+		if err != nil {
+			return err
+		}
+		for _, a := range pending {
+			sp, ok := res.arrays[keyOf(sheet, a[0], a[1])]
+			if !ok || sp.arr == nil {
+				// A spill runs down and to the right from its cell, so
+				// one that sheets cannot work out may reach the range from
+				// any cell above it or to its left, not only from inside.
+				if a[0] <= r.R2 && a[1] <= r.C2 {
+					return fmt.Errorf("%s may be reached by the dynamic array formula in %s, whose result sheets cannot work out, so it is unknown whether it spills over several cells (which Excel does not sort); sort its source instead, or wrap it in SORT()",
+						grid.FormatRef(sheet, r), grid.CellName(a[0], a[1]))
+				}
+				continue
+			}
+			fills[a] = grid.Range{R1: a[0], C1: a[1], R2: a[0] + sp.arr.Rows - 1, C2: a[1] + sp.arr.Cols - 1}
+		}
+	}
+	for a, sp := range fills {
+		if sp.Rows()*sp.Cols() > 1 && !sp.Intersect(r).Empty() {
+			spilled = append(spilled, a)
+		}
+	}
+	if len(spilled) > 0 {
+		a := slices.MinFunc(spilled, func(x, y [2]int) int { return cmp.Or(cmp.Compare(x[0], y[0]), cmp.Compare(x[1], y[1])) })
+		sp := fills[a]
+		return fmt.Errorf("%s holds the dynamic array formula in %s or its result (%s), which cannot be sorted; sort its source instead, or wrap it in SORT()", grid.FormatRef(sheet, r), grid.CellName(a[0], a[1]), sp)
 	}
 	for _, t := range e.tablesOn(sheet) {
 		if t.ref.Intersect(r).Empty() {

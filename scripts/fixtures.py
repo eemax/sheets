@@ -388,3 +388,85 @@ ws["C3"] = ArrayFormula("C3:C4", "=B1:B2*3")
 for r in range(1, 4):
     ws.cell(r, 4).value = ArrayFormula(f"D{r}", f"=SUM(B{r}:B{r}*2)")
 wb.save(f"{out}/arrays_rows.xlsx")
+
+# kinds_xlsxwriter.xlsx: a formula of each kind, for move, copy and sort (as
+# the wave-1 audit's k1.xlsx): plain ones, one reading a range where one
+# value goes (F1, implicit intersection), legacy arrays in one cell (C) and
+# over two (H1:H2), dynamic arrays in one cell (D, as Excel 365 stores SUM
+# over an array) and over two (G1:G2).
+xw = xlsxwriter.Workbook(f"{out}/kinds_xlsxwriter.xlsx")
+s = xw.add_worksheet("S")
+for i, (a, b) in enumerate([(3, 1), (1, 2), (2, 3), (5, 4), (4, 5), (6, 6)]):
+    r = i + 1
+    s.write_row(i, 0, [a, b])
+    if r % 2:
+        s.write_array_formula(f"C{r}:C{r}", f"{{=SUM(A{r}:B{r}*2)}}")
+    else:
+        s.write_formula(f"C{r}", f"=A{r}+B{r}")
+    if r % 3 == 0:
+        s.write_dynamic_array_formula(f"D{r}", f"=SUM(A{r}:B{r}*3)")
+    else:
+        s.write_formula(f"D{r}", f"=A{r}*B{r}")
+s.write_formula("F1", "=B1:B2*100")
+s.write_dynamic_array_formula("G1:G2", "=SEQUENCE(2)")
+s.write_array_formula("H1:H2", "{=A1:A2*10}")
+xw.close()
+
+# kinds_pending.xlsx: dynamic functions as XlsxWriter's write_formula stores
+# them, cm="1" with the range of their own cell and no result yet (Excel
+# spills =SEQUENCE(3) in D1 over D1:D3 when it opens the file).
+xw = xlsxwriter.Workbook(f"{out}/kinds_pending.xlsx")
+s = xw.add_worksheet("S")
+for i, (a, b) in enumerate([(3, 1), (1, 2), (2, 3), (5, 4), (4, 5), (6, 6)]):
+    s.write_row(i, 0, [a, b])
+s.write_formula("D1", "=SEQUENCE(3)")
+xw.close()
+
+# kinds_unknown.xlsx: the same with dynamic functions sheets cannot compute
+# (MAP over a LAMBDA), so how far they spill is unknown. S has one in D1
+# (Excel spills it over D1:D3) with text in D4; U has one in each of D1:D6.
+xw = xlsxwriter.Workbook(f"{out}/kinds_unknown.xlsx")
+s = xw.add_worksheet("S")
+u = xw.add_worksheet("U")
+for i, (a, b) in enumerate([(9, 1), (5, 2), (4, 3), (1, 4), (3, 5), (2, 6)]):
+    s.write_row(i, 0, [a, b])
+    u.write_row(i, 0, [a, b])
+s.write_formula("D1", "=_xlfn.MAP(B1:B3,_xlfn.LAMBDA(_xlpm.x,_xlpm.x*2))")
+s.write("D4", "x")
+for r in range(1, 7):
+    u.write_formula(f"D{r}", f"=_xlfn.MAP(B{r},_xlfn.LAMBDA(_xlpm.x,_xlpm.x*2))")
+xw.close()
+
+# unlike_excel.xlsx: one formula of each class WP-01 found computed unlike
+# Excel (sheet Cases, A1:D12: the class, the formula, what Excel shows, and
+# a formula reading it), over sheet Data.
+wb = Workbook()
+d = wb.active
+d.title = "Data"
+for r, (day, n, k) in enumerate([(1, 1, "A"), (2, 2, "B"), (3, 4, "A")], 1):
+    d.cell(r, 1, datetime.date(2020, 1, day))
+    d.cell(r, 2, n)
+    d.cell(r, 3, k)
+d["E1"], d["F1"], d["G1"] = "#N/A", "found", "#N/A"
+d["H5"], d["H6"] = "A", "B"
+c = wb.create_sheet("Cases")
+cases = [
+    ("TEXT, month names", '=TEXT(Data!A1,"mmmm")', "unknown"),
+    ("TEXT, day names", '=TEXT(Data!A1,"dddd")', "unknown"),
+    ("TEXT, AM/PM", '=TEXT(0.75,"h:mm AM/PM")', "unknown"),
+    ("TEXT, a locale tag", '=TEXT(Data!A1,"[$-41D]mmmm")', "unknown"),
+    ("TEXT, the en-US tag", '=TEXT(Data!A1,"[$-409]mmmm")', "January"),
+    ("TEXT, Swedish codes", '=TEXT(Data!A1,"ÅÅÅÅ-MM-DD")', "unknown"),
+    ("SUMPRODUCT over whole columns", ArrayFormula("B7", "=SUMPRODUCT(Data!A:A=Data!A1)*Data!B:C"), "unknown"),
+    ("ERROR.TYPE inside IF", ArrayFormula("B8", '=_xlfn.IFNA(INDEX(Data!E1:G1,MATCH(3,ERROR.TYPE(COLUMN(IF(Data!E1:G1<>"~N/A",Data!E1:G1))),0)),"")'), "found"),
+    ("SUMIFS with DATE, criteria range", '=SUMIFS(Data!B1:B3,Data!A1:A3,">="&DATE(2020,1,2),Data!C1:C3,Data!H5:H6)', 0),
+    ("SUMIFS with DATE", '=SUMIFS(Data!B1:B3,Data!A1:A3,">="&DATE(2020,1,2))', 6),
+    ("text date in a criterion", '=SUMIF(Data!A1:A3,"<1/2/2020",Data!B1:B3)', "unknown"),
+    ("ISO date in a criterion", '=SUMIF(Data!A1:A3,"<2020-01-02",Data!B1:B3)', 1),
+]
+for r, (label, f, excel) in enumerate(cases, 1):
+    c.cell(r, 1, label)
+    c.cell(r, 2).value = f
+    c.cell(r, 3, excel)
+    c.cell(r, 4, f"=B{r}")
+wb.save(f"{out}/unlike_excel.xlsx")

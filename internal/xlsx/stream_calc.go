@@ -53,7 +53,7 @@ func (s *StreamEditor) kindsNow(sheet string, row, col int) formula.Kinds {
 
 func (s *StreamEditor) calcState() calcState {
 	return calcState{formulas: s.formulasNow(), rs: s.resolver(), changed: s.changed, recompute: s.recompute,
-		edited: len(s.ops) > 0, order: s.sheetOrder, calcFile: s.calcBook, multi: s.multiArray, within: s.withinArray, deferArrays: s.laysOut, date1904: s.wb.Date1904,
+		edited: len(s.ops) > 0, order: s.sheetOrder, calcFile: s.calcBook, multi: s.multiArray, within: s.withinArray, oneCell: s.oneCellArray, deferArrays: s.laysOut, date1904: s.wb.Date1904,
 		typer: func(all map[cellKey]*formulaAt, computing map[*formulaAt]bool, rs *resolver) *typer {
 			return newTyper(s.wb, s.changed, s.kindsNow, len(s.ops) > 0, all, computing, rs)
 		}}
@@ -648,6 +648,21 @@ func (s *StreamEditor) multiArray(sheet string, row, col int) bool {
 	}
 	_, multi := multiArrayAt(sh, r, col)
 	return multi
+}
+
+// oneCellArray tells whether a cell anchors a legacy array formula in
+// one cell, as opened.
+func (s *StreamEditor) oneCellArray(sheet string, row, col int) bool {
+	sh := s.wb.Sheet(sheet)
+	if sh == nil || len(sh.Arrays) == 0 {
+		return false
+	}
+	r, ok := s.rowThen(sheet, row)
+	if !ok || s.edit(sheet, row, col) != nil {
+		return false
+	}
+	rg, legacy := legacyArray(sh, r, col)
+	return legacy && rg.Rows()*rg.Cols() == 1
 }
 
 // withinArray tells whether a cell lies inside another cell's legacy

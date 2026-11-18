@@ -1,0 +1,174 @@
+# Dynamic arrays through edits of rows and columns, and a script's copy of
+# a sheet, as Excel keeps them (WP-15): an array the edit moves keeps the
+# cells its result fills where they now stand; one whose range it cuts
+# through or widens spills again over its new result; one whose formula's
+# row goes takes its result with it.
+stdin letters.tsv
+exec sheets write book.xlsx Data
+exec sheets set book.xlsx Data!D1 '=A1:A4' Data!F1 '=SEQUENCE(3)'
+cp book.xlsx base.xlsx
+
+# A row deleted inside the spill: the result of =A1:A3 (a, b, d), not the
+# old values left in the way (#SPILL!).
+exec sheets rows delete book.xlsx Data!3
+exec sheets read book.xlsx Data!D1:F4
+cmp stdout deleted.out
+part book.xlsx xl/worksheets/sheet1.xml
+stdout '<c r="D1" cm="1"[^>]*><f t="array" ref="D1:D3">A1:A3</f>'
+stdout '<c r="F1" cm="1"[^>]*><f t="array" ref="F1:F3">_xlfn.SEQUENCE\(3\)</f>'
+! stdout '<c r="[DF]4"'
+xmlorder book.xlsx
+exec sheets check book.xlsx
+stdout ', 0 missing, 0 stale$'
+stdout 'no problems found'
+
+# Two rows: a, d.
+cp base.xlsx two.xlsx
+exec sheets rows delete two.xlsx Data!2:3
+exec sheets read two.xlsx Data!D1:D3
+stdout '^1	a$'
+stdout '^2	d$'
+stdout '^3$'
+part two.xlsx xl/worksheets/sheet1.xml
+stdout 'ref="D1:D2">A1:A2<'
+xmlorder two.xlsx
+
+# Rows inserted above: the arrays move with their results.
+cp base.xlsx above.xlsx
+exec sheets rows insert above.xlsx Data!1 -n 2
+part above.xlsx xl/worksheets/sheet1.xml
+stdout '<c r="D3" cm="1"[^>]*><f t="array" ref="D3:D6">A3:A6</f>'
+stdout '<c r="F3" cm="1"[^>]*><f t="array" ref="F3:F5">_xlfn.SEQUENCE\(3\)</f>'
+exec sheets read above.xlsx Data!D3:F6
+cmp stdout above.out
+xmlorder above.xlsx
+
+# A row inserted inside: =A1:A5 spills over it (its blank shows 0), and
+# SEQUENCE(3) fills its three cells again.
+cp base.xlsx inside.xlsx
+exec sheets rows insert inside.xlsx Data!2
+exec sheets read inside.xlsx Data!D1:F5
+cmp stdout inside.out
+part inside.xlsx xl/worksheets/sheet1.xml
+stdout 'ref="D1:D5">A1:A5<'
+stdout 'ref="F1:F3">_xlfn.SEQUENCE\(3\)<'
+xmlorder inside.xlsx
+
+# The formula's row deleted: no result left behind.
+cp base.xlsx anchor.xlsx
+exec sheets rows delete anchor.xlsx Data!1
+exec sheets read anchor.xlsx Data!A1:F3
+cmp stdout anchor.out
+xmlorder anchor.xlsx
+
+# A column deleted inside a spill across columns, and a spill on another
+# sheet reading the rows deleted.
+stdin row.tsv
+exec sheets write cols.xlsx Data
+exec sheets set cols.xlsx Data!A3 '=A1:D1' Other!B1 '=Data!A1:A2'
+exec sheets cols delete cols.xlsx Data!B
+exec sheets read cols.xlsx Data!A3:D3
+stdout '^3	a	c	d$'
+part cols.xlsx xl/worksheets/sheet1.xml
+stdout 'ref="A3:C3">A1:C1<'
+! stdout '<c r="D3"'
+exec sheets rows delete cols.xlsx Data!2
+exec sheets read cols.xlsx Other!B1:B2
+stdout '^1	a$'
+stdout '^2$'
+part cols.xlsx xl/worksheets/sheet2.xml
+stdout 'ref="B1">Data!A1:A1<'
+! stdout '<c r="B2"'
+xmlorder cols.xlsx
+
+# The same edits as one batch.
+cp base.xlsx batch.xlsx
+exec sheets do batch.xlsx 'rows insert Data!1 -n 2' 'rows delete Data!5'
+exec sheets read batch.xlsx Data!D3:F6
+cmp stdout batch.out
+xmlorder batch.xlsx
+
+# And in one script, which keeps one editor across both.
+cp base.xlsx lines.xlsx
+exec sheets script lines.xlsx lines.ts
+exec sheets read lines.xlsx Data!D3:F6
+cmp stdout batch.out
+part lines.xlsx xl/worksheets/sheet1.xml
+stdout 'ref="D3:D5">A3:A5<'
+stdout 'ref="F3:F5">_xlfn.SEQUENCE\(3\)<'
+xmlorder lines.xlsx
+
+# A script's copy of a sheet keeps a dynamic array set just before, its
+# mark and its result, as `sheet copy` does.
+cp base.xlsx script.xlsx
+exec sheets script script.xlsx copy.ts
+part script.xlsx xl/worksheets/sheet2.xml
+stdout '<c r="H1" cm="1"[^>]*><f t="array" ref="H1:H3">_xlfn.SEQUENCE\(3\)</f><v>1</v></c>'
+stdout '<c r="H3"><v>3</v></c>'
+stdout '<c r="D1"[^>]* cm="1"[^>]*><f t="array" ref="D1:D4">A1:A4</f>'
+xmlorder script.xlsx
+exec sheets read script.xlsx 'Data (2)!H1:H3'
+stdout '^3	3$'
+exec sheets check script.xlsx
+stdout ', 0 missing, 0 stale$'
+stdout 'no problems found'
+cp base.xlsx do.xlsx
+exec sheets do do.xlsx 'set Data!H1 =SEQUENCE(3)' 'sheet copy Data "Data (2)"'
+part do.xlsx xl/worksheets/sheet2.xml
+stdout '<c r="H1" cm="1"[^>]*><f t="array" ref="H1:H3">_xlfn.SEQUENCE\(3\)</f><v>1</v></c>'
+
+-- letters.tsv --
+a
+b
+c
+d
+-- row.tsv --
+a	b	c	d
+b
+-- copy.ts --
+function main(workbook: ExcelScript.Workbook) {
+  const ws = workbook.getWorksheet("Data")!;
+  ws.getRange("H1").setFormula("=SEQUENCE(3)");
+  ws.copy();
+}
+-- lines.ts --
+function main(workbook: ExcelScript.Workbook) {
+  const ws = workbook.getWorksheet("Data")!;
+  ws.getRange("1:2").insert(ExcelScript.InsertShiftDirection.down);
+  ws.getRange("5:5").delete(ExcelScript.DeleteShiftDirection.up);
+}
+-- deleted.out --
+Data!D1:F4
+	D	E	F
+1	a		1
+2	b		2
+3	d		3
+4
+-- above.out --
+Data!D3:F6
+	D	E	F
+3	a		1
+4	b		2
+5	c		3
+6	d
+-- inside.out --
+Data!D1:F5
+	D	E	F
+1	a		1
+2	0		2
+3	b		3
+4	c
+5	d
+-- anchor.out --
+Data!A1:F3
+	A	B	C	D	E	F
+1	b
+2	c
+3	d
+-- batch.out --
+Data!D3:F6
+	D	E	F
+3	a		1
+4	b		2
+5	d		3
+6

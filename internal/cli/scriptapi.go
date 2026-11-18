@@ -209,7 +209,10 @@ func (w *jsWorksheet) Copy(position string, relativeTo *jsWorksheet) *jsWorkshee
 	for n := 3; w.s.hasSheet(to); n++ {
 		to = fmt.Sprintf("%s (%d)", name, n)
 	}
-	notes, err := w.s.editor().CopySheet(name, to)
+	// The copy is of the sheet as the file holds it, as with the range
+	// operations: the writes before it are saved first, so a dynamic array
+	// set just before goes with its mark and its result.
+	notes, err := w.s.rangeEditor().CopySheet(name, to)
 	w.s.must(err)
 	w.s.warnings = append(w.s.warnings, notes...)
 	w.s.done = append(w.s.done, fmt.Sprintf("sheet %s copied to %s", name, to))
