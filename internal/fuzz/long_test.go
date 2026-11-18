@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,15 +28,21 @@ const maxSamples = 120
 //     sequence it is in;
 //   - SHEETS_FUZZ_EDITS: the most edits it makes (default: no limit);
 //   - SHEETS_FUZZ_UNTIL=new: stop at the first finding known.txt does not
-//     list (scripts/fuzz-mutants.sh);
+//     list (scripts/fuzz-mutants.sh), and with SHEETS_FUZZ_BASE, a copy of
+//     the tree without the mutant with its test binary built
+//     (internal/fuzz/fuzz.test), only at one whose sequence the copy makes
+//     with no finding: the mutant's;
 //   - SHEETS_FUZZ_SOFFICE: LibreOffice's soffice, when it is not on PATH.
 //
-// A finding known.txt does not list fails the run, as in the default mode;
-// long mode's entries there start with "long". The log gives the rate of
-// findings per 10,000 edits, the entries of known.txt for the run's seed that
-// no longer reproduce (fixed: reported, never a failure), and LibreOffice's
-// second opinion on the values of plain formulas (reported, never a failure).
-func fuzzLong(t *testing.T, committed []Workbook, known map[Signature]bool) {
+// A finding is known when known.txt lists its signature or it shows one of
+// the bugs known.txt names (a fresh seed's findings have signatures no list
+// holds: the bugs are known by their face). One that is not fails the run, as
+// in the default mode. The log gives the rate of findings per 10,000 edits,
+// the findings by the bug they show, the bugs whose repro no longer shows
+// them and the entries for the run's seed no longer made (fixed: reported,
+// never a failure), and LibreOffice's second opinion on the values of plain
+// formulas (reported, never a failure).
+func fuzzLong(t *testing.T, committed []Workbook, kn *Known) {
 	seed := uint64(time.Now().UnixNano()/int64(time.Millisecond)%1_000_000) + 2
 	given := false
 	if v := os.Getenv("SHEETS_FUZZ_SEED"); v != "" {
@@ -70,9 +77,10 @@ func fuzzLong(t *testing.T, committed []Workbook, known map[Signature]bool) {
 	dir := t.TempDir()
 	ps := &Pools{Root: repoRoot, Dir: dir, Committed: committed, Run: seed}
 	o := Options{Seed: seed, Edits: edits, Time: dur, Dir: dir, Pools: ps.For}
-	if until {
-		o.Stop = func(f Finding) bool { return !known[f.Signature] }
-	}
+	// known: listed by its signature, or a known bug's.
+	known := func(f Finding) bool { return kn.Seeds[f.Signature] || kn.Bug(f) != nil }
+	var theirs map[Signature]string
+	o.Stop, theirs = untilNew(t, kn, until)
 	soffice := os.Getenv("SHEETS_FUZZ_SOFFICE")
 	if soffice == "" {
 		soffice, _ = exec.LookPath("soffice")
@@ -100,30 +108,227 @@ func fuzzLong(t *testing.T, committed []Workbook, known map[Signature]bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newFindings := judgeFindings(t, res, known, ps.Files, dir, "SHEETS_FUZZ=long ")
+	newFindings := judgeFindings(t, res, func(f Finding) bool { return known(f) || theirs[f.Signature] != "" }, ps.Files, dir, "SHEETS_FUZZ=long ")
 	t.Logf("fuzz long: %d edits (%d applied) in %d sequences, %.0fs, seed %d; %d pools generated (seeds %s); %d findings, %d new",
 		res.Edits, res.Applied, res.Sequences, res.Elapsed.Seconds(), seed, len(res.Pools), seedList(res.Pools), len(res.Findings), newFindings)
 	if ps.Failed != "" {
-		t.Logf("fuzz long: could not generate fresh pools, so the committed pool ran in their place (its findings are not long ones): %s", ps.Failed)
+		t.Logf("fuzz long: could not generate fresh pools, so the committed pool ran in their place for %d of %d sequences (their findings are not long ones): %s", len(res.Fallback), res.Sequences, ps.Failed)
 	}
 	t.Logf("fuzz long: %.1f findings per 10,000 edits (%d in %d edits): %s", float64(len(res.Findings))*10000/float64(max(res.Edits, 1)), len(res.Findings), res.Edits, bySignature(res.Findings))
-	logFindings(t, res, known)
-	if res.Stopped {
-		f := res.Findings[len(res.Findings)-1]
-		t.Logf("fuzz long: stopped at the first finding known.txt does not list, %s, after %.0fs (SHEETS_FUZZ_UNTIL=new)", f.Signature, f.After.Seconds())
-	}
+	t.Logf("fuzz long: findings by the bug known.txt names that they show: %s", byBug(kn, res.Findings))
+	logFindings(t, res, func(f Finding) string {
+		switch b := kn.Bug(f); {
+		case kn.Seeds[f.Signature]:
+			return "known"
+		case b != nil:
+			return "known: the bug " + b.Name
+		case theirs[f.Signature] != "":
+			return "known: not the mutant's"
+		}
+		return ""
+	})
+	logStop(t, "long", res, theirs)
 	if res.Hung {
 		return
 	}
 	logCounts(t, "long", res, false)
-	logFixed(t, known, res, seed, true)
-	switch {
-	case until:
-	case soffice == "":
+	logFixed(t, kn.Seeds, res, seed, true)
+	if until {
+		return
+	}
+	logBugsFixed(t, kn, committed, ps, dir)
+	if soffice == "" {
 		t.Logf("fuzz long: LibreOffice's second opinion: none (no soffice on PATH; SHEETS_FUZZ_SOFFICE names it)")
-	default:
-		op := SecondOpinion(soffice, samples, filepath.Join(dir, "lo"))
-		t.Logf("fuzz long: LibreOffice's second opinion on plain formulas, in workbooks from openpyxl files (reported, never a finding): %s", op)
+		return
+	}
+	if len(samples) == 0 && len(res.Pools) == 0 {
+		t.Logf("fuzz long: LibreOffice's second opinion: none (no fresh pool was made, and the committed pool's workbooks are not sent)")
+		return
+	}
+	op := SecondOpinion(soffice, samples, filepath.Join(dir, "lo"))
+	t.Logf("fuzz long: LibreOffice's second opinion on plain formulas, in workbooks from openpyxl files (reported, never a finding): %s", op)
+}
+
+// untilNew is the stop of a run with SHEETS_FUZZ_UNTIL=new (until; nil
+// without): the first finding known.txt does not list, by its signature or
+// as a bug's (the mutants: scripts/fuzz-mutants.sh). With SHEETS_FUZZ_BASE, a
+// copy of the tree without the mutant whose test binary is built
+// (internal/fuzz/fuzz.test), it is the first whose sequence the copy makes
+// with no finding (fuzzer-long's audit, f0.3: a finding the code makes anyway
+// was taken for the mutant's); the others are in theirs, with what the copy
+// made.
+func untilNew(t *testing.T, kn *Known, until bool) (stop func(Finding) bool, theirs map[Signature]string) {
+	t.Helper()
+	base := os.Getenv("SHEETS_FUZZ_BASE")
+	theirs = map[Signature]string{}
+	switch {
+	case base != "" && !until:
+		t.Fatalf("SHEETS_FUZZ_BASE=%s: only with SHEETS_FUZZ_UNTIL=new", base)
+	case !until:
+		return nil, theirs
+	}
+	return func(f Finding) bool {
+		if kn.Seeds[f.Signature] || kn.Bug(f) != nil {
+			return false
+		}
+		if base == "" {
+			return true
+		}
+		made, err := baseMakes(base, f)
+		if err != nil {
+			t.Fatalf("SHEETS_FUZZ_BASE=%s: %v", base, err)
+		}
+		if made != "" {
+			theirs[f.Signature] = made
+			return false
+		}
+		return true
+	}, theirs
+}
+
+// logStop logs the findings the tree without the mutant makes too (theirs)
+// and the finding a run with SHEETS_FUZZ_UNTIL=new stopped at: the mutant's
+// (scripts/fuzz-mutants.sh reads the line).
+func logStop(t *testing.T, mode string, res *Result, theirs map[Signature]string) {
+	t.Helper()
+	base := os.Getenv("SHEETS_FUZZ_BASE")
+	env := ""
+	if mode == "long" {
+		env = "SHEETS_FUZZ=long "
+	}
+	for _, f := range res.Findings {
+		if made := theirs[f.Signature]; made != "" {
+			t.Logf("fuzz %s: %s is not in known.txt, and the tree without the mutant makes its sequence with a finding too (SHEETS_FUZZ_BASE): not the mutant's, but a bug of the code, for known.txt (replay: %sSHEETS_FUZZ_REPRO=%d go test ./internal/fuzz -run 'TestFuzz$' -v):\n%s", mode, f.Signature, env, f.Seed, made)
+		}
+	}
+	if !res.Stopped {
+		return
+	}
+	f := res.Findings[len(res.Findings)-1]
+	if base == "" {
+		t.Logf("fuzz %s: stopped at the first finding known.txt does not list, %s, after %.0fs (SHEETS_FUZZ_UNTIL=new)", mode, f.Signature, f.After.Seconds())
+		return
+	}
+	t.Logf("fuzz %s: the mutant's finding: %s, after %.0fs: known.txt does not list it, and the tree without the mutant makes its sequence with no finding (SHEETS_FUZZ_UNTIL=new, SHEETS_FUZZ_BASE)", mode, f.Signature, f.After.Seconds())
+}
+
+// baseMakes replays a finding's sequence with the tree without the mutant
+// (base, its test binary built in internal/fuzz/fuzz.test), and says what
+// it makes there: "" when nothing, else the replay's finding.
+func baseMakes(base string, f Finding) (string, error) {
+	pkg := filepath.Join(base, "internal", "fuzz")
+	bin := filepath.Join(pkg, "fuzz.test")
+	if _, err := os.Stat(bin); err != nil {
+		return "", fmt.Errorf("no test binary of the tree without the mutant (go test -c -o internal/fuzz/fuzz.test ./internal/fuzz): %v", err)
+	}
+	cmd := exec.Command(bin, "-test.run", "^TestFuzz$", "-test.count=1", "-test.v")
+	cmd.Dir = pkg
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "SHEETS_FUZZ") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env, "SHEETS_FUZZ_REPRO="+strconv.FormatUint(f.Seed, 10))
+	if f.Long {
+		cmd.Env = append(cmd.Env, "SHEETS_FUZZ=long")
+	}
+	out, err := cmd.CombinedOutput()
+	text := string(out)
+	switch {
+	case err == nil && strings.Contains(text, fmt.Sprintf("seed %d: no finding", f.Seed)):
+		return "", nil
+	case err != nil && strings.Contains(text, "finding "):
+		i := strings.Index(text, "finding ")
+		return lastLines(text[i:], 40), nil
+	}
+	return "", fmt.Errorf("the replay of %d gave neither a finding nor none (%v): %s", f.Seed, err, lastLines(text, 5))
+}
+
+// byBug counts findings by the bug known.txt names that they show, with
+// those it lists by signature and those it does not.
+func byBug(kn *Known, fs []Finding) string {
+	n := map[string]int{}
+	for _, f := range fs {
+		switch b := kn.Bug(f); {
+		case kn.Seeds[f.Signature]:
+			n["listed by signature"]++
+		case b != nil:
+			n[b.Name]++
+		default:
+			n["none (new)"]++
+		}
+	}
+	var keys []string
+	for k := range n {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if n[keys[i]] != n[keys[j]] {
+			return n[keys[i]] > n[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	var out []string
+	for _, k := range keys {
+		out = append(out, fmt.Sprintf("%s %d", k, n[k]))
+	}
+	if len(out) == 0 {
+		return "none"
+	}
+	return strings.Join(out, ", ")
+}
+
+// bugsFixed replays each known bug's repro, and lists those it no longer
+// shows (fixed: reported, never a failure), and those whose repro could not
+// be replayed (its pool could not be made).
+func bugsFixed(kn *Known, committed []Workbook, ps *Pools, dir string) (fixed, unchecked []string, err error) {
+	for _, b := range kn.Bugs {
+		files := committed
+		if b.Repro.Long {
+			p := ps.Of(PoolSeed(b.Repro.Seed))
+			if p.Seed == 0 {
+				unchecked = append(unchecked, fmt.Sprintf("%s (known.txt:%d, repro long %d)", b.Name, b.Line, b.Repro.Seed))
+				continue
+			}
+			files = p.Files
+		}
+		f, err := Replay(files, b.Repro.Seed, dir, 0, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		if f != nil {
+			f.Long = b.Repro.Long
+		}
+		switch {
+		case f == nil:
+			fixed = append(fixed, fmt.Sprintf("%s (known.txt:%d): its repro, %s, makes no finding", b.Name, b.Line, repro(b)))
+		case !b.Shows(*f):
+			detail, _, _ := strings.Cut(f.Detail, "\n")
+			fixed = append(fixed, fmt.Sprintf("%s (known.txt:%d): its repro, %s, makes %s, which it does not show: %s", b.Name, b.Line, repro(b), f.Signature, detail))
+		}
+	}
+	return fixed, unchecked, nil
+}
+
+func repro(b Bug) string {
+	if b.Repro.Long {
+		return fmt.Sprintf("long %d", b.Repro.Seed)
+	}
+	return strconv.FormatUint(b.Repro.Seed, 10)
+}
+
+func logBugsFixed(t *testing.T, kn *Known, committed []Workbook, ps *Pools, dir string) {
+	t.Helper()
+	fx, unchecked, err := bugsFixed(kn, committed, ps, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fx) > 0 {
+		t.Logf("fixed: known.txt names %d bugs whose repro no longer shows them (fixed? then remove their lines): %s", len(fx), strings.Join(fx, "; "))
+	}
+	t.Logf("fuzz long: of known.txt's %d bug lines, %d repros replayed, %d still showing their bug", len(kn.Bugs), len(kn.Bugs)-len(unchecked), len(kn.Bugs)-len(unchecked)-len(fx))
+	if len(unchecked) > 0 {
+		t.Logf("fuzz long: %d repros could not be replayed, their pools not made: %s", len(unchecked), strings.Join(unchecked, "; "))
 	}
 }
 
@@ -224,6 +429,175 @@ func TestFixed(t *testing.T) {
 	res.Truncated = false
 	if got := fixed(known, res, 7, true); len(got) != 3 {
 		t.Errorf("with the last sequence made in full: %v", got)
+	}
+	// A sequence that ran on the committed pool, its own not made (no uv:
+	// fuzzer-long's audit, f0.4), did not put its long entry to the test.
+	res.Fallback = map[int]bool{4: true, 9: true}
+	if got := strings.Join(fixed(known, res, 7, true), "; "); got != "long sort editors 700000" {
+		t.Errorf("with sequences 4 and 9 on the committed pool: %s", got)
+	}
+}
+
+// TestKnownBugs: a bug line of known.txt names a bug by its findings' face,
+// and takes a finding that shows it, whatever its seed; not one of another
+// class, invariant or detail, or whose last edit is not the one it names.
+func TestKnownBugs(t *testing.T) {
+	kn, err := ReadKnown(`move kinds 100003 # a comment
+bug sort-editors: sort,do editors; repro 100047; detail : stream holds .+, full holds (nothing \(pending\)|number 0)$; edit (?m)^sort |^sheets sort
+bug broken: rows-delete kinds; repro long 700012; detail holds =#REF! # not a comment
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !kn.Seeds[Signature{"move", "kinds", 100003, false}] || len(kn.Seeds) != 1 || len(kn.Bugs) != 2 {
+		t.Fatalf("seeds %v, bugs %v", kn.Seeds, kn.Bugs)
+	}
+	b := kn.Bugs[0]
+	if b.Name != "sort-editors" || b.Invariant != "editors" || strings.Join(b.Classes, ",") != "sort,do" || b.Repro != (Signature{"sort", "editors", 100047, false}) || b.Line != 2 {
+		t.Errorf("parsed %+v", b)
+	}
+	if r := kn.Bugs[1]; r.Repro != (Signature{"rows-delete", "kinds", 700012, true}) || r.Detail.String() != "holds =#REF! # not a comment" {
+		t.Errorf("parsed %+v (%s)", r, r.Detail)
+	}
+	sortEdit := Edit{Class: "sort", Args: []string{"sort", FileArg, "Data!A2:C9", "B"}}
+	batch := func(lines string) Edit { return Edit{Class: "do", Args: []string{"do", FileArg}, Stdin: lines} }
+	for _, tc := range []struct {
+		name, class, invariant, detail string
+		edit                           Edit
+		want                           string
+	}{
+		{"a sort's", "sort", "editors", "Q 2026!B2: stream holds number 2088, full holds nothing (pending)\nalso editors: …", sortEdit, "sort-editors"},
+		{"XlsxWriter's 0", "sort", "editors", "Notes!B2: stream holds number 6, full holds number 0", sortEdit, "sort-editors"},
+		{"a batch holding a sort", "do", "editors", "Model!B2: stream holds number 1, full holds number 0", batch("cols delete 'Model!C:C'\nsort 'Model!A2:A6' A A\n"), "sort-editors"},
+		{"a batch holding none", "do", "editors", "Model!B2: stream holds number 1, full holds number 0", batch("cols delete 'Model!C:C'\nset Model!A2 sort\n"), ""},
+		{"another face", "sort", "editors", "Q 2026!B2: stream holds nothing (pending), full holds number 2088", sortEdit, ""},
+		{"another invariant", "sort", "kinds", "Q 2026!B2: stream holds number 2088, full holds nothing (pending)", sortEdit, ""},
+		{"another class", "move", "editors", "Q 2026!B2: stream holds number 2088, full holds nothing (pending)", sortEdit, ""},
+		{"a rows delete", "rows-delete", "kinds", "Data!I3: holds =#REF! # not a comment", Edit{Class: "rows-delete"}, "broken"},
+	} {
+		f := Finding{Signature: Signature{tc.class, tc.invariant, 4001600015, true}, Detail: tc.detail, Edits: []Edit{tc.edit}}
+		got := ""
+		if b := kn.Bug(f); b != nil {
+			got = b.Name
+		}
+		if got != tc.want {
+			t.Errorf("%s: the bug %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	for _, bad := range []string{
+		"bug x: sort editors; detail a\n",                                                  // no repro
+		"bug x: sort editors; repro 7\n",                                                   // no detail
+		"bug x: sort editors; repro 7; detail (\n",                                         // not a pattern
+		"bug x: sortx editors; repro 7; detail a\n",                                        // no class
+		"bug x: sort typo; repro 7; detail a\n",                                            // no invariant
+		"bug x: sort editors; repro 7; detail a; why b\n",                                  // no field
+		"bug x y: sort editors; repro 7; detail a\n",                                       // a name with a space
+		"bug x: sort editors; repro long x; detail a\n",                                    // no seed
+		"bug x: sort editors; repro 7; detail a\nbug x: sort editors; repro 8; detail b\n", // a face twice
+	} {
+		if _, err := ReadKnown(bad); err == nil {
+			t.Errorf("%q parsed", bad)
+		}
+	}
+}
+
+// TestKnownFaces: the bugs known.txt names take the findings of each (as long
+// mode made them, on seeds 7 and 40016), and not those of others: a known
+// bug's face must not hide a new one (fuzzer-long's audit, f0.1: a dynamic
+// array set in a batch losing its formula sat among 113 known findings).
+func TestKnownFaces(t *testing.T) {
+	text, err := os.ReadFile("known.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kn, err := ReadKnown(string(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := func(code string) Edit {
+		return Edit{Class: "script", Args: []string{"script", FileArg, "-e", "const ws = workbook.getWorksheet(\"Data\");\n" + code}}
+	}
+	batch := func(lines string) Edit { return Edit{Class: "do", Args: []string{"do", FileArg}, Stdin: lines} }
+	plain := func(class string) Edit { return Edit{Class: class} }
+	for _, tc := range []struct {
+		class, invariant, detail string
+		edit                     Edit
+		want                     string
+	}{
+		{"set", "text", `Data!I2: typed the text "_x005F_x0041_", and the cell holds text "_x005FA"`, plain("set"), "escape"},
+		{"write", "text", `Bob's Plan!F3: typed the text "_x005F_x0041_", and the cell holds text "_x005FA"`, plain("write"), "escape"},
+		{"write", "editors", `Data!L3: stream holds text "_x005F_x0041_-x", full holds text "_x005FA-x"`, plain("write"), "escape"},
+		{"script", "editors", `Data!L2: stream holds text "_X005F_X0041_", full holds text "_X005FA"`, script(`ws.getRange("A2").setValue("_x005F_x0041_");`), "escape"},
+		{"sort", "editors", `Bob's Plan!B2: stream holds number 0, full holds nothing (pending)`, plain("sort"), "sort-editors"},
+		{"sort", "editors", `Data!L2: stream holds text "-x", full holds nothing (pending)`, plain("sort"), "sort-editors"},
+		{"do", "editors", `Calc!B2: stream holds number 7, full holds number 0`, batch("sort 'Calc!A2:A6' A A\n"), "sort-editors"},
+		{"script", "editors", `Data!B2: stream holds boolean true, full holds nothing (pending)`, script(`ws.getRange("A2:C9").getSort().apply([{key: 0, ascending: true}]);`), "sort-editors"},
+		{"copy", "repeat", `stream editor: the same edit on the same bytes saved two different workbooks: Data!M3: the first run holds number 86.06, the repeat holds nothing`, plain("copy"), "repeat"},
+		{"move", "repeat", `full editor: the same edit on the same bytes saved two different workbooks: Data!M3: the first run has =, the repeat has =IF(N("p")=0,IF(B7>1000,1,""))`, plain("move"), "repeat"},
+		{"script", "kinds", `stream editor: sheet1.xml U2: =IF(N("l")=0,UPPER(A2:A4)) is stored as a dynamic array, not a legacy array`, script(`ws.getRange("2:2").insert("Down");`), "script-legacy-dynamic"},
+		{"set", "xml", `stream editor: xl/tables/table1.xml: XML syntax error on line 2: illegal character code U+001F`, plain("set"), "table-header-control"},
+		{"write", "text", `Data!O3: typed the text "_x0041_", and the cell holds number 18`, plain("write"), "spill-overwrites"},
+		{"do", "kinds", `Calc!E3: the edit should leave a dynamic array there, and it holds no formula (it was lost)`, batch("set 'Calc!E3' '=IF(N(\"d\")=0,SUM(IF(B2:B6>3,B2:B6)))' 'Calc!B7' '=IF(N(\"p\")=0,UPPER(A7))' 'Calc!E2' '=IF(N(\"d\")=0,B2:B5>3)'\n"), "spill-overwrites"},
+		{"script", "editors", `Q 2026!C3: stream holds nothing, full holds text "Apple"`, Edit{Class: "script", Args: []string{"script", FileArg, "-e", "const ws = workbook.getWorksheet(\"Q 2026\");\nws.getRange(\"C2\").setFormula(\"=IF(N(\\\"d\\\")=0,A2:A4&\\\"!\\\")\");\nws.getRange(\"C2\").copyFrom(\"A1:C4\");\n"}}, "script-paste-over-array"},
+		// New: not a known bug's.
+		{"do", "kinds", `Data!E4: the edit should leave a dynamic array there, and it holds no formula (it was lost)`, batch("set 'Data!E4' '=IF(N(\"d\")=0,SEQUENCE(2))'\n"), ""},
+		{"move", "kinds", `Data!E4: the edit should leave a dynamic array there, and it holds no formula (it was lost)`, plain("move"), ""},
+		{"set", "text", `Data!I2: typed the text "Apple", and the cell holds text "APPLE"`, plain("set"), ""},
+		{"set", "text", `Data!I2: typed the text "_x0041_", and the cell holds text "A"`, plain("set"), ""},
+		{"move", "editors", `Data!B2: stream holds number 2088, full holds nothing (pending)`, plain("move"), ""},
+		{"copy", "repeat", `stream editor: the same edit on the same bytes worked once and failed once (exit 1: no such sheet)`, plain("copy"), ""},
+		{"script", "kinds", `stream editor: sheet1.xml U2: =IF(N("l")=0,UPPER(A2:A4)) is stored as a dynamic array, not a legacy array`, script(`ws.getRange("U2").moveTo("U5");`), ""},
+		{"set", "xml", `stream editor: xl/worksheets/sheet1.xml: XML syntax error on line 2: illegal character code U+0001`, plain("set"), ""},
+		{"script", "editors", `Q 2026!C3: stream holds nothing, full holds text "Apple"`, script(`ws.getRange("C2").copyFrom("A1:C4");`), ""},
+		{"move", "reach", `Data!G6: outside the edit's reach, its formula =B6*2 is rewritten as =E6*2, and the edit's shift of references gives =B6*2`, plain("move"), ""},
+	} {
+		f := Finding{Signature: Signature{tc.class, tc.invariant, 4001600827, true}, Detail: tc.detail, Edits: []Edit{tc.edit}}
+		got := ""
+		if b := kn.Bug(f); b != nil {
+			got = b.Name
+		}
+		if got != tc.want {
+			t.Errorf("%s %s %q: the bug %q, want %q", tc.class, tc.invariant, tc.detail, got, tc.want)
+		}
+	}
+}
+
+// TestBugRepros: the bugs known.txt names with a repro on the committed pool
+// still show in it (those on long mode's pools are replayed at the end of a
+// long run, and by this test with SHEETS_FUZZ=long: it makes their pools).
+func TestBugRepros(t *testing.T) {
+	text, err := os.ReadFile("known.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kn, err := ReadKnown(string(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := os.Getenv("SHEETS_FUZZ") == "long"
+	pool := loadPool(t)
+	ps := &Pools{Root: repoRoot, Dir: t.TempDir(), Committed: pool}
+	committed := 0
+	for _, b := range kn.Bugs {
+		if !b.Repro.Long {
+			committed++
+		}
+	}
+	if committed < 3 {
+		t.Errorf("only %d bugs have a repro on the committed pool: the default tests replay those", committed)
+	}
+	if !long {
+		kn.Bugs = slices.DeleteFunc(kn.Bugs, func(b Bug) bool { return b.Repro.Long })
+	}
+	fx, unchecked, err := bugsFixed(kn, pool, ps, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fx {
+		t.Errorf("fixed? %s", f)
+	}
+	for _, u := range unchecked {
+		t.Errorf("not replayed: %s: %s", u, ps.Failed)
 	}
 }
 

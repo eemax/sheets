@@ -406,10 +406,11 @@ func TestFuzz(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	known, err := ParseKnown(string(text))
+	kn, err := ReadKnown(string(text))
 	if err != nil {
 		t.Fatal(err)
 	}
+	known := kn.Seeds
 	long := false
 	switch v := os.Getenv("SHEETS_FUZZ"); v {
 	case "":
@@ -447,15 +448,34 @@ func TestFuzz(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Errorf("%s(known: %v)", g.Report(), known[f.Signature])
+		how := fmt.Sprint(known[f.Signature])
+		if b := kn.Bug(*f); b != nil {
+			how += ", the bug " + b.Name + " (known.txt:" + strconv.Itoa(b.Line) + ")"
+		}
+		t.Errorf("%s(known: %s)", g.Report(), how)
 		return
 	}
 	if long {
-		fuzzLong(t, pool, known)
+		fuzzLong(t, pool, kn)
 		return
 	}
 
 	o, mode := defaultOptions(t.TempDir())
+	// SHEETS_FUZZ_UNTIL=new: the mutants, on the committed pool when long
+	// mode's cannot be made (scripts/fuzz-mutants.sh).
+	until := os.Getenv("SHEETS_FUZZ_UNTIL")
+	if until != "" && until != "new" {
+		t.Fatalf("SHEETS_FUZZ_UNTIL=%q: the one it takes is new", until)
+	}
+	var theirs map[Signature]string
+	o.Stop, theirs = untilNew(t, kn, until == "new")
+	// What a mutant's run takes as known: what known.txt lists, a bug it
+	// names, and what the tree without the mutant makes too.
+	isKnown := func(f Finding) bool { return known[f.Signature] }
+	if o.Stop != nil {
+		mode += " (SHEETS_FUZZ_UNTIL)"
+		isKnown = func(f Finding) bool { return known[f.Signature] || kn.Bug(f) != nil || theirs[f.Signature] != "" }
+	}
 	// Another seed or count is not the default mode: known.txt holds the
 	// default seed's findings only.
 	if v := os.Getenv("SHEETS_FUZZ_SEED"); v != "" {
@@ -476,13 +496,19 @@ func TestFuzz(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newFindings := judgeFindings(t, res, known, func(uint64) []Workbook { return pool }, o.Dir, "")
+	newFindings := judgeFindings(t, res, isKnown, func(uint64) []Workbook { return pool }, o.Dir, "")
 	t.Logf("fuzz %s: %d edits (%d applied) in %d sequences, %.1fs, seed %d; %d findings, %d new",
 		mode, res.Edits, res.Applied, res.Sequences, res.Elapsed.Seconds(), o.Seed, len(res.Findings), newFindings)
 	if res.Capped {
 		t.Logf("fuzz %s: the time cap (%s) stopped the run after %d of %d edits", mode, o.Time, res.Edits, o.Edits)
 	}
-	logFindings(t, res, known)
+	logFindings(t, res, func(f Finding) string {
+		if isKnown(f) {
+			return "known"
+		}
+		return ""
+	})
+	logStop(t, mode, res, theirs)
 	if res.Hung {
 		return // the run stopped at the edit that hung: the counts below are no judge
 	}
@@ -512,15 +538,15 @@ func TestFuzz(t *testing.T) {
 // package's tests there).
 const repoRoot = "../.."
 
-// judgeFindings fails the test on each finding known.txt does not list,
-// shrinking the first maxShrunk (pool gives the files of a pool, by seed),
-// and returns how many there are. env goes before the line that replays one
-// (long mode's SHEETS_FUZZ=long).
-func judgeFindings(t *testing.T, res *Result, known map[Signature]bool, pool func(uint64) []Workbook, dir, env string) int {
+// judgeFindings fails the test on each finding known.txt does not list
+// (known tells), shrinking the first maxShrunk (pool gives the files of a
+// pool, by seed), and returns how many there are. env goes before the line
+// that replays one (long mode's SHEETS_FUZZ=long).
+func judgeFindings(t *testing.T, res *Result, known func(Finding) bool, pool func(uint64) []Workbook, dir, env string) int {
 	t.Helper()
 	newFindings := 0
 	for _, f := range res.Findings {
-		if known[f.Signature] {
+		if known(f) {
 			continue
 		}
 		newFindings++
@@ -541,13 +567,15 @@ func judgeFindings(t *testing.T, res *Result, known map[Signature]bool, pool fun
 	return newFindings
 }
 
-// logFindings logs each finding's signature, known or new, in order.
-func logFindings(t *testing.T, res *Result, known map[Signature]bool) {
+// logFindings logs each finding's signature, known or new, in order: known
+// says how a finding is known ("known", "known: the bug escape"), "" when it
+// is new.
+func logFindings(t *testing.T, res *Result, known func(Finding) string) {
 	t.Helper()
 	var lines []string
 	for _, f := range res.Findings {
-		if known[f.Signature] {
-			lines = append(lines, "known "+f.Signature.String())
+		if how := known(f); how != "" {
+			lines = append(lines, "known "+f.Signature.String()+strings.TrimPrefix(how, "known"))
 		} else {
 			lines = append(lines, "NEW   "+f.Signature.String())
 		}
@@ -596,7 +624,9 @@ func logCounts(t *testing.T, mode string, res *Result, strict bool) {
 
 // fixed are the entries of known.txt for a run's seed (long ones or not)
 // whose sequence the run made in full, without making the finding: fixed,
-// or no longer reached. They are reported, and never fail a run.
+// or no longer reached. They are reported, and never fail a run. A long
+// entry whose sequence started from the committed pool (its own could not be
+// made: res.Fallback) was not put to the test, and is not one.
 func fixed(known map[Signature]bool, res *Result, seed uint64, long bool) []string {
 	seen := map[Signature]bool{}
 	for _, f := range res.Findings {
@@ -608,6 +638,9 @@ func fixed(known map[Signature]bool, res *Result, seed uint64, long bool) []stri
 			continue
 		}
 		i := int(s.Seed % 100000)
+		if long && res.Fallback[i] {
+			continue
+		}
 		if i < res.Sequences-1 || i == res.Sequences-1 && !res.Truncated {
 			out = append(out, s.String())
 		}

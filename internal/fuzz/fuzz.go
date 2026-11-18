@@ -216,7 +216,12 @@ type Result struct {
 	Truncated bool
 	// Pools are the seeds of the generated pools the run started sequences
 	// from, in order (none: the committed pool only).
-	Pools    []uint64
+	Pools []uint64
+	// Fallback are the sequences that started from the committed pool in
+	// place of a generated one, which could not be made (long mode without
+	// uv): their findings are not long ones, and a long entry of known.txt
+	// for one of them was not put to the test.
+	Fallback map[int]bool
 	Elapsed  time.Duration
 	Findings []Finding
 	// Saved counts the files the editors saved (an edit, two editors) that
@@ -271,6 +276,12 @@ func Run(pool []Workbook, o Options) (*Result, error) {
 			}
 			if n := len(r.Pools); p.Seed != 0 && (n == 0 || r.Pools[n-1] != p.Seed) {
 				r.Pools = append(r.Pools, p.Seed)
+			}
+			if p.Seed == 0 {
+				if r.Fallback == nil {
+					r.Fallback = map[int]bool{}
+				}
+				r.Fallback[i] = true
 			}
 		}
 		seed := SequenceSeed(o.Seed, i)

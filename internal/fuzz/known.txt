@@ -4,8 +4,14 @@
 # with
 #   SHEETS_FUZZ_REPRO=<seed> go test ./internal/fuzz -run 'TestFuzz$' -v
 # A fix removes its lines (the run lists those it no longer makes, as fixed).
-# Long mode's findings, on the pools it makes, are the lines that start with
-# long, at the end.
+#
+# Long mode runs fresh seeds on fresh pools, whose findings no list of seeds
+# can hold: it takes a finding as known when it shows one of the bugs named
+# at the end, by its face (bug lines: the edit classes, the invariant, a
+# pattern on the finding's detail, and on the last edit when given; see
+# known.go, ReadKnown). Each bug has a repro, a sequence that shows it, which
+# a long run replays at its end: one that no longer shows it is reported
+# fixed, and never fails a run.
 
 # New: sheets saves a different workbook from one run to the next when a
 # paste lands on dynamic arrays (copy over the arrays of a sheet): values it
@@ -52,139 +58,61 @@ write text 100262
 write text 100272
 write text 100317
 
-# Long mode, seed 7, 20 minutes (internal/fuzz/README.md, Long mode): its
-# findings on the pools it made, by the bug each shows. Replay one with
+# Long mode: the bugs its findings show, by their face. A bug's patterns are
+# Go regular expressions: detail on the first line of the finding's detail,
+# edit on the last edit as a shell command. repro is a sequence that shows it
+# (long: on the pool long mode makes from its seed). Replay one with
 #   SHEETS_FUZZ=long SHEETS_FUZZ_REPRO=<seed> go test ./internal/fuzz -run 'TestFuzz$' -v
-# Run seed 7 again to see which are fixed (scripts/fuzz-mutants.sh runs seed
-# 7, so a finding of today's code missing here reads as a mutant's).
+# (without SHEETS_FUZZ=long for a repro on the committed pool). A face kept
+# narrow lets a new bug of the same class and invariant through as new.
 
 # Known (the default mode's set text and write text): a text with two
 # escape-like sequences that share an underscore (_x005F_x0041_) is stored as
-# another (_x005FA); and a formula reading it (=A3&"-x", =UPPER(A2)) gives
-# another text in each editor, one computing from the text typed, the other
-# from the text stored. (540)
-long script editors 705032
-long set text 700133 700136 700193 700224 700251 700260 700280 700304 700354 700473
-long set text 700483 700588 700617 700678 700695 700716 700763 700781 700797 700818
-long set text 700823 700834 700857 700932 700966 701022 701031 701032 701060 701080
-long set text 701121 701189 701376 701437 701470 701517 701564 701615 701688 701692
-long set text 701767 701785 701828 701868 701892 701900 701953 701955 701958 701977
-long set text 702001 702025 702059 702186 702201 702300 702312 702317 702387 702531
-long set text 702641 702642 702708 702747 702844 702846 702877 702925 702928 702960
-long set text 702988 702995 703014 703025 703053 703090 703103 703156 703170 703242
-long set text 703244 703336 703367 703408 703413 703443 703460 703592 703609 703614
-long set text 703656 703742 703799 703832 703879 703973 703999 704001 704042 704046
-long set text 704099 704101 704106 704136 704173 704292 704334 704359 704394 704400
-long set text 704484 704523 704557 704633 704718 704816 704847 704909 705012 705078
-long set text 705098 705117 705126 705162 705177 705297 705331 705366 705429 705532
-long set text 705572 705604 705640 705686 705770 705835 705859 705887 705889 705954
-long set text 706005 706018 706043 706082 706091 706100 706105 706137 706168 706206
-long set text 706229 706238 706239 706244 706368 706377 706458 706540 706575 706588
-long set text 706727 706735 706773 706781 706795 706856 706859 706924 706956 706969
-long set text 706982 707006 707108 707120 707205 707223 707263 707295 707336 707343
-long set text 707362 707409 707413 707442 707510 707590 707735 707765 707785 707828
-long set text 707878 707925 707978 707981 708121 708132 708328 708334 708385 708590
-long set text 708619 708706 708736 708750 708753 708863 708878 708899 708964 708972
-long set text 708995 709066 709114 709174 709259 709282 709307 709367 709409 709495
-long set text 709597 709635 709685 709699 709774 709780 709797 709826 709857 709916
-long set text 710059 710065 710126 710128 710177 710204 710221 710222 710268 710329
-long set text 710339 710382 710403 710728 710875 710884 710964 710971 711167 711175
-long set text 711189 711303 711393
-long write editors 702637
-long write text 700068 700076 700092 700118 700140 700146 700169 700175 700219 700266
-long write text 700296 700336 700372 700381 700382 700409 700414 700416 700429 700513
-long write text 700579 700609 700653 700655 700673 700700 700713 700770 700871 700872
-long write text 700920 700938 700974 701052 701133 701143 701174 701249 701262 701285
-long write text 701302 701311 701312 701321 701324 701326 701328 701375 701379 701407
-long write text 701423 701444 701467 701516 701595 701629 701684 701700 701750 701820
-long write text 701852 701861 701883 701910 701931 701936 701995 702022 702033 702035
-long write text 702134 702140 702225 702278 702292 702367 702550 702676 702705 702733
-long write text 702774 702796 702836 702864 702868 702878 702899 702902 702915 702948
-long write text 703088 703162 703206 703305 703331 703368 703391 703420 703451 703457
-long write text 703479 703559 703673 703751 703808 703822 703825 703844 703947 703984
-long write text 704055 704163 704175 704201 704319 704405 704442 704450 704551 704568
-long write text 704592 704609 704723 704802 704808 704830 704887 704888 704893 704906
-long write text 705050 705053 705121 705195 705262 705321 705342 705354 705401 705437
-long write text 705514 705524 705560 705660 705662 705699 705700 705777 705804 705873
-long write text 705981 706000 706020 706056 706065 706074 706183 706215 706234 706281
-long write text 706360 706579 706611 706694 706770 706772 706794 706801 706822 706831
-long write text 706835 706849 706875 706883 706953 707077 707119 707148 707168 707302
-long write text 707353 707390 707433 707438 707450 707474 707491 707532 707573 707652
-long write text 707686 707729 707789 707812 707817 707855 707870 707887 707924 707965
-long write text 707969 707982 707997 708029 708070 708094 708103 708333 708365 708372
-long write text 708449 708525 708530 708597 708641 708678 708711 708717 708781 708787
-long write text 708796 708843 708935 708946 709012 709034 709135 709194 709206 709242
-long write text 709243 709286 709322 709371 709429 709433 709441 709477 709494 709543
-long write text 709581 709612 709676 709702 709742 709839 709888 709910 709946 710130
-long write text 710149 710182 710194 710206 710252 710271 710332 710350 710425 710537
-long write text 710541 710582 710604 710611 710623 710644 710717 710766 710839 710896
-long write text 710897 710914 710934 710935 710985 711028 711148 711195 711196 711197
-long write text 711271 711293 711341 711346 711374
+# another (_x005FA): ooxmlText escapes each _xHHHH_ with a regular expression
+# whose first match takes the underscore the second starts with. And a formula
+# reading such a text (=A3&"-x", =UPPER(A2)) gives another text in each
+# editor, the streaming one computing from the text typed, the full one from
+# the text stored.
+bug escape: set,write text; repro 100046; detail typed the text "[^"]*_[xX][0-9A-Fa-f]{4}_[xX][0-9A-Fa-f]{4}_[^"]*", and the cell holds text "
+bug escape: set,write,do,script editors; repro long 702637; detail : stream holds text "[^"]*_[xX][0-9A-Fa-f]{4}_[xX][0-9A-Fa-f]{4}_[^"]*", full holds text "
 
 # Known (the default mode's sort editors): after a sort the streaming editor
-# stores the results of the formulas on the sheet it sorted (it computes them),
-# and the full editor leaves them as they were, pending or XlsxWriter's 0. Two
-# of them are a batch holding one sort (do editors 701600, 704123). (278)
-long do editors 701600 704123
-long sort editors 700004 700142 700225 700286 700366 700399 700481 700733 700754 700798
-long sort editors 700799 700810 700861 700862 700924 700926 700955 700971 701011 701029
-long sort editors 701038 701123 701155 701178 701222 701260 701333 701480 701549 701559
-long sort editors 701597 701740 701751 701764 701783 701814 701909 701928 701986 701994
-long sort editors 702032 702065 702081 702119 702138 702242 702256 702265 702276 702331
-long sort editors 702338 702454 702473 702492 702565 702598 702653 702760 702780 702850
-long sort editors 702867 702993 703011 703017 703026 703028 703300 703314 703346 703411
-long sort editors 703414 703422 703635 703728 703753 703759 703772 703792 703819 703831
-long sort editors 703933 703959 704012 704029 704056 704057 704111 704154 704187 704235
-long sort editors 704241 704282 704304 704371 704415 704433 704447 704520 704588 704657
-long sort editors 704667 704731 704735 704754 704836 704898 704920 704983 705006 705021
-long sort editors 705081 705087 705184 705187 705200 705208 705261 705276 705278 705283
-long sort editors 705293 705308 705402 705529 705579 705596 705643 705679 705721 705747
-long sort editors 705748 705763 705803 705888 705908 705928 705962 705966 706029 706138
-long sort editors 706170 706194 706226 706272 706318 706337 706454 706516 706519 706523
-long sort editors 706534 706618 706653 706657 706666 706675 706763 706817 706819 706876
-long sort editors 706888 706922 706999 707049 707059 707084 707092 707117 707272 707308
-long sort editors 707348 707392 707394 707423 707432 707475 707504 707520 707531 707591
-long sort editors 707609 707666 707679 707721 707747 707776 707777 707824 707847 707926
-long sort editors 708015 708071 708161 708199 708214 708222 708238 708299 708406 708412
-long sort editors 708421 708438 708478 708524 708531 708571 708585 708611 708688 708712
-long sort editors 708776 708794 708825 708861 709055 709071 709112 709202 709207 709229
-long sort editors 709230 709310 709323 709358 709389 709395 709396 709424 709452 709474
-long sort editors 709594 709595 709640 709656 709687 709722 709741 709764 709933 709948
-long sort editors 710014 710097 710103 710117 710232 710387 710428 710432 710437 710464
-long sort editors 710471 710491 710505 710532 710557 710563 710664 710749 710758 710784
-long sort editors 710864 710870 710922 710924 710965 711063 711094 711152 711153 711156
-long sort editors 711203 711320 711388 711398 711450 711459
+# stores the results of the formulas on the sheet it sorted (it computes
+# them), and the full editor leaves them as they were, pending or XlsxWriter's
+# 0. A batch or a script holding a sort shows it too.
+bug sort-editors: sort editors; repro 100047; detail : stream holds .+, full holds (nothing \(pending\)|number 0)$
+bug sort-editors: do,script editors; repro long 701600; detail : stream holds .+, full holds (nothing \(pending\)|number 0)$; edit (?m)^sort |getSort\(\)
 
-# Known (the default mode's copy repeat): sheets saves a different workbook from
-# one run to the next when an edit lands on dynamic arrays, a paste or a move
-# (spillResults lays them out in map order). Shrunk, move repeat 700890 is
-# sheets move book.xlsx 'Model!A4:C6' 'Model!D1' over the array in E2:E3: the
-# formula in E3 is there in one run and not in the other. (28)
-long copy repeat 700760 701755 702629 702885 704247 705536 706965 709497 709835 710248
-long copy repeat 711027 711376
-long do repeat 701782 706511 711236
-long move repeat 700890 700906 701413 702076 703076 703906 705101 705260 706033 707020
-long move repeat 708568 709858 711311
+# Known (the default mode's copy repeat): sheets saves a different workbook
+# from one run to the next when an edit lands on dynamic arrays, a paste, a
+# move or a batch (spillResults lays them out in map order). Shrunk, long move
+# repeat 700890 is sheets move book.xlsx 'Model!A4:C6' 'Model!D1' over the
+# array in E2:E3: the formula in E3 is there in one run and not in the other.
+bug repeat: copy,move,do,script repeat; repro 100139; detail editor: the same edit on the same bytes saved two different workbooks: 
 
 # Known (README, other seeds' findings: script kinds): a script that inserts
-# rows and then a column leaves a legacy array with a dynamic array's cell
-# metadata: it is stored as a dynamic array. (2)
-long script kinds 702888 708429
+# rows or columns leaves a legacy array with a dynamic array's cell metadata:
+# it is stored as a dynamic array.
+bug script-legacy-dynamic: script kinds; repro long 702888; detail =IF\(N\("l"\)=0,.*\) is stored as a dynamic array, not a legacy array$; edit \.insert\(
 
-# New: a control character typed into an Excel table's header (set
-# 'Data!B1' $'ctl\x01x') is written raw into the table's part, by the
-# streaming editor: xl/tables/table1.xml is not XML (illegal character code
-# U+0001). Excel stores it as _x0001_. Shrunk: set xml 700021. (6)
-long set xml 700021 701557 705782 706584 706871 709145
+# New (long mode, seed 7): a control character typed into an Excel table's
+# header (set 'Data!B1' $'ctl\x01x') is written raw into the table's part:
+# xl/tables/table1.xml is not XML (illegal character code U+0001). Excel
+# stores it as _x0001_.
+bug table-header-control: set,script xml; repro long 700021; detail xl/tables/table[0-9]+\.xml: XML syntax error on line [0-9]+: illegal character code U\+00[01][0-9A-F]$
 
-# New: a text written into a dynamic array's results is lost to them: write
-# 'Data!N2' typing _x0041_ into O3, which the dynamic array in O2 (=C2:C3*2)
-# fills, saves O3 as the array's 18. Excel keeps what is typed and shows
-# #SPILL! in O2. (1)
-long write text 711157
+# New (long mode, seeds 7 and 40016): a dynamic array's results overwrite
+# what stands in their way, where Excel keeps it and shows #SPILL! at the
+# array. A text written into them is lost (write 'Data!N2' typing _x0041_ into
+# O3, which the dynamic array in O2, =C2:C3*2, fills: O3 is saved as the
+# array's 18); and so is a formula a batch sets beside one that spills over
+# it (set 'Calc!E3' '=IF(N("d")=0,SUM(IF(B2:B6>3,B2:B6)))' … 'Calc!E2'
+# '=IF(N("d")=0,B2:B5>3)': E3 is saved with no formula).
+bug spill-overwrites: set,write text; repro long 711157; detail typed the text "[^"]*", and the cell holds (number|boolean|error) 
+bug spill-overwrites: set,do kinds; repro long 4001600827; detail : the edit should leave a [a-z ]+ there, and it holds no formula \(it was lost\)$; edit N\("d"\)=0,[^']*[A-Z]+[0-9]+:[A-Z]+[0-9]+
 
-# New: a script that sets a dynamic array (C2, =A2:A4&"!") and then pastes over
-# it (ws.getRange("C2").copyFrom("A1:C4")) saves other cells in each editor:
-# Q 2026!C4 holds nothing in the streaming editor's file, "Lime" in the
-# full editor's. (1)
-long script editors 701746
+# New (long mode, seed 7): a script that sets a dynamic array (C2,
+# =A2:A4&"!") and then pastes over it (ws.getRange("C2").copyFrom("A1:C4"))
+# saves other cells in each editor: Q 2026!C4 holds nothing in the streaming
+# editor's file, "Lime" in the full editor's.
+bug script-paste-over-array: script editors; repro long 701746; detail : stream holds .*, full holds ; edit setFormula\("=IF\(N\(\\+"d\\+"\).*copyFrom\(
