@@ -254,6 +254,13 @@ main, with a simpler pool and no repeat check.)
   edits that remove several dynamic arrays). Counting arrays that only
   moved as removed too would repeat 124 of them and add 14 s.
 - **Under `-race`:** an edit takes about 160 ms.
+- **Under heavy load the bar is missed.** With the Mac busy with other
+  sessions (a load average of about 7), `portal check full` took 153 s
+  (1,028 tests): the plain fuzz 60 s (24 s alone), and the race fuzz 79 s,
+  held up by its 200-edit minimum at about 390 ms an edit. Main took 64 s
+  at a load of about 5. The fuzz runs are one thread each, so a busy Mac
+  slows them more than the packages that run in parallel; an unloaded Mac
+  gives the 94 to 96 s above.
 - **If check full ever nears 135 s:** lower the race cap first, never
   below 200 edits. If 2,000 plain edits still don't fit, report the
   numbers. Never weaken the invariants.
