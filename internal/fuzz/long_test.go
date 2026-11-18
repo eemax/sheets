@@ -581,7 +581,9 @@ func TestKnownFaces(t *testing.T) {
 		{"set", "editors", `Data!dynamic arrays: stream has none, full has F7 (the full editor's alone: F7)`, Edit{Class: "set", Args: []string{"set", FileArg, "Data!F7", `=IF(N("p")=0,NOT(F7))`}}, "full-keeps-array-metadata"},
 		// A formula read by its row, moved by a script's insert (seed 915488).
 		{"script", "editors", `R&D!C3 (=IF(N("p")=0,'Data'!C2:C3*2)): stream holds number 6, full holds number 0.58`, script(`ws.getRange("H7").setFormula("=IF(N(\"p\")=0,NOT(F7))");`+"\n"+`ws.getRange("1:1").insert("Down");`), "intersection-kept"},
+		{"script", "editors", `Notes!C1 (=IF(N("p")=0,'Data'!C2:C3*10)): stream holds number 637.4, full holds error "#VALUE!"`, script(`ws.getRange("1:1").delete("Up");`), "intersection-kept"},
 		// New: not a known bug's.
+		{"script", "editors", `Notes!C1 (=IF(N("p")=0,'Data'!C2:C3*10)): stream holds number 637.4, full holds error "#REF!"`, script(`ws.getRange("1:1").delete("Up");`), ""},
 		{"script", "editors", `R&D!C3 (=IF(N("p")=0,SUM('Data'!C2:C3))): stream holds number 6, full holds number 0.58`, script(`ws.getRange("1:1").insert("Down");`), ""},
 		{"script", "editors", `R&D!C3 (=IF(N("p")=0,'Data'!C2:C3*2)): stream holds number 6, full holds number 0.58`, script(`ws.getRange("H7").setFormula("=IF(N(\"p\")=0,NOT(F7))");`), ""},
 		{"script", "editors", `R&D!C3 (=IF(N("p")=0,'Data'!C2:C3*2)): stream holds number 6, full holds nothing (pending)`, script(`ws.getRange("1:1").insert("Down");`), ""},

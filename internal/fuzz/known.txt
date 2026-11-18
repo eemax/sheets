@@ -186,5 +186,8 @@ bug full-keeps-array-metadata: write,set,do editors; repro long 70255300604; det
 # streaming editor's does not (a script sets 'R&D!H7' and inserts row 1:
 # R&D!C3 is 6 in the streaming editor's file, 0.58 in the full one's). The
 # editors' difference in a value names the formula, which this face reads: no
-# function call around the range.
-bug intersection-kept: script editors; repro long 91548805029; detail ![A-Z]+[0-9]+ \(=IF\(N\("p"\)=0,[^()]*:[^()]*\)\): stream holds number [^,]*, full holds number [^,]*$; edit \.(insert|delete)\(
+# function call around the range. Moved to a row its range does not cross, it
+# is #VALUE! (seed 771942: a script deletes row 1 of Notes, and C1, from C2,
+# =IF(N("p")=0,'Data'!C2:C3*10), is #VALUE! in the full editor's file and
+# 637.4 in the streaming one's).
+bug intersection-kept: script editors; repro long 91548805029; detail ![A-Z]+[0-9]+ \(=IF\(N\("p"\)=0,[^()]*:[^()]*\)\): stream holds (number [^,]*|error "#VALUE!"), full holds (number [^,]*|error "#VALUE!")$; edit \.(insert|delete)\(
