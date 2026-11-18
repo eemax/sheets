@@ -399,10 +399,11 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     changed), traced through what each formula reads;
   - `unexplained`: values that moved with nothing upstream changed, the
     sign of a broken formula or a wrong stored result;
-  - `features_lost`: charts, validations, conditional formats, shapes,
-    pictures, names and tables the old version had (openpyxl drops shapes,
-    a chart grouped with a shape, and validations in Excel 2010's
-    extension list, such as a list read from another sheet);
+  - `features_lost`: charts (on a chart sheet too), validations,
+    conditional formats, shapes, pictures, names and tables the old
+    version had (openpyxl drops shapes, a chart grouped with a shape, and
+    validations in Excel 2010's extension list, such as a list read from
+    another sheet);
   - `unknown`: values sheets cannot compare, with why (a function the
     calculator lacks, INDIRECT or OFFSET, a link to another workbook, or a
     formula reading one of them): never called unexplained;
