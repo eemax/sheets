@@ -619,3 +619,86 @@ func byColumn(want, got map[[2]int]string) string {
 	}
 	return ""
 }
+
+// checkTyped judges what a set or write typed: a text that is no number,
+// date, boolean, error or formula is stored as typed. The editors invariant
+// compares one editor with the other, which cannot see a slip both make
+// (the text written for the full editor and the streaming one share the code
+// that escapes it: ooxmlText), and the xml invariant sees only a file that
+// is not well-formed. This one reads the text back, so a text that Excel
+// would read as something else (_x0041_ stored unescaped reads as "A") is
+// found. Only the top-level set and write are judged: in a batch or a script
+// a later command may move or clear what an earlier one typed. It returns
+// "" when the edit is fine.
+func checkTyped(e Edit, wb *grid.Workbook) string {
+	type spot struct {
+		sheet string
+		r, c  int
+	}
+	want := map[spot]string{}
+	var order []spot
+	put := func(k spot, text string) {
+		v := input.Parse(text, false)
+		if _, ok := want[k]; !ok {
+			order = append(order, k)
+		}
+		if v.Formula != "" || v.Kind != grid.Text {
+			delete(want, k)
+			return
+		}
+		want[k] = v.Text
+	}
+	isSheet := func(n string) bool { return wb.Sheet(n) != nil }
+	switch e.Class {
+	case "set":
+		for i := 2; i+1 < len(e.Args); i += 2 {
+			p, err := grid.ParseRef(e.Args[i], isSheet)
+			if err != nil || p.Sheet == "" || p.Range == nil {
+				return ""
+			}
+			for r := p.Range.R1; r <= p.Range.R2; r++ {
+				for c := p.Range.C1; c <= p.Range.C2; c++ {
+					put(spot{p.Sheet, r, c}, e.Args[i+1])
+				}
+			}
+		}
+	case "write":
+		if len(e.Args) < 3 {
+			return ""
+		}
+		p, err := grid.ParseRef(e.Args[2], isSheet)
+		if err != nil || p.Sheet == "" || p.Range == nil {
+			return ""
+		}
+		for i, line := range strings.Split(strings.TrimSuffix(e.Stdin, "\n"), "\n") {
+			for j, text := range strings.Split(line, "\t") {
+				if text != "" {
+					put(spot{p.Sheet, p.Range.R1 + i, p.Range.C1 + j}, text)
+				}
+			}
+		}
+	default:
+		return ""
+	}
+	for _, k := range order {
+		text, ok := want[k]
+		if !ok {
+			continue
+		}
+		s := wb.Sheet(k.sheet)
+		if s == nil {
+			return fmt.Sprintf("the sheet %s the edit typed in is gone", k.sheet)
+		}
+		header := false
+		for _, t := range s.Tables {
+			header = header || k.r == t.Range.R1 && k.c >= t.Range.C1 && k.c <= t.Range.C2 // a table names its columns after its header: it may change the text
+		}
+		if header {
+			continue
+		}
+		if got := s.Get(k.r, k.c); got.Kind != grid.Text || got.Formula != "" || got.Text != text {
+			return fmt.Sprintf("%s!%s: typed the text %q, and the cell holds %s", k.sheet, grid.CellName(k.r, k.c), text, value(got))
+		}
+	}
+	return ""
+}

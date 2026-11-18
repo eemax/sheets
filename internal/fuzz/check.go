@@ -87,11 +87,60 @@ func inspect(data []byte) ([]violation, []formulaCell) {
 	if err := xlsxtest.CheckOrder(data); err != nil {
 		return []violation{{"xml", err.Error()}}, nil
 	}
+	for _, zf := range zr.File {
+		if strings.HasPrefix(zf.Name, "xl/worksheets/") && path.Ext(zf.Name) == ".xml" || zf.Name == "xl/sharedStrings.xml" {
+			if err := checkSpace(zf); err != nil {
+				return []violation{{"xml", fmt.Sprintf("%s: %v", zf.Name, err)}}, nil
+			}
+		}
+	}
 	cells, metadata, err := formulas(zr)
 	if err != nil {
 		return []violation{{"xml", err.Error()}}, nil
 	}
 	return checkKinds(cells, metadata), cells
+}
+
+// checkSpace refuses a text (a <t> element of a sheet or the shared strings)
+// that starts or ends with white space and does not say xml:space="preserve":
+// Excel drops those spaces when it reads the file. (A streaming editor that
+// writes text and forgets the attribute loses the spaces of " lead" and "x ",
+// and sheets' own reader, which keeps them, never notices.)
+func checkSpace(zf *zip.File) error {
+	r, err := zf.Open()
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	d := xml.NewDecoder(bufio.NewReader(r))
+	var text *strings.Builder
+	preserve := false
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			return nil // wellFormed has judged the part
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			if t.Name.Local == "t" && text == nil {
+				text, preserve = &strings.Builder{}, false
+				for _, a := range t.Attr {
+					preserve = preserve || a.Name.Local == "space" && a.Value == "preserve"
+				}
+			}
+		case xml.CharData:
+			if text != nil {
+				text.Write(t)
+			}
+		case xml.EndElement:
+			if t.Name.Local == "t" && text != nil {
+				if v := text.String(); !preserve && strings.TrimSpace(v) != v {
+					return fmt.Errorf("the text %q has spaces at its ends and no xml:space=\"preserve\": Excel drops them", v)
+				}
+				text = nil
+			}
+		}
+	}
 }
 
 func wellFormed(zf *zip.File) error {
