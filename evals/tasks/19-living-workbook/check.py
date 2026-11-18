@@ -206,12 +206,6 @@ def find(sheet, col, value, first_row=2):
     return None
 
 
-def expected_row(sheet, key_col, key):
-    for addr, (v, _) in G[sheet].items():
-        if addr.startswith(key_col) and addr[len(key_col):].isdigit() and int(addr[len(key_col):]) >= 2 and norm(v) == norm(key):
-            return int(addr[len(key_col):])
-
-
 def need(sheet):
     if sheet not in names:
         raise AssertionError(f"no sheet {sheet}")
