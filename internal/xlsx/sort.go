@@ -1,7 +1,9 @@
 package xlsx
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -227,11 +229,19 @@ func (e *Editor) checkSort(s *grid.Sheet, r grid.Range) error {
 	}
 	// A dynamic array in one cell (Excel 365 stores many formulas that use
 	// arrays so) sorts as a plain formula does, with its row; Excel
-	// sorts no dynamic array over several cells, nor its result.
+	// sorts no dynamic array over several cells, nor its result. The
+	// first one in the sheet's order is named, so the message is the same
+	// from one run to the next.
+	var spilled [][2]int
 	for a, sp := range e.spillsOn(sheet) {
 		if sp.Rows()*sp.Cols() > 1 && !sp.Intersect(r).Empty() {
-			return fmt.Errorf("%s holds the dynamic array formula in %s or its result (%s), which cannot be sorted; sort its source instead, or wrap it in SORT()", grid.FormatRef(sheet, r), grid.CellName(a[0], a[1]), sp)
+			spilled = append(spilled, a)
 		}
+	}
+	if len(spilled) > 0 {
+		a := slices.MinFunc(spilled, func(x, y [2]int) int { return cmp.Or(cmp.Compare(x[0], y[0]), cmp.Compare(x[1], y[1])) })
+		sp := e.spillsOn(sheet)[a]
+		return fmt.Errorf("%s holds the dynamic array formula in %s or its result (%s), which cannot be sorted; sort its source instead, or wrap it in SORT()", grid.FormatRef(sheet, r), grid.CellName(a[0], a[1]), sp)
 	}
 	for _, t := range e.tablesOn(sheet) {
 		if t.ref.Intersect(r).Empty() {

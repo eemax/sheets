@@ -76,6 +76,13 @@ stderr 'S!A2:G6 holds the dynamic array formula in G1 or its result \(G1:G2\), w
 ! exec sheets sort kinds_xlsxwriter.xlsx S!H1:H2 H
 stderr 'S!H1:H2 takes in the array formula S!H1:H2 \(entered with Ctrl\+Shift\+Enter\), and Excel sorts no cell of an array'
 cmp kinds_xlsxwriter.xlsx before.xlsx
+# Of several, the first in the sheet's order is named, every time.
+cp kinds_xlsxwriter.xlsx two.xlsx
+exec sheets set two.xlsx S!J1 =SEQUENCE(2) S!K3 =SEQUENCE(2)
+! exec sheets sort two.xlsx S!A1:K6 A
+stderr 'holds the dynamic array formula in G1 or its result \(G1:G2\)'
+! exec sheets sort two.xlsx S!I1:K6 I
+stderr 'holds the dynamic array formula in J1 or its result \(J1:J2\)'
 
 # The same as one batch, and through a script's sort.
 stdin batch.txt
