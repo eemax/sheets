@@ -41,16 +41,20 @@ type model struct {
 	sheets map[string]map[[2]int]string // formula cells by sheet (lower case): the marker of each, "" for none
 	names  map[string]string            // the sheet's name as last given
 	order  []string
-	sorted map[string]bool // positions on the sheet are unknown after a sort; only the count of each kind per column holds
-	lost   map[string]bool // the model gave up on the sheet
+	sorted map[string]bool   // positions on the sheet are unknown after a sort; only the count of each kind per column holds
+	lost   map[string]bool   // the model gave up on the sheet
+	tables map[string]string // the sheet of each Excel table (names lower case): sort takes a table's name as its target
 	// why is what the model cannot read, when it cannot.
 	why string
 }
 
 func newModel(wb *grid.Workbook) *model {
-	m := &model{sheets: map[string]map[[2]int]string{}, names: map[string]string{}, sorted: map[string]bool{}, lost: map[string]bool{}}
+	m := &model{sheets: map[string]map[[2]int]string{}, names: map[string]string{}, sorted: map[string]bool{}, lost: map[string]bool{}, tables: map[string]string{}}
 	for _, s := range wb.Sheets {
 		k := strings.ToLower(s.Name)
+		for _, t := range s.Tables {
+			m.tables[strings.ToLower(t.Name)] = k
+		}
 		m.names[k] = s.Name
 		m.order = append(m.order, k)
 		cells := map[[2]int]string{}
@@ -251,6 +255,11 @@ func (m *model) command(w []string, stdin string) {
 			return
 		}
 		name := w[1]
+		if k, ok := m.tables[strings.ToLower(name)]; ok && !m.isSheet(name) {
+			// The target is an Excel table: its sheet is sorted.
+			m.sort(k)
+			return
+		}
 		if !m.isSheet(name) {
 			p, err := grid.ParseRef(name, m.isSheet)
 			if err != nil || p.Sheet == "" {
@@ -317,6 +326,11 @@ func (m *model) command(w []string, stdin string) {
 			}
 			delete(m.sheets, from)
 			delete(m.names, from)
+			for t, k := range m.tables {
+				if k == from {
+					m.tables[t] = strings.ToLower(to)
+				}
+			}
 		case "copy":
 			k := m.ensure(to)
 			for cell, mk := range m.sheets[from] {

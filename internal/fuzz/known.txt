@@ -8,20 +8,20 @@
 # value goes (='Data'!C2:C3*10, kept plain: Excel shows it with @), or the
 # cells it reads, stores it as a dynamic array that spills. By move and
 # copy, and by do and script batches that move or copy.
-copy kinds 100293
-do kinds 100150
-move kinds 100033
+copy kinds 100028
+copy kinds 100162
+copy kinds 100163
+copy kinds 100164
+copy kinds 100245
+do kinds 100021
 move kinds 100071
-move kinds 100133
+move kinds 100114
+move kinds 100130
 move kinds 100157
-move kinds 100162
-move kinds 100179
-move kinds 100207
+move kinds 100178
+move kinds 100217
 move kinds 100255
-script kinds 100010
-script kinds 100072
-script kinds 100079
-script kinds 100088
+move kinds 100297
 
 # New: sheets saves a different workbook from one run to the next when a
 # paste lands on dynamic arrays (copy over the arrays of a sheet): values it
@@ -30,5 +30,22 @@ script kinds 100088
 # (xlsx/spill.go, spillResults). The fuzzer makes an edit that removes a
 # dynamic array again, 20 times by each editor, on the same bytes, to see it
 # every run.
+copy repeat 100061
 copy repeat 100139
 copy repeat 100202
+
+# New: after a sort the streaming editor stores the results of the formulas on
+# the sheet it sorted (it computes them), and the full editor leaves them as
+# they were: pending, or the 0 XlsxWriter stores. The two save different
+# cells, whether the sort moved rows or found them in order (Q 2026!B2 is
+# 2088 in the streaming editor's file and has no result in the full
+# editor's). The default run reaches it now that most of its sorts are ones
+# sheets does (see sortable in edits.go): the first version's, refused, never
+# did.
+sort editors 100035
+sort editors 100047
+sort editors 100098
+sort editors 100172
+sort editors 100219
+sort editors 100228
+sort editors 100315

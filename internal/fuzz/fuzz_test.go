@@ -38,6 +38,13 @@ const (
 	// (see streamed), or the editors invariant compares the full editor with
 	// itself.
 	minStreamed = 300
+	// A plain run must put the streaming editor's own text writer at least this
+	// many texts of each kind that needs escaping (see escapeKinds), and make
+	// the sorts it judges: at least minSorts applied, and at least as many
+	// applied as refused. (An earlier version's sorts were refused by both
+	// editors 97 times in 137.)
+	minEscaped = 5
+	minSorts   = 60
 )
 
 func TestMain(m *testing.M) {
@@ -475,6 +482,9 @@ func TestFuzz(t *testing.T) {
 	for _, l := range lines {
 		t.Log(l)
 	}
+	if res.Hung {
+		return // the run stopped at the edit that hung: the counts below are no judge
+	}
 	var forms []string
 	for _, f := range Results {
 		forms = append(forms, fmt.Sprintf("%s %d", f, res.Saved[f]))
@@ -501,6 +511,18 @@ func TestFuzz(t *testing.T) {
 	t.Logf("fuzz %s: the streaming editor could take %d of %d edits itself (%s); the others are full-editor code in both copies", mode, streamTotal, takenTotal, strings.Join(by, ", "))
 	if !custom && !raceOn && streamTotal < minStreamed {
 		t.Errorf("only %d edits could be taken by the streaming editor, want %d: the pool or the edits hand too much to the full editor (see README, The streaming editor)", streamTotal, minStreamed)
+	}
+	var escaped []string
+	for _, k := range EscapeKinds {
+		escaped = append(escaped, fmt.Sprintf("%s %d", k, res.Escaped[k]))
+		if !custom && !raceOn && res.Escaped[k] < minEscaped {
+			t.Errorf("the streaming editor wrote only %d texts with %s in them, want %d: the edits no longer put its text writer to what it must escape", res.Escaped[k], k, minEscaped)
+		}
+	}
+	t.Logf("fuzz %s: texts the streaming editor could write itself, by what they hold: %s", mode, strings.Join(escaped, ", "))
+	t.Logf("fuzz %s: sorts: %d made, %d taken by both editors, %d refused by both", mode, res.Made["sort"], res.Taken["sort"], res.Made["sort"]-res.Taken["sort"])
+	if !custom && !raceOn && (res.Taken["sort"] < minSorts || res.Taken["sort"] < res.Made["sort"]-res.Taken["sort"]) {
+		t.Errorf("of %d sorts, %d were taken by both editors, want at least %d and at least as many as were refused: the sort class is barely judged (see sortable in edits.go)", res.Made["sort"], res.Taken["sort"], minSorts)
 	}
 	var stale []string
 	for s := range known {

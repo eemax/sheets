@@ -58,13 +58,41 @@ func (e Edit) String() string {
 		if a == FileArg {
 			a = "book.xlsx"
 		}
-		args[i] = words.Quote(a)
+		args[i] = shellWord(a)
 	}
 	s := "sheets " + strings.Join(args, " ")
 	if e.Stdin != "" {
 		s += " <<'EOF'\n" + strings.TrimSuffix(e.Stdin, "\n") + "\nEOF"
 	}
 	return s
+}
+
+// shellWord quotes an argument for a shell. One with a control character
+// (a line break, a tab) is written in the $'...' form, which a report's
+// indentation cannot change.
+func shellWord(a string) string {
+	if !strings.ContainsFunc(a, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return words.Quote(a)
+	}
+	var b strings.Builder
+	b.WriteString("$'")
+	for _, r := range a {
+		switch {
+		case r == '\\' || r == '\'':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('\'')
+	return b.String()
 }
 
 // Signature identifies a finding exactly: the class of the edit that broke
@@ -140,6 +168,7 @@ type Result struct {
 	Applied   int // edits both editors took
 	Sequences int
 	Capped    bool // stopped by the time cap before Edits
+	Hung      bool // stopped by an edit that did not finish (see editTimeout)
 	Elapsed   time.Duration
 	Findings  []Finding
 	// Saved counts the files the editors saved (an edit, two editors) that
@@ -154,6 +183,15 @@ type Result struct {
 	// other edits are full-editor code in both copies, so the editors
 	// invariant compares that code with itself.
 	Taken, Streamed map[string]int
+	// Made counts, by edit class, the edits made, applied or refused: Taken
+	// over Made is the share both editors took (the sorts are judged only when
+	// they are).
+	Made map[string]int
+	// Escaped counts, by what needs escaping (see escapeKinds), the texts the
+	// streaming editor could write itself (the set and write edits streamed
+	// counts): the texts that put its own text writer (xlsx/stream_sheet.go
+	// newCell) to the escapes.
+	Escaped map[string]int
 }
 
 // seedMix is the second word of each sequence's random generator, mixed with
@@ -171,7 +209,7 @@ func SequenceSeed(run uint64, i int) uint64 { return run*100000 + uint64(i) }
 // Run runs sequences until the edit count or the time cap is reached.
 func Run(pool []Workbook, o Options) (*Result, error) {
 	start := time.Now()
-	r := &Result{Saved: map[string]int{}, Taken: map[string]int{}, Streamed: map[string]int{}}
+	r := &Result{Saved: map[string]int{}, Taken: map[string]int{}, Streamed: map[string]int{}, Made: map[string]int{}, Escaped: map[string]int{}}
 	for i := 0; r.Edits < o.Edits; i++ {
 		if o.Time > 0 && r.Edits >= o.Min && time.Since(start) > o.Time {
 			r.Capped = true
@@ -187,6 +225,12 @@ func Run(pool []Workbook, o Options) (*Result, error) {
 		r.Applied += applied
 		if f != nil {
 			r.Findings = append(r.Findings, *f)
+			if f.Invariant == "hang" {
+				// The edit's goroutine is still running, in the process and on
+				// the run's files: nothing after it can be trusted.
+				r.Hung = true
+				break
+			}
 		}
 	}
 	r.Elapsed = time.Since(start)
@@ -235,6 +279,9 @@ func sequence(pool []Workbook, seed uint64, dir string, steps, budget int, log f
 			return nil, made, applied, err
 		}
 		made++
+		if res != nil {
+			res.Made[e.Class]++
+		}
 		if out.applied {
 			applied++
 		}
@@ -255,7 +302,13 @@ func sequence(pool []Workbook, seed uint64, dir string, steps, budget int, log f
 
 // Shrink removes the edits a finding does not need, one at a time, keeping
 // each removal after which the last edit still breaks the same invariant.
+//
+// A hang is not shrunk: every replay would wait out editTimeout, and leave
+// another goroutine running.
 func Shrink(pool []Workbook, f Finding, dir string) (Finding, error) {
+	if f.Invariant == "hang" {
+		return f, nil
+	}
 	var wb []byte
 	for _, w := range pool {
 		if w.Name == f.Workbook {
@@ -434,11 +487,44 @@ func (o outcome) summary() string {
 	return b.String()
 }
 
-// step makes one edit with both editors and checks the invariants. Edit i
+// editTimeout is the longest an edit may take, with the checks made after
+// it: edits take milliseconds (180 ms under -race), so an edit that takes
+// this long is a hang. Without a limit, a command that hangs runs until go
+// test's timeout (10 minutes, 30 in check.sh's race step), which prints a
+// dump of goroutines and no workbook, no edits and no seed. It is a variable
+// for the test of the watchdog.
+var editTimeout = 30 * time.Second
+
+// step makes one edit and checks it (stepNow) within editTimeout. An edit
+// that does not finish is a finding of the invariant hang, with the edit
+// the sequence ended at, so the failure prints the seed, the workbook and
+// the edits like any other. Its goroutine cannot be stopped, and goes on
+// running: the finding ends the run (see Run).
+func (s *session) step(e Edit, i int) (outcome, error) {
+	type result struct {
+		o   outcome
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		o, err := s.stepNow(e, i)
+		done <- result{o, err}
+	}()
+	t := time.NewTimer(editTimeout)
+	defer t.Stop()
+	select {
+	case r := <-done:
+		return r.o, r.err
+	case <-t.C:
+		return outcome{broken: []violation{{"hang", fmt.Sprintf("the edit, with both editors and the checks, did not finish in %s", editTimeout)}}}, nil
+	}
+}
+
+// stepNow makes one edit with both editors and checks the invariants. Edit i
 // checks undo on the streaming copy when even, on the full one when odd;
 // the other copy's edit runs with the journal off (SHEETS_UNDO=off), so
 // each journal holds the one change undo takes back.
-func (s *session) step(e Edit, i int) (outcome, error) {
+func (s *session) stepNow(e Edit, i int) (outcome, error) {
 	var o outcome
 	var before, after [2][]byte
 	u := i % 2
@@ -483,6 +569,11 @@ func (s *session) step(e Edit, i int) (outcome, error) {
 		s.res.Taken[e.Class]++
 		if streamed(e, prev) {
 			s.res.Streamed[e.Class]++
+			for _, t := range typed(e) {
+				for _, k := range escapeKinds(t) {
+					s.res.Escaped[k]++
+				}
+			}
 		}
 	}
 	// An edit that removes a dynamic array is made again (see repeatFrom).
@@ -677,6 +768,10 @@ func checkUndo(k int, path string, before, after []byte) (*violation, error) {
 	return v, os.WriteFile(path, after, 0o644)
 }
 
+// cliMain is the command line; a variable so a test can put a hang in its
+// place.
+var cliMain = cli.Main
+
 // panicked is the exit code run gives a command that panicked.
 const panicked = -1
 
@@ -702,7 +797,7 @@ func run(env string, journal bool, e Edit, path string) (code int, stderr string
 			code, stderr = panicked, fmt.Sprintf("%v\n%s", p, debug.Stack())
 		}
 	}()
-	code = cli.Main(args, strings.NewReader(e.Stdin), io.Discard, &errb)
+	code = cliMain(args, strings.NewReader(e.Stdin), io.Discard, &errb)
 	return code, strings.TrimSpace(strings.ReplaceAll(errb.String(), path, "book.xlsx"))
 }
 

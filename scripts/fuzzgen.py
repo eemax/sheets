@@ -62,7 +62,16 @@ PINNED = {"openpyxl": "3.1.5", "xlsxwriter": "3.3.1"}
 FIXED_TIME = datetime.datetime(2026, 11, 18, 12, 0, 0)
 HEADERS = ["Item", "Units", "Price", "Cost", "Date", "Flag"]
 ITEMS = ["Apple", "Pear", "Fig", "Kiwi", "Plum", "Lime", "Date", "Sloe", "N/A", "apple", "Acme Inc.", ""]
-SECOND = ["Calc", "Summary", "Q 2026", "Notes", "Model"]
+# Texts a writer must escape or quote: an ampersand, angle brackets, double
+# quotes and an apostrophe, spaces at the ends (xml:space="preserve"), and
+# non-ASCII. They are in the data of every file now and then (column A of
+# Data, and the keys of the second sheets), and the fuzzer's edits type more
+# (internal/fuzz/edits.go), so the streaming editor's own text writer and the
+# full editor's both have text to escape (xlsx/stream_sheet.go newCell).
+SPECIAL = ["R&D", "<b>x</b>", "Smith & Sons", 'say "hi"', "it's", " padded ", "Åäö 日本語"]
+# Second sheets: the last two are names to escape in the workbook's parts
+# (workbook.xml, the relationships, formulas that quote them).
+SECOND = ["Calc", "Summary", "Q 2026", "Notes", "Model", "R&D", "Bob's Plan"]
 
 
 def col(c):
@@ -149,7 +158,7 @@ class Plan:
         for c, h in enumerate(HEADERS, 1):
             self.cells[("Data", 1, c)] = h
         for r in range(2, last + 1):
-            self.cells[("Data", r, 1)] = rng.choice(ITEMS) or None
+            self.cells[("Data", r, 1)] = rng.choice(ITEMS + SPECIAL) or None
             self.cells[("Data", r, 2)] = rng.choice([rng.randint(-5, 40), rng.randint(0, 9), None])
             self.cells[("Data", r, 3)] = rng.choice([round(rng.uniform(0, 100), 2), rng.randint(1, 9)])
             self.cells[("Data", r, 4)] = rng.randint(0, 500)
@@ -196,7 +205,7 @@ class Plan:
             self.cells[(s, 1, 1)] = "Key"
             self.cells[(s, 1, 2)] = "Value"
             for r in range(2, rng.randint(4, 8)):
-                self.cells[(s, r, 1)] = rng.choice(ITEMS[:8])
+                self.cells[(s, r, 1)] = rng.choice(ITEMS[:8] + SPECIAL[:3])
                 self.cells[(s, r, 2)] = rng.choice(
                     [
                         "=" + mark(f"{ref}!B{rng.randint(2, last)}*2", "p"),
@@ -231,7 +240,9 @@ class Plan:
             for r in range(2, 6):
                 for c in range(23, 26):
                     self.cells[("Data", r, c)] = rng.randint(0, 99)
-            self.tables.append(("Data", f"Aux{rng.randint(1, 99)}", "W1:Y5", headers))
+            # (Not "Aux7": that reads as a cell, column AUX row 7, which a table's
+            # name may not, and a command given it takes it for the cell.)
+            self.tables.append(("Data", f"Block{rng.randint(1, 99)}", "W1:Y5", headers))
         if rng.random() < 0.6:
             self.charts.append(("Data", last, f"Q{rng.randint(2, 6)}"))
         if rng.random() < 0.6:
@@ -535,24 +546,24 @@ def refuse_cases(pool, out):
     # (named in the refuse case's own name after the double dash).
     base = os.path.basename(plain)[: -len(".xlsx")]
     rewrite(plain, f"{out}/editors-value--{base}.xlsx", sheet, lambda x: re.sub(r'(<c r="D2"[^>]*><v>)(\d+)', lambda m: m.group(1) + str(int(m.group(2)) + 1), x, count=1))
-    # editors: a stored text, boolean or empty text result that differs, in a
-    # file from XlsxWriter (it stores results): the results the editors must
-    # agree on as they do on numbers.
-    def stored(n):
-        x = zipfile.ZipFile(n).read(sheet).decode()
-        return (
-            "xlsxwriter" in n
-            and 't="shared"' not in x
-            and re.search(r'<c r="[A-Z]+\d+" t="str"><f>[^<]*</f><v>[^<]+</v>', x)
-            and re.search(r'<c r="[A-Z]+\d+" t="b"><f>[^<]*</f><v>[01]</v>', x)
-            and re.search(r'<c r="[A-Z]+\d+" t="str"><f>[^<]*</f><v></v>', x)
-        )
+    # editors: a stored text, boolean or empty text result that differs, each
+    # in a file from XlsxWriter (it stores results) that holds one: the
+    # results the editors must agree on as they do on numbers.
+    def stores(pattern):
+        def pred(n):
+            return "xlsxwriter" in n and re.search(pattern, zipfile.ZipFile(n).read(sheet).decode()) is not None
+        return pred
 
-    typed = first(stored)
-    tbase = os.path.basename(typed)[: -len(".xlsx")]
-    rewrite(typed, f"{out}/editors-text--{tbase}.xlsx", sheet, lambda x: re.sub(r'(<c r="[A-Z]+\d+" t="str"><f>[^<]*</f><v>)([^<]+)(</v>)', r"\1\2x\3", x, count=1))
-    rewrite(typed, f"{out}/editors-boolean--{tbase}.xlsx", sheet, lambda x: re.sub(r'(<c r="[A-Z]+\d+" t="b"><f>[^<]*</f><v>)([01])', lambda m: m.group(1) + str(1 - int(m.group(2))), x, count=1))
-    rewrite(typed, f"{out}/editors-empty-text-lost--{tbase}.xlsx", sheet, lambda x: re.sub(r'(<c r="[A-Z]+\d+") t="str">(<f>[^<]*</f>)<v></v>', r"\1>\2", x, count=1))
+    def case(what, pattern, fn):
+        n = first(stores(pattern))
+        rewrite(n, f"{out}/editors-{what}--{os.path.basename(n)}", sheet, fn)
+
+    case("text", r'<c r="[A-Z]+\d+" t="str"><f>[^<]*</f><v>[^<]+</v>',
+         lambda x: re.sub(r'(<c r="[A-Z]+\d+" t="str"><f>[^<]*</f><v>)([^<]+)(</v>)', r"\1\2x\3", x, count=1))
+    case("boolean", r'<c r="[A-Z]+\d+" t="b"><f>[^<]*</f><v>[01]</v>',
+         lambda x: re.sub(r'(<c r="[A-Z]+\d+" t="b"><f>[^<]*</f><v>)([01])', lambda m: m.group(1) + str(1 - int(m.group(2))), x, count=1))
+    case("empty-text-lost", r'<c r="[A-Z]+\d+" t="str"><f>[^<]*</f><v></v>',
+         lambda x: re.sub(r'(<c r="[A-Z]+\d+") t="str">(<f>[^<]*</f>)<v></v>', r"\1>\2", x, count=1))
     rewrite(plain, f"{out}/editors-formula--{base}.xlsx", sheet, lambda x: x.replace("N(&quot;p&quot;)=0,", "N(&quot;p&quot;)=0,+", 1) if "&quot;" in x else x.replace('N("p")=0,', 'N("p")=0,+', 1))
 
 
