@@ -8,9 +8,12 @@ import (
 	"time"
 )
 
-// epochUses counts the computations that turn serials into dates or back,
-// which depend on the workbook's date system: a workbook in the 1904
-// system counts days from 1904-01-01, which the calculator does not.
+// epochUses counts the computations that read text as a date serial of
+// the 1900 system where the workbook's own system is wanted: arithmetic
+// on a date written as text, VALUE("2024-01-02"), TEXT of one. In a
+// workbook of the 1904 system, whose serials are 1,462 lower, their
+// results are not known. The date functions know the system (see
+// dateArg and dateOut) and do not count.
 var epochUses atomic.Int64
 
 // EpochUses tells how many such computations ran so far (in any engine):
@@ -18,16 +21,32 @@ var epochUses atomic.Int64
 // system.
 func EpochUses() int64 { return epochUses.Load() }
 
-// civil and weekday as used by functions: they count as depending on the
-// date system (formatting, which knows the system, uses the plain ones).
-func civil(serial float64) (y, m, d int) {
-	epochUses.Add(1)
-	return civilDate(serial)
+// The date functions work with serials of the 1900 system, whatever the
+// workbook's: dateArg reads a date into it, dateOut gives a serial back
+// in the workbook's system.
+func civil(serial float64) (y, m, d int) { return civilDate(serial) }
+
+func weekday(serial float64) int { return weekdayOf(serial) }
+
+// shift is what turns a serial of the workbook's date system into one of
+// the 1900 system: 1,462 days in the 1904 system, else none.
+func (c *ctx) shift() float64 {
+	if c.e.Date1904 {
+		return epoch1904
+	}
+	return 0
 }
 
-func weekday(serial float64) int {
-	epochUses.Add(1)
-	return weekdayOf(serial)
+// dateOut gives a date serial of the 1900 system in the workbook's
+// system: #NUM! before the 1904 system's first day.
+func (c *ctx) dateOut(v Value) Value {
+	if v.Kind != Number || !c.e.Date1904 {
+		return v
+	}
+	if v.Num < epoch1904 {
+		return errv(ErrNum)
+	}
+	return num(v.Num - epoch1904)
 }
 
 // Dates are serial numbers: days since 1899-12-30 in the 1900 system,
@@ -36,7 +55,6 @@ func weekday(serial float64) int {
 
 // serialOf gives the serial of a civil date.
 func serialOf(y, m, d int) float64 {
-	epochUses.Add(1)
 	t := time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC)
 	days := math.Floor(t.Sub(time.Date(1899, 12, 31, 0, 0, 0, 0, time.UTC)).Hours()/24 + 0.5)
 	if days >= 60 { // on or after 1 March 1900, past the phantom 29 February
@@ -72,6 +90,28 @@ func timeOf(serial float64) (h, mi, s int) {
 	return secs / 3600, secs / 60 % 60, secs % 60
 }
 
+// epoch1904 is the days from the 1900 date system's day 0 to the 1904
+// system's: a workbook counting from 1904 gives a date this much lower.
+const epoch1904 = 1462
+
+// dateText tells whether text reads as a date or time other than the
+// plain numbers it may also be (without counting as a use of the epoch).
+func dateText(s string) bool {
+	t := strings.TrimSpace(s)
+	if _, ok := plainNumber(t); ok {
+		return false
+	}
+	_, ok := parseDateTimeOf(t)
+	return ok
+}
+
+// isISODateText tells whether text is an ISO date, with a time or not:
+// the only dates in text every language of Excel reads alike.
+func isISODateText(s string) bool {
+	t := strings.TrimSpace(s)
+	return isISODate(t) || isISODateTime(t)
+}
+
 func validDateSerial(serial float64) bool { return serial >= 0 && serial < 2958466 }
 
 var monthNames = []string{"january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"}
@@ -89,17 +129,10 @@ func monthByName(s string) int {
 	return 0
 }
 
-// parseDateTime reads text as a date, a time, or both, the way Excel does
-// in an English (US) locale: 1/2/2024 is 2 January, 2024-01-02, Jan 2,
-// 2024, 2-Jan-2024, January 2024, 13:30, 1:30 PM, and combinations.
-func parseDateTime(s string) (float64, bool) {
-	n, ok := parseDateTimeOf(s)
-	if ok {
-		epochUses.Add(1)
-	}
-	return n, ok
-}
-
+// parseDateTimeOf reads text as a date, a time, or both, the way Excel
+// does in an English (US) locale: 1/2/2024 is 2 January, 2024-01-02, Jan
+// 2, 2024, 2-Jan-2024, January 2024, 13:30, 1:30 PM, and combinations. A
+// date is a serial of the 1900 system.
 func parseDateTimeOf(s string) (float64, bool) {
 	t := strings.TrimSpace(s)
 	if t == "" {

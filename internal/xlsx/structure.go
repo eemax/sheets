@@ -2,6 +2,7 @@ package xlsx
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"sort"
 	"strings"
@@ -251,6 +252,12 @@ func (e *Editor) deleteLines(target string, cols bool, from, to int) error {
 // change, and is recomputed when saving.
 func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) string, hit func(grid.Range) bool, move func(r, c int) (int, int, bool), op func() error) error {
 	rs := e.resolver()
+	spills := map[string]map[[2]int]grid.Range{}
+	for sheet, lay := range e.layouts {
+		if lay != nil && len(lay.spills) > 0 {
+			spills[sheet] = maps.Clone(lay.spills)
+		}
+	}
 	now, err := e.formulasNow()
 	if err != nil {
 		return err
@@ -468,6 +475,103 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 	e.structural = true
 	e.edits++
 	e.forgetPositions()
+	return e.moveSpills(spills, target, cols, hit, move)
+}
+
+// moveSpills keeps the ranges dynamic arrays fill through an edit of lines
+// on target (forgetPositions drops the positions read at open), as Excel
+// keeps them: an array the edit moves fills the same cells where they now
+// stand; one whose range it cuts through or widens is computed again, and
+// spills its result again over the cells it now needs (a row deleted inside
+// =A1:A4 leaves the result of =A1:A3, not the old values); one whose formula
+// goes with its line leaves no result behind. Every formula was put back
+// over its own cell alone, so the ranges are stored again.
+func (e *Editor) moveSpills(before map[string]map[[2]int]grid.Range, target string, cols bool, hit func(grid.Range) bool, move func(r, c int) (int, int, bool)) error {
+	for sheet, spills := range before {
+		lay := e.layouts[sheet]
+		mine := strings.EqualFold(sheet, target)
+		for a, rg := range spills {
+			now := rg
+			if mine {
+				r, c, ok := move(a[0], a[1])
+				if !ok {
+					if err := e.dropResult(sheet, a, rg, move); err != nil {
+						return err
+					}
+					continue
+				}
+				// The last line of its range still there.
+				r2, c2 := r, c
+				if cols {
+					for col := rg.C2; col > rg.C1; col-- {
+						if _, cc, ok := move(rg.R1, col); ok {
+							c2 = cc
+							break
+						}
+					}
+					r2 = r + rg.Rows() - 1
+				} else {
+					for row := rg.R2; row > rg.R1; row-- {
+						if rr, _, ok := move(row, rg.C1); ok {
+							r2 = rr
+							break
+						}
+					}
+					c2 = c + rg.Cols() - 1
+				}
+				now = grid.Range{R1: r, C1: c, R2: r2, C2: c2}
+				if hit(rg) || now.Rows() != rg.Rows() || now.Cols() != rg.Cols() {
+					e.mustRecompute(sheet, r, c)
+				}
+			}
+			lay.spills[[2]int{now.R1, now.C1}] = now
+			if now.Rows()*now.Cols() == 1 {
+				continue
+			}
+			cell := grid.CellName(now.R1, now.C1)
+			f, err := e.f.GetCellFormula(sheet, cell)
+			if err != nil {
+				return err
+			}
+			if f == "" {
+				continue
+			}
+			t, ref := excelize.STCellFormulaTypeArray, now.String()
+			if err := e.f.SetCellFormula(sheet, cell, f, excelize.FormulaOpts{Type: &t, Ref: &ref}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// dropResult empties what is left of the result of a dynamic array whose
+// formula an edit of lines deleted, as Excel's goes with it; cells written
+// in this session are kept.
+func (e *Editor) dropResult(sheet string, anchor [2]int, rg grid.Range, move func(r, c int) (int, int, bool)) error {
+	for row := rg.R1; row <= rg.R2; row++ {
+		for col := rg.C1; col <= rg.C2; col++ {
+			if row == anchor[0] && col == anchor[1] {
+				continue
+			}
+			r, c, ok := move(row, col)
+			if !ok {
+				continue
+			}
+			if _, written := e.changed[keyOf(sheet, r, c)]; written {
+				continue
+			}
+			cell := grid.CellName(r, c)
+			if f, err := e.f.GetCellFormula(sheet, cell); err != nil || f != "" {
+				continue
+			}
+			if err := e.f.SetCellDefault(sheet, cell, ""); err != nil {
+				return err
+			}
+			delete(e.patches.errorCells[sheet], cell)
+			e.touch(sheet, r, c)
+		}
+	}
 	return nil
 }
 

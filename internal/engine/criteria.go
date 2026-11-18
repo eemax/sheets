@@ -20,9 +20,30 @@ type criterion struct {
 	// unknown, when set, receives a cell's text whose match depends on
 	// Excel's language setting.
 	unknown *string
+	// why says why the criterion itself is unknown: a date written as
+	// text, which Excel reads by its language setting.
+	why string
+	// d1904: the workbook counts dates from 1904, so a date written as
+	// text (2024-01-02) has a serial 1,462 days lower.
+	d1904 bool
 }
 
-func parseCriterion(v Value) criterion {
+// parseCriterion reads a criterion. A date written as text in it reads
+// only as ISO (2020-01-02), which every language of Excel reads alike;
+// written otherwise (1/2/2020, Jan 2 2020) its reading depends on Excel's
+// language setting, and the criterion is unknown.
+func parseCriterion(c *ctx, v Value) criterion {
+	cr := parseCriterionOf(v)
+	if c != nil && c.e.Date1904 {
+		cr.d1904 = true
+		if cr.kind == Number && cr.text != "" && isISODateText(cr.text) {
+			cr.num -= epoch1904
+		}
+	}
+	return cr
+}
+
+func parseCriterionOf(v Value) criterion {
 	switch v.Kind {
 	case Number:
 		return criterion{op: "=", kind: Number, num: v.Num}
@@ -46,7 +67,17 @@ func parseCriterion(v Value) criterion {
 	if s == "" {
 		return criterion{op: op, kind: Empty}
 	}
-	if n, ok := textNumber(s); ok {
+	if n, ok := universalNumberOf(strings.TrimSpace(s), false); ok {
+		return criterion{op: op, kind: Number, num: n, text: foldCase(s)}
+	}
+	// A month's name alone ("March") is text to match: Excel matches it
+	// with cells holding that text.
+	digits := strings.ContainsAny(s, "0123456789")
+	if digits && (dateText(s) || dayFirstDate(s)) {
+		return criterion{op: op, kind: Text, text: foldCase(s),
+			why: "its criterion " + strconv.Quote(v.Str) + " holds a date written as text, which Excel reads by its language setting (write it as a DATE, or as 2020-01-02)"}
+	}
+	if n, ok := textNumberOf(s, false); ok && digits {
 		return criterion{op: op, kind: Number, num: n, text: foldCase(s)}
 	}
 	switch strings.ToUpper(s) {
@@ -89,7 +120,7 @@ func (cr criterion) match(v Value) bool {
 			if cr.op != "=" && cr.op != "<>" {
 				return false // only = and <> read text as a number
 			}
-			n, ok, dependent := readNumber(v.Str)
+			n, ok, dependent := readNumberOf(v.Str, false)
 			if dependent && cr.unknown != nil {
 				// Read by Excel's language: whether it matches cannot
 				// be told.
@@ -97,6 +128,9 @@ func (cr criterion) match(v Value) bool {
 			}
 			if !ok {
 				return cr.op == "<>"
+			}
+			if cr.d1904 && isISODateText(v.Str) {
+				n -= epoch1904
 			}
 			x = n
 		default:
@@ -301,26 +335,40 @@ func ifs(c *ctx, op string, target Value, ranges, crits []Value) Value {
 	}
 	// Criteria that are arrays apply one by one, giving an array. A range
 	// of criteria does so in array evaluation; in a normal formula it
-	// gives the cell in the formula's row or column, and only when there
-	// is none does it apply as an array (Excel then shows the first).
+	// gives the cell in the formula's row or column, or #VALUE! when
+	// there is none (Excel's implicit intersection, @F10:F14), which as a
+	// criterion matches cells holding #VALUE!.
 	var arrs []*Arr
 	rr, cc := 1, 1
 	for _, cv := range crits {
 		var a *Arr
-		if c.lifts(cv) || cv.Kind == Ref && isMulti(cv) && !c.intersects(cv) {
+		if c.lifts(cv) {
 			a = c.toArr(cv)
 			rr, cc = max(rr, a.Rows), max(cc, a.Cols)
 		}
 		arrs = append(arrs, a)
 	}
+	// An error is a criterion like any value: COUNTIF(A:A,#N/A) counts
+	// the cells holding #N/A.
+	known := func(cv Value) (criterion, *Value) {
+		if cv.Kind == Error && (cv.Str == ErrUnsupported || cv.Str == ErrCycle) {
+			return criterion{}, &cv
+		}
+		cr := parseCriterion(c, cv)
+		if cr.why != "" {
+			v := c.fail(unsupported(cr.why))
+			return criterion{}, &v
+		}
+		return cr, nil
+	}
 	if rr == 1 && cc == 1 {
 		cs := make([]criterion, len(crits))
 		for k, cv := range crits {
-			cv = c.scalar(cv)
-			if cv.Kind == Error {
-				return cv
+			cr, err := known(c.scalar(cv))
+			if err != nil {
+				return *err
 			}
-			cs[k] = parseCriterion(cv)
+			cs[k] = cr
 		}
 		return run(cs)
 	}
@@ -334,7 +382,11 @@ func ifs(c *ctx, op string, target Value, ranges, crits []Value) Value {
 				} else {
 					cv = c.scalar(cv)
 				}
-				cs[k] = parseCriterion(cv)
+				cr, err := known(cv)
+				if err != nil {
+					return *err
+				}
+				cs[k] = cr
 			}
 			out.V[i*cc+j] = run(cs)
 		}

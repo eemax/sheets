@@ -348,6 +348,26 @@ func rowCol(c *ctx, a []Value, row bool) Value {
 	if v.Kind == Error {
 		return v
 	}
+	if v.Kind == Array {
+		// Values, not references (IF over a range in an array formula):
+		// element by element, an error stays itself and anything else is
+		// #VALUE!, as Excel gives (MATCH(3,ERROR.TYPE(COLUMN(IF(...))),0)
+		// finds the first cell the IF kept).
+		out := newArr(v.Arr.Rows, v.Arr.Cols)
+		for i, x := range v.Arr.V {
+			switch {
+			case x.Kind == Error:
+				out.V[i] = x
+			case x.Kind == Ref && len(x.Ref.Areas) == 1 && row:
+				out.V[i] = num(float64(x.Ref.Areas[0].R1))
+			case x.Kind == Ref && len(x.Ref.Areas) == 1:
+				out.V[i] = num(float64(x.Ref.Areas[0].C1))
+			default:
+				out.V[i] = errv(ErrValue)
+			}
+		}
+		return arrOf(out)
+	}
 	if v.Kind != Ref {
 		return errv(ErrValue)
 	}

@@ -531,7 +531,7 @@ func compare(wb *grid.Workbook, res *CheckResult, budget time.Duration) {
 			before := engine.EpochUses()
 			v, ok := evalSafely(eng, s.Name, r, col, book.text(s.Name, r, col, cell.Formula))
 			if wb.Date1904 && engine.EpochUses() != before {
-				ok = false // it works with dates, in the 1904 system
+				ok = false // it reads a date written as text, in the 1904 system
 			}
 			if _, _, _, array := book.ArrayAt(s.Name, r, col); array {
 				eng.Reset() // its array would stand in for the results Excel stored

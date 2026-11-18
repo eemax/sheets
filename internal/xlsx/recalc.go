@@ -393,6 +393,9 @@ type calcState struct {
 	// within tells whether a cell lies inside another cell's legacy array
 	// formula, where Excel allows no formula of its own.
 	within func(sheet string, row, col int) bool
+	// oneCell tells whether a cell anchors a legacy array formula in one
+	// cell, whose result larger than it is unknown (see oneCellNote).
+	oneCell func(sheet string, row, col int) bool
 }
 
 // calcResult is what working out results gives.
@@ -483,6 +486,10 @@ func (e *Editor) results() (calcResult, error) {
 	st.within = func(sheet string, row, col int) bool {
 		rg, ok := e.legacyArrayIn(sheet, row, col)
 		return ok && (rg.R1 != row || rg.C1 != col)
+	}
+	st.oneCell = func(sheet string, row, col int) bool {
+		rg, ok := e.legacyArrays()[keyOf(sheet, row, col)]
+		return ok && rg.Rows()*rg.Cols() == 1
 	}
 	res, err := computeResults(st)
 	if err != nil {
@@ -647,6 +654,7 @@ func computeResults(st calcState) (calcResult, error) {
 	}), rs, ty, computing, plan, func(f *formulaAt) (grid.Cell, bool) {
 		return f.stored, f.stored.Kind != grid.Empty && !f.pending
 	}, deadline)
+	j.oneCell = st.oneCell
 
 	var unsupported, unprefixed []string
 	left := 0

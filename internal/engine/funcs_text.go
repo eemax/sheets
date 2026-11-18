@@ -304,6 +304,12 @@ func init() {
 		if err != nil {
 			return *err
 		}
+		number := func(n float64) Value {
+			if why := FormatLanguage(code); why != "" {
+				return unsupported(why)
+			}
+			return str(FormatNumber(n, code, c.e.Date1904))
+		}
 		switch v := a[0]; v.Kind {
 		case Error:
 			return v
@@ -313,7 +319,7 @@ func init() {
 			case dependent:
 				return languageDependent(v.Str)
 			case ok:
-				return str(FormatNumber(n, code, c.e.Date1904))
+				return number(n)
 			}
 			return str(FormatText(v.Str, code))
 		case Bool:
@@ -321,7 +327,7 @@ func init() {
 			return str(FormatText(s, code))
 		}
 		n, _ := toNumber(a[0])
-		return str(FormatNumber(n, code, c.e.Date1904))
+		return number(n)
 	}})
 	reg("FIXED", &fnSpec{min: 1, max: 3, f: func(c *ctx, a []Value) Value {
 		x, err := toNumber(a[0])
