@@ -281,15 +281,12 @@ func (m *model) command(w []string, stdin string) {
 				n, _ = strconv.Atoi(w[i+1])
 			}
 		}
-		k, rg, err := m.target(w[2], "")
-		if err != nil {
+		name, from, to, err := lineSpan(w[2], w[0] == "cols")
+		if err != nil || !m.isSheet(name) {
 			fail("%s %s: %v", w[0], w[2], err)
 			return
 		}
-		from, to := rg.R1, rg.R2
-		if w[0] == "cols" {
-			from, to = rg.C1, rg.C2
-		}
+		k := strings.ToLower(name)
 		switch w[1] {
 		case "insert":
 			m.shift(k, w[0] == "cols", from, 0, n)
@@ -314,21 +311,28 @@ func (m *model) command(w []string, stdin string) {
 		}
 		switch w[1] {
 		case "rename":
-			m.sheets[strings.ToLower(to)] = m.sheets[from]
-			m.names[strings.ToLower(to)] = to
-			if m.sorted[from] {
-				m.sorted[strings.ToLower(to)] = true
+			k := strings.ToLower(to)
+			m.names[from] = to
+			if k == from {
+				return // the same name in other letters
 			}
-			for i, k := range m.order {
-				if k == from {
-					m.order[i] = strings.ToLower(to)
-				}
-			}
+			// What the model knows of the sheet goes with its name: its
+			// formulas, its name, whether it was sorted, and whether the model
+			// lost it (a sheet sorted, edited and renamed was judged by
+			// column under its new name: fuzzer-core's audit, f4.2).
+			m.sheets[k], m.names[k], m.sorted[k], m.lost[k] = m.sheets[from], to, m.sorted[from], m.lost[from]
 			delete(m.sheets, from)
 			delete(m.names, from)
-			for t, k := range m.tables {
-				if k == from {
-					m.tables[t] = strings.ToLower(to)
+			delete(m.sorted, from)
+			delete(m.lost, from)
+			for i, o := range m.order {
+				if o == from {
+					m.order[i] = k
+				}
+			}
+			for t, o := range m.tables {
+				if o == from {
+					m.tables[t] = k
 				}
 			}
 		case "copy":
@@ -344,6 +348,37 @@ func (m *model) command(w []string, stdin string) {
 	default:
 		fail("no rule for %s", w[0])
 	}
+}
+
+// lineSpan reads the rows or columns a rows or cols command names, as the
+// command does: Sheet!5 or Sheet!5:9 (rows), Sheet!C or Sheet!C:E (columns).
+// A single row or column is no range to grid.ParseRef (Data!4 is not a
+// cell), so the model used to give up on every insert, which names one
+// (fuzzer-core's audit, f4.1).
+func lineSpan(spec string, cols bool) (sheet string, lo, hi int, err error) {
+	i := strings.LastIndex(spec, "!")
+	if i < 0 {
+		return "", 0, 0, fmt.Errorf("%q names no sheet", spec)
+	}
+	sheet, part := strings.Trim(spec[:i], "'"), spec[i+1:]
+	a, b, ok := strings.Cut(part, ":")
+	if !ok {
+		b = a
+	}
+	parse := func(s string) (int, bool) {
+		s = strings.TrimPrefix(strings.TrimSpace(s), "$")
+		if cols {
+			return grid.ColIndex(s)
+		}
+		n, err := strconv.Atoi(s)
+		return n, err == nil && n >= 1 && n <= grid.MaxRows
+	}
+	x, ok1 := parse(a)
+	y, ok2 := parse(b)
+	if !ok1 || !ok2 {
+		return "", 0, 0, fmt.Errorf("%q: no rows or columns", spec)
+	}
+	return sheet, min(x, y), max(x, y), nil
 }
 
 // sort: the rows move, and where is not modelled.

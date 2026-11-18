@@ -1,6 +1,7 @@
 package fuzz
 
 import (
+	"math/rand/v2"
 	"sort"
 	"strings"
 	"testing"
@@ -43,6 +44,47 @@ func formulaBook(cells map[string]string, tables ...string) *grid.Workbook {
 		sheet(name).Tables = append(sheet(name).Tables, grid.NamedTable{Name: "T", Range: r})
 	}
 	return wb
+}
+
+// TestModelReadsGeneratedEdits: the model reads every edit the generator
+// makes, on every pool file: none is left unjudged because the model cannot
+// read it. (Every rows insert and cols insert was, and every batch holding
+// one: a single row or column, Data!4 or Data!C, is no range to
+// grid.ParseRef, and the model gave up, so check passed it whatever the file
+// held; fuzzer-core's audit, f4.1.)
+func TestModelReadsGeneratedEdits(t *testing.T) {
+	draws := 60
+	if raceOn {
+		draws = 15
+	}
+	judged := map[string]int{}
+	lineEdits := 0 // batches and scripts holding a rows or cols insert
+	for i, w := range loadPool(t) {
+		wb := poolBook(t, i)
+		rng := rand.New(rand.NewPCG(uint64(i), 41))
+		for range draws {
+			e := generate(rng, wb)
+			mo := newModel(wb)
+			mo.apply(e)
+			if mo.why != "" {
+				t.Errorf("%s: the model cannot read %s: %s", w.Name, e, mo.why)
+				continue
+			}
+			judged[e.Class]++
+			if (e.Class == "do" || e.Class == "script") && strings.Contains(strings.Join(lines(e), "\n"), "insert") {
+				lineEdits++
+			}
+		}
+	}
+	for _, c := range []string{"rows-insert", "cols-insert", "rows-delete", "cols-delete", "do", "script"} {
+		if judged[c] < 10 {
+			t.Errorf("only %d edits of %s were made and judged", judged[c], c)
+		}
+	}
+	if lineEdits < 5 {
+		t.Errorf("only %d batches and scripts inserting rows or columns were judged", lineEdits)
+	}
+	t.Logf("judged, by class: %v; %d batches and scripts that insert", judged, lineEdits)
 }
 
 // TestModel: the model of where formulas go follows each edit, and refuses a
@@ -115,6 +157,19 @@ func TestModel(t *testing.T) {
 			after: m{"Data!B3": P}, wantErr: "Data!C3: the edit should leave a legacy array there, and it holds no formula"},
 		{name: "rows insert", before: m{"Data!B3": P, "Data!B4": L, "Data!C1": P}, edit: edit("rows", "insert", "Data!4", "-n", "2"),
 			after: m{"Data!B3": P, "Data!B6": L, "Data!C1": P}},
+		// A single row or column (Data!4, Data!C) is judged too: the model
+		// used to give up on it (f4.1), so these passed whatever the file held.
+		{name: "rows insert leaves a formula behind", before: m{"Data!B3": P, "Data!B4": L}, edit: edit("rows", "insert", "Data!4", "-n", "2"),
+			after: m{"Data!B3": P, "Data!B4": L}, wantErr: "Data!B4: the edit should leave no formula there, and it holds a legacy array"},
+		{name: "rows insert of one row in a batch", before: m{"Data!B3": P, "Data!B4": L},
+			edit:  Edit{Class: "do", Args: []string{"do", FileArg}, Stdin: "rows insert Data!4\nset Data!A1 5\n"},
+			after: m{"Data!B3": P, "Data!B4": L}, wantErr: "Data!B4: the edit should leave no formula there"},
+		{name: "rows insert in a quoted sheet", before: m{"Q 2026!B3": P}, edit: edit("rows", "insert", "'Q 2026'!2"),
+			after: m{"Q 2026!B4": P}},
+		{name: "cols insert loses one", before: m{"Data!B3": P, "Data!D3": L}, edit: edit("cols", "insert", "Data!C", "-n", "1"),
+			after: m{"Data!B3": P}, wantErr: "Data!E3: the edit should leave a legacy array there, and it holds no formula"},
+		{name: "cols delete one column", before: m{"Data!B3": P, "Data!C3": P, "Data!D3": L}, edit: edit("cols", "delete", "Data!C"),
+			after: m{"Data!B3": P, "Data!C3": L}},
 		{name: "rows delete", before: m{"Data!B3": P, "Data!B4": L, "Data!B5": P, "Data!B8": D}, edit: edit("rows", "delete", "Data!4:5"),
 			after: m{"Data!B3": P, "Data!B6": D}},
 		{name: "rows delete shifts by one", before: m{"Data!B3": P, "Data!B8": D}, edit: edit("rows", "delete", "Data!4:5"),
@@ -146,6 +201,20 @@ func TestModel(t *testing.T) {
 			before: m{"Data!B3": P},
 			edit:   Edit{Class: "do", Args: []string{"do", FileArg}, Stdin: "sheet copy Data Copy\nset Copy!C8 '=IF(N(\"p\")=0,B2)'\n"},
 			after:  m{"Data!B3": P, "Copy!B3": P}, wantErr: "Copy!C8: the edit should leave a plain formula there"},
+		// f4.2: a sheet sorted and edited is lost to the model, under its new
+		// name too. (Judged by column under the new name, this read as a
+		// formula made out of nothing: the set at B2 took away the formula the
+		// model had there, which the sort had moved to B3.)
+		{name: "a batch sorts, edits and renames",
+			before: m{"Data!B2": P, "Data!B3": ""},
+			edit:   Edit{Class: "do", Args: []string{"do", FileArg}, Stdin: "sort Data B\nset Data!B2 5\nsheet rename Data Old\n"},
+			after:  m{"Old!B3": P}},
+		{name: "a batch sorts and renames, and is judged by column",
+			before: m{"Data!B2": P, "Data!B3": ""},
+			edit:   Edit{Class: "do", Args: []string{"do", FileArg}, Stdin: "sort Data B\nsheet rename Data Old\n"},
+			after:  m{"Old!B3": D}, wantErr: "Old: after a sort column B holds"},
+		{name: "a rename in other letters", before: m{"Data!B3": P}, edit: edit("sheet", "rename", "Data", "DATA"),
+			after: m{"DATA!B3": P}},
 		{name: "a batch sorts and is not followed",
 			before: m{"Data!B2": P, "Data!B3": ""},
 			edit:   Edit{Class: "do", Args: []string{"do", FileArg}, Stdin: "sort Data B\nset Data!F1 5\ncopy Data!B2 Data!E1\n"},
