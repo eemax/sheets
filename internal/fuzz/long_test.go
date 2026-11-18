@@ -284,14 +284,15 @@ const replays = 10
 
 // bugsFixed replays each known bug's repro, and lists those it no longer
 // shows (fixed: reported, never a failure), and those whose repro could not
-// be replayed (its pool could not be made).
+// be replayed (its pool could not be made), each with its own pool's failure.
 func bugsFixed(kn *Known, committed []Workbook, ps *Pools, dir string) (fixed, unchecked []string, err error) {
 	for _, b := range kn.Bugs {
 		files := committed
 		if b.Repro.Long {
-			p := ps.Of(PoolSeed(b.Repro.Seed))
+			seed := PoolSeed(b.Repro.Seed)
+			p := ps.Of(seed)
 			if p.Seed == 0 {
-				unchecked = append(unchecked, fmt.Sprintf("%s (known.txt:%d, repro long %d)", b.Name, b.Line, b.Repro.Seed))
+				unchecked = append(unchecked, fmt.Sprintf("%s (known.txt:%d, repro long %d, pool %d: %s)", b.Name, b.Line, b.Repro.Seed, seed, ps.Why(seed)))
 				continue
 			}
 			files = p.Files
@@ -595,9 +596,14 @@ func TestKnownFaces(t *testing.T) {
 	}
 }
 
-// TestBugRepros: the bugs known.txt names with a repro on the committed pool
-// still show in it (those on long mode's pools are replayed at the end of a
-// long run, and by this test with SHEETS_FUZZ=long: it makes their pools).
+// TestBugRepros replays the repros of the bugs known.txt names, those on the
+// committed pool (and with SHEETS_FUZZ=long those on long mode's pools,
+// whose pools it makes), and reports each that no longer shows its bug as
+// fixed, and each it could not replay with why: a report, never a failure
+// (the brief: a fix of a listed bug must not fail the suite until known.txt
+// is edited; and with no uv the committed pool still runs: fuzzer-long's
+// audit, f1.2 and f1.5). It fails only when the repros cannot be replayed at
+// all, or known.txt gives the default tests too few to replay.
 func TestBugRepros(t *testing.T) {
 	text, err := os.ReadFile("known.txt")
 	if err != nil {
@@ -627,10 +633,38 @@ func TestBugRepros(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, f := range fx {
-		t.Errorf("fixed? %s", f)
+		t.Logf("fixed: %s (reported, never a failure: remove its line once fixed)", f)
 	}
 	for _, u := range unchecked {
-		t.Errorf("not replayed: %s: %s", u, ps.Failed)
+		t.Logf("not replayed, its pool not made (reported, never a failure): %s", u)
+	}
+	t.Logf("of %d bug lines, %d repros still show their bug, %d fixed, %d not replayed", len(kn.Bugs), len(kn.Bugs)-len(fx)-len(unchecked), len(fx), len(unchecked))
+}
+
+// TestBugsFixedReported: a bug whose repro no longer shows it is listed as
+// fixed, and one whose pool cannot be made as not replayed, with its own
+// pool's failure; neither is an error (fuzzer-long's audit, f1.2, f1.5).
+func TestBugsFixedReported(t *testing.T) {
+	kn, err := ReadKnown(`bug escape: set,write text; repro 100001; detail typed the text "[^"]*_[xX][0-9A-Fa-f]{4}_[xX][0-9A-Fa-f]{4}_[^"]*", and the cell holds text "
+bug far: sort editors; repro long 700012; detail x
+bug farther: move kinds; repro long 701600; detail x
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := loadPool(t)
+	// No fuzzgen.py under this root: no pool can be made.
+	ps := &Pools{Root: t.TempDir(), Dir: t.TempDir(), Committed: pool}
+	fx, unchecked, err := bugsFixed(kn, pool, ps, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fx) != 1 || !strings.HasPrefix(fx[0], "escape (known.txt:1): its repro, 100001, makes ") {
+		t.Errorf("fixed: %q", fx)
+	}
+	if len(unchecked) != 2 || !strings.Contains(unchecked[0], "pool 7000: ") || !strings.Contains(unchecked[0], "--seed 7000 ") ||
+		!strings.Contains(unchecked[1], "pool 7004: ") || !strings.Contains(unchecked[1], "--seed 7004 ") {
+		t.Errorf("not replayed, each with its own pool's failure: %q", unchecked)
 	}
 }
 
@@ -695,9 +729,17 @@ func TestPoolsFallBack(t *testing.T) {
 // tests use no network): each seed's pool is the same each time, another
 // seed's another; each holds files from both producers, which hold the
 // invariants, with every formula naming its kind, as the committed pool does.
+//
+// When uv cannot run openpyxl and XlsxWriter at all (no uv, or no network to
+// fetch them), it is skipped, and says so: long mode runs the committed pool
+// in their place, as the brief's failure path has it (fuzzer-long's audit,
+// f1.5). A pool that cannot be made with uv working is a failure.
 func TestFreshPools(t *testing.T) {
 	if os.Getenv("SHEETS_FUZZ") != "long" {
 		t.Skip("SHEETS_FUZZ=long: makes pools with uv and fuzzgen.py")
+	}
+	if err := uvReady(); err != nil {
+		t.Skipf("long mode could not generate fresh pools: %v; the committed pool runs in their place (TestFuzz's log says so)", err)
 	}
 	dir := t.TempDir()
 	a, err := Generate(repoRoot, 7000, dir)

@@ -73,6 +73,21 @@ func Generate(root string, seed uint64, dir string) (Pool, error) {
 	return Pool{Seed: seed, Files: files}, nil
 }
 
+// uvReady tells whether uv can run the two releases fuzzgen.py takes (nil),
+// or why not: no uv, or no network to fetch them the first time.
+func uvReady() error {
+	ctx, cancel := context.WithTimeout(context.Background(), generateTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "uv", "run", "--no-project", "--with", "openpyxl=="+openpyxlRelease, "--with", "xlsxwriter=="+xlsxwriterRelease,
+		"python", "-c", "import openpyxl, xlsxwriter")
+	var buf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("uv cannot run openpyxl %s and XlsxWriter %s (%v): %s", openpyxlRelease, xlsxwriterRelease, err, lastLines(buf.String(), 3))
+	}
+	return nil
+}
+
 // Pools makes and keeps the pools of a long run, a round at a time, and
 // falls back on the committed pool when it cannot make one (uv missing, or
 // unable to fetch openpyxl or XlsxWriter): that round's sequences start from
@@ -83,9 +98,16 @@ type Pools struct {
 	Committed []Workbook
 	Run       uint64 // the run's seed
 	made      map[uint64]Pool
+	why       map[uint64]string
 	// Failed says why a pool could not be made, the first time.
 	Failed string
 }
+
+// Why says why the pool of a seed could not be made, "" when it was (or was
+// not tried): each pool's own failure, where Failed keeps the first
+// (fuzzer-long's audit, f1.5: each long repro not replayed named the first
+// failing pool's command, not its own).
+func (ps *Pools) Why(seed uint64) string { return ps.why[seed] }
 
 // For is the pool sequence i of the run starts from.
 func (ps *Pools) For(i int) (Pool, error) {
@@ -95,7 +117,7 @@ func (ps *Pools) For(i int) (Pool, error) {
 // Of is the pool of a seed, made once.
 func (ps *Pools) Of(seed uint64) Pool {
 	if ps.made == nil {
-		ps.made = map[uint64]Pool{}
+		ps.made, ps.why = map[uint64]Pool{}, map[uint64]string{}
 	}
 	if p, ok := ps.made[seed]; ok {
 		return p
@@ -105,6 +127,7 @@ func (ps *Pools) Of(seed uint64) Pool {
 		if ps.Failed == "" {
 			ps.Failed = err.Error()
 		}
+		ps.why[seed] = err.Error()
 		p = Pool{Files: ps.Committed}
 	}
 	ps.made[seed] = p
