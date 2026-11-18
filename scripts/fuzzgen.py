@@ -33,8 +33,9 @@ files with one defect each, which the fuzzer's invariants must catch.
 
 The versions are pinned: another release may write other bytes, which would
 change every edit each seed makes and need known.txt made again (the script
-refuses a release but these). The files are the same each time: the dates in
-them are fixed.
+refuses a release but these). The files are the same each time, byte for
+byte: the dates in them (the document properties, and the time of each part
+in the package) are fixed.
 
 --seed changes the pool; --count the number of files (default 40).
 """
@@ -133,10 +134,11 @@ class Plan:
         self.results = {}  # (sheet, "A1") -> the result of a formula that is no number
         self.shared = []  # (column letter, first row, last row): shared formula groups on Data
         self.typed_empty = False  # XlsxWriter: an empty text result stored as Excel does (t="str")
-        # Half the files hold arrays over several cells (legacy or dynamic).
-        # The others hold none, so the streaming editor, which hands every
-        # edit of rows, and every set, to the full editor once a workbook has
-        # them (xlsx/stream.go), takes edits on them itself.
+        # About half the files hold arrays over several cells (legacy or
+        # dynamic). The others hold none, so the streaming editor takes edits
+        # on them itself: it hands the full editor every set once a workbook
+        # has a dynamic array, and every edit of rows once it has one or a
+        # legacy array over several cells (xlsx/stream.go).
         self.arrays = rng.random() < 0.5
         self.n = rng.randint(4, 14)  # data rows on Data
         self.build(dynamic)
@@ -458,6 +460,17 @@ def kinds_ok(path):
     return bad
 
 
+def fix_dates(path):
+    """Give every part of a package the fixed time. openpyxl stamps each part
+    with the time it saves at, which would make each run's files different."""
+    tmp = path + ".tmp"
+    with zipfile.ZipFile(path) as zi, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zo:
+        for info in zi.infolist():
+            info.date_time = FIXED_TIME.timetuple()[:6]
+            zo.writestr(info, zi.read(info.filename))
+    os.replace(tmp, path)
+
+
 def rewrite(src, dst, part, fn, strict=True):
     """Copy a package, passing one part's text through fn. A mutation that
     changes nothing is an error, unless strict is False."""
@@ -569,6 +582,7 @@ def main():
         bad = kinds_ok(path)
         if bad:
             raise SystemExit(f"{path}: kinds stored unlike their markers:\n  " + "\n  ".join(bad))
+        fix_dates(path)
         made.append(path)
     refuse_cases(made, os.path.join(args.out, "refuse"))
     total = sum(os.path.getsize(p) for p in made)
