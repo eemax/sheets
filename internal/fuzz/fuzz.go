@@ -1,0 +1,464 @@
+// Package fuzz does by machine what wave 1's audits did by hand. It runs
+// the sheets CLI in process (cli.Main) over random workbooks from openpyxl
+// and XlsxWriter, makes random edits, and checks fixed invariants on the
+// files after each one:
+//
+//   - xml: every part is well-formed XML, and every worksheet lists its
+//     rows and the cells of each row in order, each once (xlsxtest);
+//   - kinds: every formula keeps its kind (plain, legacy array, dynamic
+//     array), by a model of what each edit does to kinds;
+//   - editors: the streaming and the full editor give the same cells,
+//     formulas, kinds and values (and both take the edit, or both refuse);
+//   - undo: undo restores the bytes from before the edit, and an edit
+//     refused leaves them as they were.
+//
+// Invariants judge files, never a command's output text. A panic in a
+// command is reported too: nothing after it can be judged.
+//
+// A run is a list of sequences, each with its own seed: the seed picks a
+// workbook from the pool and the edits, each made from the state the
+// edits before it left. A sequence ends at its first finding. Its
+// signature (edit class, invariant, the sequence's seed) is what
+// known.txt lists.
+package fuzz
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"runtime/debug"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/eemax/sheets/internal/cli"
+	"github.com/eemax/sheets/internal/grid"
+	"github.com/eemax/sheets/internal/words"
+	"github.com/eemax/sheets/internal/xlsx"
+)
+
+// FileArg stands for the workbook in an Edit's arguments.
+const FileArg = "{file}"
+
+// Edit is one sheets command on the workbook.
+type Edit struct {
+	Class string   // set, write, clear, copy, move, sort, replace, rows-insert, ...
+	Args  []string // the command line after "sheets"; FileArg is the workbook
+	Stdin string
+}
+
+// String renders the edit as a shell command on book.xlsx.
+func (e Edit) String() string {
+	args := make([]string, len(e.Args))
+	for i, a := range e.Args {
+		if a == FileArg {
+			a = "book.xlsx"
+		}
+		args[i] = words.Quote(a)
+	}
+	s := "sheets " + strings.Join(args, " ")
+	if e.Stdin != "" {
+		s += " <<'EOF'\n" + strings.TrimSuffix(e.Stdin, "\n") + "\nEOF"
+	}
+	return s
+}
+
+// Signature identifies a finding exactly: the class of the edit that broke
+// an invariant, the invariant, and the seed of the sequence it ended.
+type Signature struct {
+	Class     string
+	Invariant string
+	Seed      uint64
+}
+
+func (s Signature) String() string { return fmt.Sprintf("%s %s %d", s.Class, s.Invariant, s.Seed) }
+
+// Finding is an invariant an edit broke.
+type Finding struct {
+	Signature
+	Workbook string // the pool file the sequence started from
+	Edits    []Edit // the sequence, ending with the edit that broke it
+	Detail   string
+}
+
+// Report prints the finding as a repro: seed, workbook, edits, detail.
+func (f Finding) Report() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "finding %s\n", f.Signature)
+	fmt.Fprintf(&b, "  workbook: testdata/pool/%s (copy it to book.xlsx)\n", f.Workbook)
+	for i, e := range f.Edits {
+		fmt.Fprintf(&b, "  %d. %s\n", i+1, strings.ReplaceAll(e.String(), "\n", "\n     "))
+	}
+	fmt.Fprintf(&b, "  broke %s: %s\n", f.Invariant, strings.ReplaceAll(f.Detail, "\n", "\n    "))
+	return b.String()
+}
+
+// Workbook is a pool file.
+type Workbook struct {
+	Name string
+	Data []byte
+}
+
+// LoadPool reads every .xlsx file of dir, by name.
+func LoadPool(dir string) ([]Workbook, error) {
+	names, err := filepath.Glob(filepath.Join(dir, "*.xlsx"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(names)
+	var pool []Workbook
+	for _, n := range names {
+		data, err := os.ReadFile(n)
+		if err != nil {
+			return nil, err
+		}
+		pool = append(pool, Workbook{filepath.Base(n), data})
+	}
+	if len(pool) == 0 {
+		return nil, fmt.Errorf("no workbooks in %s", dir)
+	}
+	return pool, nil
+}
+
+// Options set a run.
+type Options struct {
+	Seed  uint64        // the run's seed; sequence i has seed Seed*100000+i
+	Edits int           // stop after this many edits
+	Time  time.Duration // stop once this much time has passed...
+	Min   int           // ...and at least this many edits are made
+	Steps int           // the most edits in a sequence (default 12)
+	Dir   string        // scratch directory
+}
+
+// Result is what a run did.
+type Result struct {
+	Edits     int // edits made (each on both editors)
+	Applied   int // edits both editors took
+	Sequences int
+	Capped    bool // stopped by the time cap before Edits
+	Elapsed   time.Duration
+	Findings  []Finding
+}
+
+// SequenceSeed is the seed of sequence i of a run.
+func SequenceSeed(run uint64, i int) uint64 { return run*100000 + uint64(i) }
+
+// Run runs sequences until the edit count or the time cap is reached.
+func Run(pool []Workbook, o Options) (*Result, error) {
+	start := time.Now()
+	r := &Result{}
+	for i := 0; r.Edits < o.Edits; i++ {
+		if o.Time > 0 && r.Edits >= o.Min && time.Since(start) > o.Time {
+			r.Capped = true
+			break
+		}
+		seed := SequenceSeed(o.Seed, i)
+		f, made, applied, err := sequence(pool, seed, o.Dir, o.steps(), o.Edits-r.Edits, nil)
+		if err != nil {
+			return r, err
+		}
+		r.Sequences++
+		r.Edits += made
+		r.Applied += applied
+		if f != nil {
+			r.Findings = append(r.Findings, *f)
+		}
+	}
+	r.Elapsed = time.Since(start)
+	return r, nil
+}
+
+func (o Options) steps() int {
+	if o.Steps > 0 {
+		return o.Steps
+	}
+	return 12
+}
+
+// Replay runs the sequence of one seed again, logging every edit and its
+// outcome, and returns its finding, if any.
+func Replay(pool []Workbook, seed uint64, dir string, steps int, log func(string)) (*Finding, error) {
+	if steps <= 0 {
+		steps = 12
+	}
+	f, _, _, err := sequence(pool, seed, dir, steps, steps, log)
+	return f, err
+}
+
+// sequence makes up to steps edits (at most budget) on a workbook the seed
+// picks, and stops at the first finding.
+func sequence(pool []Workbook, seed uint64, dir string, steps, budget int, log func(string)) (f *Finding, made, applied int, err error) {
+	rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
+	wb := pool[rng.IntN(len(pool))]
+	n := min(1+rng.IntN(steps), budget)
+	s, err := newSession(dir, wb.Data)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	defer s.close()
+	var edits []Edit
+	for i := 0; i < n; i++ {
+		e, err := s.generate(rng)
+		if err != nil {
+			return nil, made, applied, err
+		}
+		edits = append(edits, e)
+		out, err := s.step(e, i)
+		if err != nil {
+			return nil, made, applied, err
+		}
+		made++
+		if out.applied {
+			applied++
+		}
+		if log != nil {
+			log(fmt.Sprintf("%d. %s\n   -> %s", i+1, e, out.summary()))
+		}
+		if len(out.broken) > 0 {
+			v := out.broken[0]
+			detail := v.detail
+			for _, w := range out.broken[1:] {
+				detail += "\nalso " + w.invariant + ": " + w.detail
+			}
+			return &Finding{Signature{e.Class, v.invariant, seed}, wb.Name, edits, detail}, made, applied, nil
+		}
+	}
+	return nil, made, applied, nil
+}
+
+// Shrink removes the edits a finding does not need, one at a time, keeping
+// each removal after which the last edit still breaks the same invariant.
+func Shrink(pool []Workbook, f Finding, dir string) (Finding, error) {
+	var wb []byte
+	for _, w := range pool {
+		if w.Name == f.Workbook {
+			wb = w.Data
+		}
+	}
+	if wb == nil {
+		return f, fmt.Errorf("workbook %s not in the pool", f.Workbook)
+	}
+	edits := f.Edits
+	for i := len(edits) - 2; i >= 0; i-- {
+		try := append(append([]Edit{}, edits[:i]...), edits[i+1:]...)
+		g, err := replayEdits(wb, try, dir)
+		if err != nil {
+			return f, err
+		}
+		if g != nil && g.edit == len(try)-1 && try[g.edit].Class == f.Class && g.invariant == f.Invariant {
+			edits, f.Detail = try, g.detail
+		}
+	}
+	f.Edits = edits
+	return f, nil
+}
+
+type broke struct {
+	edit      int
+	invariant string
+	detail    string
+}
+
+// replayEdits makes the given edits on a workbook and returns the first
+// invariant broken.
+func replayEdits(wb []byte, edits []Edit, dir string) (*broke, error) {
+	s, err := newSession(dir, wb)
+	if err != nil {
+		return nil, err
+	}
+	defer s.close()
+	for i, e := range edits {
+		out, err := s.step(e, i)
+		if err != nil {
+			return nil, err
+		}
+		if len(out.broken) > 0 {
+			return &broke{i, out.broken[0].invariant, out.broken[0].detail}, nil
+		}
+	}
+	return nil, nil
+}
+
+// editors names the two editors: SHEETS_STREAM's value for each.
+var editors = [2]struct{ name, env string }{{"stream", "always"}, {"full", "never"}}
+
+// session holds one workbook twice, a copy per editor.
+type session struct {
+	root  string
+	paths [2]string
+	cur   *grid.Workbook // the streaming copy, parsed: what the next edit is made from
+}
+
+func newSession(dir string, data []byte) (*session, error) {
+	root, err := os.MkdirTemp(dir, "seq-")
+	if err != nil {
+		return nil, err
+	}
+	s := &session{root: root}
+	for k, ed := range editors {
+		d := filepath.Join(root, ed.name)
+		if err := os.Mkdir(d, 0o755); err != nil {
+			return nil, err
+		}
+		s.paths[k] = filepath.Join(d, "book.xlsx")
+		if err := os.WriteFile(s.paths[k], data, 0o644); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
+func (s *session) close() { os.RemoveAll(s.root) }
+
+// generate makes the next edit, from the streaming copy.
+func (s *session) generate(rng *rand.Rand) (Edit, error) {
+	if s.cur == nil {
+		data, err := os.ReadFile(s.paths[0])
+		if err != nil {
+			return Edit{}, err
+		}
+		if s.cur, err = xlsx.ReadBytes(data); err != nil {
+			return Edit{}, fmt.Errorf("the workbook does not read: %w", err)
+		}
+	}
+	return generate(rng, s.cur), nil
+}
+
+type violation struct{ invariant, detail string }
+
+type outcome struct {
+	codes   [2]int
+	errs    [2]string
+	applied bool
+	broken  []violation
+}
+
+func (o outcome) summary() string {
+	var b strings.Builder
+	for k, ed := range editors {
+		if k > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "%s exit %d", ed.name, o.codes[k])
+		if o.errs[k] != "" {
+			fmt.Fprintf(&b, " (%s)", firstLine(o.errs[k]))
+		}
+	}
+	if len(o.broken) > 0 {
+		fmt.Fprintf(&b, "; broke %s: %s", o.broken[0].invariant, o.broken[0].detail)
+	}
+	return b.String()
+}
+
+// step makes one edit with both editors and checks the invariants. Edit i
+// checks undo on the streaming copy when even, on the full one when odd;
+// the other copy's edit runs with the journal off (SHEETS_UNDO=off), so
+// each journal holds the one change undo takes back.
+func (s *session) step(e Edit, i int) (outcome, error) {
+	var o outcome
+	var before, after [2][]byte
+	u := i % 2
+	for k, ed := range editors {
+		var err error
+		if before[k], err = os.ReadFile(s.paths[k]); err != nil {
+			return o, err
+		}
+		o.codes[k], o.errs[k] = run(ed.env, k == u, e, s.paths[k])
+		if after[k], err = os.ReadFile(s.paths[k]); err != nil {
+			return o, err
+		}
+	}
+	for k, ed := range editors {
+		if o.codes[k] == panicked {
+			o.broken = append(o.broken, violation{"panic", ed.name + " editor: " + o.errs[k]})
+		}
+	}
+	if len(o.broken) > 0 {
+		return o, nil
+	}
+	if (o.codes[0] == 0) != (o.codes[1] == 0) {
+		o.broken = append(o.broken, violation{"editors", fmt.Sprintf("stream exit %d (%s), full exit %d (%s)",
+			o.codes[0], firstLine(o.errs[0]), o.codes[1], firstLine(o.errs[1]))})
+		return o, nil
+	}
+	if o.codes[0] != 0 {
+		for k, ed := range editors {
+			if !bytes.Equal(before[k], after[k]) {
+				o.broken = append(o.broken, violation{"undo", ed.name + " editor: the edit was refused (" + firstLine(o.errs[k]) + ") but the file changed"})
+			}
+		}
+		return o, nil
+	}
+	o.applied = true
+	for k, ed := range editors {
+		for _, v := range checkFile(after[k]) {
+			v.detail = ed.name + " editor: " + v.detail
+			o.broken = append(o.broken, v)
+		}
+	}
+	wb, d := compareEditors(after[0], after[1])
+	if d != "" {
+		o.broken = append(o.broken, violation{"editors", d})
+	}
+	s.cur = wb
+	if k := u; !bytes.Equal(before[k], after[k]) {
+		code, msg := run(editors[k].env, true, Edit{Args: []string{"undo", FileArg}}, s.paths[k])
+		got, err := os.ReadFile(s.paths[k])
+		if err != nil {
+			return o, err
+		}
+		switch {
+		case code != 0:
+			o.broken = append(o.broken, violation{"undo", editors[k].name + " editor: undo failed: " + firstLine(msg)})
+		case !bytes.Equal(got, before[k]):
+			o.broken = append(o.broken, violation{"undo", editors[k].name + " editor: undo did not restore the bytes: " + partsDiffer(before[k], got)})
+		}
+		if err := os.WriteFile(s.paths[k], after[k], 0o644); err != nil {
+			return o, err
+		}
+	}
+	return o, nil
+}
+
+// panicked is the exit code run gives a command that panicked.
+const panicked = -1
+
+// run runs one command with an editor, in process, with the undo journal
+// on or off.
+func run(env string, journal bool, e Edit, path string) (code int, stderr string) {
+	args := make([]string, len(e.Args))
+	for i, a := range e.Args {
+		if a == FileArg {
+			a = path
+		}
+		args[i] = a
+	}
+	os.Setenv("SHEETS_STREAM", env)
+	if journal {
+		os.Unsetenv("SHEETS_UNDO")
+	} else {
+		os.Setenv("SHEETS_UNDO", "off")
+	}
+	var errb bytes.Buffer
+	defer func() {
+		if p := recover(); p != nil {
+			code, stderr = panicked, fmt.Sprintf("%v\n%s", p, debug.Stack())
+		}
+	}()
+	code = cli.Main(args, strings.NewReader(e.Stdin), io.Discard, &errb)
+	return code, strings.TrimSpace(strings.ReplaceAll(errb.String(), path, "book.xlsx"))
+}
+
+func firstLine(s string) string {
+	s = strings.TrimPrefix(s, "error: ")
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 160 {
+		s = s[:160] + "…"
+	}
+	return s
+}

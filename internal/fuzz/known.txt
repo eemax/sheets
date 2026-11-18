@@ -1,0 +1,47 @@
+# Findings of the default mode (seed 1) on today's code, one per line:
+# <edit class> <invariant> <sequence seed>. The default mode passes only on
+# findings listed here; replay one with
+#   SHEETS_FUZZ_REPRO=<seed> go test ./internal/fuzz -run 'TestFuzz$' -v
+# A fix removes its lines (the run lists those it no longer makes).
+
+# WP-18: moving or copying a plain formula that reads a range where one
+# value goes (='Data'!C2:C3*10, kept plain: Excel shows it with @) stores it
+# as a dynamic array that spills. By move and copy, and by do and script
+# batches that move or copy.
+script kinds 100005
+copy kinds 100006
+do kinds 100016
+move kinds 100037
+move kinds 100039
+move kinds 100049
+move kinds 100051
+move kinds 100061
+move kinds 100063
+move kinds 100084
+move kinds 100087
+move kinds 100114
+do kinds 100115
+copy kinds 100121
+copy kinds 100128
+script kinds 100163
+copy kinds 100179
+script kinds 100205
+move kinds 100231
+copy kinds 100237
+copy kinds 100244
+script kinds 100245
+move kinds 100246
+move kinds 100255
+move kinds 100257
+move kinds 100258
+move kinds 100269
+copy kinds 100289
+do kinds 100301
+do kinds 100314
+copy kinds 100316
+
+# New: a sort that finds its rows already in order (2 rows on a second
+# sheet) leaves the full editor's formulas without the results the
+# streaming editor stores (Summary!B2: 64 against pending).
+sort editors 100034
+sort editors 100145
