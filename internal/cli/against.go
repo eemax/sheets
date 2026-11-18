@@ -120,12 +120,14 @@ type structureEntry struct {
 // lists them all.
 const againstListed = 10
 
-// againstWidth bounds what text output shows of a value or formula, and
-// againstNote of a cause, flag or reason (as sheets diff cuts values); --json
-// gives them whole.
+// againstWidth bounds what text output shows of a value or formula,
+// againstNote of a cause, flag or reason, and againstFinding of the check's
+// own findings, which end with what to do (as sheets diff cuts values);
+// --json gives them whole.
 const (
-	againstWidth = 120
-	againstNote  = 240
+	againstWidth   = 120
+	againstNote    = 240
+	againstFinding = 400
 )
 
 // clip cuts a value or formula for text output; clipNote a cause, flag or
@@ -1910,7 +1912,7 @@ func (a *app) printAgainst(r *againstResult) {
 		sort.SliceStable(fs, func(i, j int) bool { return fs[i].Severity > fs[j].Severity })
 		tw := a.table()
 		for _, f := range fs[:min(len(fs), againstListed)] {
-			tw.row(f.Severity.String(), clip(findingCells(f)), clipNote(f.Message))
+			tw.row(f.Severity.String(), clip(findingCells(f)), grid.Truncate(f.Message, againstFinding))
 		}
 		tw.Flush()
 		more(len(fs))
