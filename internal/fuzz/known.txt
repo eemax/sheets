@@ -49,3 +49,21 @@ sort editors 100172
 sort editors 100219
 sort editors 100228
 sort editors 100315
+
+# New: a text typed with two escape-like sequences that share an underscore
+# (_x005F_x0041_) is stored as another text. ooxmlText (xlsx/stream_sheet.go)
+# escapes each _xHHHH_ with a regular expression, and the match for the first
+# (_x005F_) uses the underscore the second starts with, so the second is left
+# as it is: the file holds _x005F_x005F_x0041_, which Excel reads as _x005FA.
+# Both editors store it so (the code is shared), so only the text invariant,
+# which reads the text back, sees it.
+set text 100046
+set text 100123
+set text 100134
+write text 100006
+write text 100042
+write text 100067
+write text 100136
+write text 100262
+write text 100272
+write text 100317

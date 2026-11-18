@@ -604,6 +604,8 @@ func (s *session) stepNow(e Edit, i int) (outcome, error) {
 		m.apply(e)
 		if msg := m.check(wb); msg != "" {
 			o.broken = append(o.broken, violation{"kinds", msg})
+		} else if msg := checkTyped(e, wb); msg != "" {
+			o.broken = append(o.broken, violation{"text", msg})
 		}
 	}
 	s.cur = wb
