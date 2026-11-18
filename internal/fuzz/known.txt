@@ -88,7 +88,14 @@ bug sort-editors: do,script editors; repro long 701600; detail : stream holds .+
 # move or a batch (spillResults lays them out in map order). Shrunk, long move
 # repeat 700890 is sheets move book.xlsx 'Model!A4:C6' 'Model!D1' over the
 # array in E2:E3: the formula in E3 is there in one run and not in the other.
-bug repeat: copy,move,do,script repeat; repro 100139; detail editor: the same edit on the same bytes saved two different workbooks: 
+# A script that sets a dynamic array and then pastes over it
+# (ws.getRange("C2").copyFrom("A1:C4") over C2, =A2:A4&"!") shows it through
+# the editors invariant: no array is removed net, so the repeat check does not
+# run, and the pasted values are missing at random in one editor's file or
+# the other's (Q 2026!C4: "Lime" or nothing; its repro shows it about one
+# replay in two, so a repro is replayed up to 10 times).
+bug map-order: copy,move,do,script repeat; repro 100139; detail editor: the same edit on the same bytes saved two different workbooks: 
+bug map-order: script editors; repro long 701746; detail : stream holds .*, full holds ; edit setFormula\("=IF\(N\(\\+"d\\+"\).*copyFrom\(
 
 # Known (README, other seeds' findings: script kinds): a script that inserts
 # rows or columns leaves a legacy array with a dynamic array's cell metadata:
@@ -101,18 +108,23 @@ bug script-legacy-dynamic: script kinds; repro long 702888; detail =IF\(N\("l"\)
 # stores it as _x0001_.
 bug table-header-control: set,script xml; repro long 700021; detail xl/tables/table[0-9]+\.xml: XML syntax error on line [0-9]+: illegal character code U\+00[01][0-9A-F]$
 
-# New (long mode, seeds 7 and 40016): a dynamic array's results overwrite
-# what stands in their way, where Excel keeps it and shows #SPILL! at the
-# array. A text written into them is lost (write 'Data!N2' typing _x0041_ into
-# O3, which the dynamic array in O2, =C2:C3*2, fills: O3 is saved as the
-# array's 18); and so is a formula a batch sets beside one that spills over
-# it (set 'Calc!E3' '=IF(N("d")=0,SUM(IF(B2:B6>3,B2:B6)))' … 'Calc!E2'
-# '=IF(N("d")=0,B2:B5>3)': E3 is saved with no formula).
-bug spill-overwrites: set,write text; repro long 711157; detail typed the text "[^"]*", and the cell holds (number|boolean|error) 
-bug spill-overwrites: set,do kinds; repro long 4001600827; detail : the edit should leave a [a-z ]+ there, and it holds no formula \(it was lost\)$; edit N\("d"\)=0,[^']*[A-Z]+[0-9]+:[A-Z]+[0-9]+
+# New (long mode, seeds 7, 40016, 61001 and 61004): a dynamic array's results
+# overwrite what stands in their way, where Excel keeps it and shows #SPILL!
+# at the array. A text typed into them is lost (write 'Data!N2' typing _x0041_
+# into O3, which the dynamic array in O2, =C2:C3*2, fills: O3 is saved as the
+# array's 18; or saved as nothing, set 'Model!F6' into the spill of F4). And
+# a set that types a cell and then a cell above it loses the first one's
+# formula, when the second lays out a dynamic array over it (set 'Calc!E3'
+# '=IF(N("d")=0,SUM(IF(B2:B6>3,B2:B6)))' … 'Calc!E2' '=IF(N("d")=0,B2:B5>3)')
+# or replaces one whose results covered it (set 'Summary!E3' … 'Summary!E2'
+# …, over the array in E2:E3): E3 is saved with no formula.
+bug spill-overwrites: set,write text; repro long 711157; detail typed the text "[^"]*", and the cell holds (number|boolean|error|nothing)
+bug spill-overwrites: set,do kinds; repro long 4001600827; detail : the edit should leave a [a-z ]+ there, and it holds no formula \(it was lost\)$; when set-above-after
 
-# New (long mode, seed 7): a script that sets a dynamic array (C2,
-# =A2:A4&"!") and then pastes over it (ws.getRange("C2").copyFrom("A1:C4"))
-# saves other cells in each editor: Q 2026!C4 holds nothing in the streaming
-# editor's file, "Lime" in the full editor's.
-bug script-paste-over-array: script editors; repro long 701746; detail : stream holds .*, full holds ; edit setFormula\("=IF\(N\(\\+"d\\+"\).*copyFrom\(
+# New (long mode, seed 61002): an insert of rows turns a plain formula that
+# reads no range into a dynamic array: set 'Model!C2' to a dynamic array and
+# then a date in one command, write a plain formula there (=Data!A2&"!"),
+# and rows insert 'Q 2027!2' -n 3 stores it in C5 as a dynamic array. (A
+# formula reading a range where one value goes, turned dynamic, is another
+# bug: the mutant rows-insert-arrays.)
+bug insert-turns-dynamic: rows-insert,cols-insert kinds; repro long 6100201614; detail =IF\(N\("p"\)=0,[^:]*\) is stored as a dynamic array, not a plain formula$

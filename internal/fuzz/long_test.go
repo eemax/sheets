@@ -278,6 +278,10 @@ func byBug(kn *Known, fs []Finding) string {
 	return strings.Join(out, ", ")
 }
 
+// replays is how many times a bug's repro is replayed before it is taken
+// for fixed: the map-order bug's editors face shows about one replay in two.
+const replays = 10
+
 // bugsFixed replays each known bug's repro, and lists those it no longer
 // shows (fixed: reported, never a failure), and those whose repro could not
 // be replayed (its pool could not be made).
@@ -292,12 +296,20 @@ func bugsFixed(kn *Known, committed []Workbook, ps *Pools, dir string) (fixed, u
 			}
 			files = p.Files
 		}
-		f, err := Replay(files, b.Repro.Seed, dir, 0, nil)
-		if err != nil {
-			return nil, nil, err
-		}
-		if f != nil {
-			f.Long = b.Repro.Long
+		// A bug that comes and goes (map order) is replayed until it shows,
+		// up to replays times.
+		var f *Finding
+		for range replays {
+			var err error
+			if f, err = Replay(files, b.Repro.Seed, dir, 0, nil); err != nil {
+				return nil, nil, err
+			}
+			if f != nil {
+				f.Long = b.Repro.Long
+				if b.Shows(*f) {
+					break
+				}
+			}
 		}
 		switch {
 		case f == nil:
@@ -491,6 +503,7 @@ bug broken: rows-delete kinds; repro long 700012; detail holds =#REF! # not a co
 		"bug x: sortx editors; repro 7; detail a\n",                                        // no class
 		"bug x: sort typo; repro 7; detail a\n",                                            // no invariant
 		"bug x: sort editors; repro 7; detail a; why b\n",                                  // no field
+		"bug x: sort editors; repro 7; detail a; when typo\n",                              // no check
 		"bug x y: sort editors; repro 7; detail a\n",                                       // a name with a space
 		"bug x: sort editors; repro long x; detail a\n",                                    // no seed
 		"bug x: sort editors; repro 7; detail a\nbug x: sort editors; repro 8; detail b\n", // a face twice
@@ -532,14 +545,23 @@ func TestKnownFaces(t *testing.T) {
 		{"sort", "editors", `Data!L2: stream holds text "-x", full holds nothing (pending)`, plain("sort"), "sort-editors"},
 		{"do", "editors", `Calc!B2: stream holds number 7, full holds number 0`, batch("sort 'Calc!A2:A6' A A\n"), "sort-editors"},
 		{"script", "editors", `Data!B2: stream holds boolean true, full holds nothing (pending)`, script(`ws.getRange("A2:C9").getSort().apply([{key: 0, ascending: true}]);`), "sort-editors"},
-		{"copy", "repeat", `stream editor: the same edit on the same bytes saved two different workbooks: Data!M3: the first run holds number 86.06, the repeat holds nothing`, plain("copy"), "repeat"},
-		{"move", "repeat", `full editor: the same edit on the same bytes saved two different workbooks: Data!M3: the first run has =, the repeat has =IF(N("p")=0,IF(B7>1000,1,""))`, plain("move"), "repeat"},
+		{"copy", "repeat", `stream editor: the same edit on the same bytes saved two different workbooks: Data!M3: the first run holds number 86.06, the repeat holds nothing`, plain("copy"), "map-order"},
+		{"move", "repeat", `full editor: the same edit on the same bytes saved two different workbooks: Data!M3: the first run has =, the repeat has =IF(N("p")=0,IF(B7>1000,1,""))`, plain("move"), "map-order"},
 		{"script", "kinds", `stream editor: sheet1.xml U2: =IF(N("l")=0,UPPER(A2:A4)) is stored as a dynamic array, not a legacy array`, script(`ws.getRange("2:2").insert("Down");`), "script-legacy-dynamic"},
 		{"set", "xml", `stream editor: xl/tables/table1.xml: XML syntax error on line 2: illegal character code U+001F`, plain("set"), "table-header-control"},
 		{"write", "text", `Data!O3: typed the text "_x0041_", and the cell holds number 18`, plain("write"), "spill-overwrites"},
 		{"do", "kinds", `Calc!E3: the edit should leave a dynamic array there, and it holds no formula (it was lost)`, batch("set 'Calc!E3' '=IF(N(\"d\")=0,SUM(IF(B2:B6>3,B2:B6)))' 'Calc!B7' '=IF(N(\"p\")=0,UPPER(A7))' 'Calc!E2' '=IF(N(\"d\")=0,B2:B5>3)'\n"), "spill-overwrites"},
-		{"script", "editors", `Q 2026!C3: stream holds nothing, full holds text "Apple"`, Edit{Class: "script", Args: []string{"script", FileArg, "-e", "const ws = workbook.getWorksheet(\"Q 2026\");\nws.getRange(\"C2\").setFormula(\"=IF(N(\\\"d\\\")=0,A2:A4&\\\"!\\\")\");\nws.getRange(\"C2\").copyFrom(\"A1:C4\");\n"}}, "script-paste-over-array"},
+		{"script", "editors", `Q 2026!C3: stream holds nothing, full holds text "Apple"`, Edit{Class: "script", Args: []string{"script", FileArg, "-e", "const ws = workbook.getWorksheet(\"Q 2026\");\nws.getRange(\"C2\").setFormula(\"=IF(N(\\\"d\\\")=0,A2:A4&\\\"!\\\")\");\nws.getRange(\"C2\").copyFrom(\"A1:C4\");\n"}}, "map-order"},
+		{"write", "text", `Model!F6: typed the text "5 > 3 & 2 < 4", and the cell holds nothing`, plain("write"), "spill-overwrites"},
+		{"set", "kinds", `Summary!E3: the edit should leave a plain formula there, and it holds no formula (it was lost)`, Edit{Class: "set", Args: []string{"set", FileArg, "Summary!E3", `=IF(N("p")=0,COUNTIF(B2:B9,">3"))`, "Summary!E2", `=IF(N("p")=0,'A<B'!B2+1)`}}, "spill-overwrites"},
+		{"rows-insert", "kinds", `stream editor: sheet2.xml C5: =IF(N("p")=0,Data!A2&"!") is stored as a dynamic array, not a plain formula`, plain("rows-insert"), "insert-turns-dynamic"},
 		// New: not a known bug's.
+		// WP-12's mutant: a set on a new sheet loses a formula; no cell above
+		// it is typed after it.
+		{"set", "kinds", `Q1 "draft"!F7: the edit should leave a plain formula there, and it holds no formula (it was lost)`, Edit{Class: "set", Args: []string{"set", FileArg, `Q1 "draft"!F7`, `=IF(N("p")=0,IF(B7>3,"big",""))`, `Q1 "draft"!B9`, "5", `Q1 "draft"!A1`, `=IF(N("d")=0,SEQUENCE(2))`}}, ""},
+		{"set", "kinds", `Summary!E3: the edit should leave a plain formula there, and it holds no formula (it was lost)`, Edit{Class: "set", Args: []string{"set", FileArg, "Summary!E2", "1", "Summary!E3", `=IF(N("p")=0,B3)`}}, ""},
+		// The mutant rows-insert-arrays: a plain formula reading a range turned dynamic.
+		{"cols-insert", "kinds", `stream editor: sheet1.xml I2: =IF(N("p")=0,B3:B4*2) is stored as a dynamic array, not a plain formula`, plain("cols-insert"), ""},
 		{"do", "kinds", `Data!E4: the edit should leave a dynamic array there, and it holds no formula (it was lost)`, batch("set 'Data!E4' '=IF(N(\"d\")=0,SEQUENCE(2))'\n"), ""},
 		{"move", "kinds", `Data!E4: the edit should leave a dynamic array there, and it holds no formula (it was lost)`, plain("move"), ""},
 		{"set", "text", `Data!I2: typed the text "Apple", and the cell holds text "APPLE"`, plain("set"), ""},
@@ -714,5 +736,54 @@ func TestFreshPools(t *testing.T) {
 	}
 	if producers["openpyxl"] != PoolFiles || producers["xlsxwriter"] != PoolFiles {
 		t.Errorf("files by producer: %v", producers)
+	}
+}
+
+// TestUntilNew: a mutant's run stops at the first finding known.txt does not
+// list (by signature or as a bug's) whose sequence the tree without the
+// mutant (SHEETS_FUZZ_BASE) makes with no finding; one the tree makes too is
+// the code's, not the mutant's (fuzzer-long's audit, f0.3). The tree's test
+// binary is a script here, which replays 1 clean and anything else with a
+// finding.
+func TestUntilNew(t *testing.T) {
+	kn, err := ReadKnown("move kinds 100003\nbug sorts: sort editors; repro 100047; detail full holds nothing\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stop, _ := untilNew(t, kn, false); stop != nil {
+		t.Fatal("a stop without SHEETS_FUZZ_UNTIL=new")
+	}
+	base := t.TempDir()
+	pkg := filepath.Join(base, "internal", "fuzz")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$SHEETS_FUZZ_REPRO" = 1 ]; then echo "    fuzz_test.go:1: seed 1: no finding"; exit 0; fi
+echo "    fuzz_test.go:1: finding long copy kinds $SHEETS_FUZZ_REPRO (SHEETS_FUZZ=$SHEETS_FUZZ)"; exit 1
+`
+	if err := os.WriteFile(filepath.Join(pkg, "fuzz.test"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHEETS_FUZZ_BASE", base)
+	stop, theirs := untilNew(t, kn, true)
+	for _, tc := range []struct {
+		f    Finding
+		want bool
+	}{
+		{Finding{Signature: Signature{"move", "kinds", 100003, false}}, false},                                    // listed
+		{Finding{Signature: Signature{"sort", "editors", 4001600015, true}, Detail: "full holds nothing"}, false}, // a known bug's
+		{Finding{Signature: Signature{"copy", "kinds", 7, true}}, false},                                          // the tree makes it too
+		{Finding{Signature: Signature{"copy", "kinds", 1, false}}, true},                                          // the mutant's
+	} {
+		if got := stop(tc.f); got != tc.want {
+			t.Errorf("%s: stop %v, want %v", tc.f.Signature, got, tc.want)
+		}
+	}
+	if got := theirs[Signature{"copy", "kinds", 7, true}]; !strings.Contains(got, "finding long copy kinds 7 (SHEETS_FUZZ=long)") || len(theirs) != 1 {
+		t.Errorf("the code's findings: %v", theirs)
+	}
+	if _, err := baseMakes(t.TempDir(), Finding{}); err == nil || !strings.Contains(err.Error(), "go test -c") {
+		t.Errorf("a base with no test binary: %v", err)
 	}
 }
