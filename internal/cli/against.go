@@ -373,8 +373,10 @@ type report struct {
 	arrays  arrays
 	// anyLines: some sheet had lines added or removed.
 	anyLines bool
-	// removedSheets are the sheets removed, as the old version names them.
+	// removedSheets are the sheets removed, as the old version names them;
+	// removedRefs find what DeleteLines leaves of a reference to each.
 	removedSheets []string
+	removedRefs   []*regexp.Regexp
 	// lines pairs each old sheet's rows and columns with the new version's
 	// (by the old name, lower-cased); cur is the sheet being compared.
 	lines map[string]*lineMap
@@ -1333,7 +1335,9 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 			return
 		}
 		// Moved with its row, or rewritten by Excel for what moved.
-		shift = &shiftOf{sheet: sa.Name, row: ra, col: ca, old: x.Formula, now: y.Formula}
+		if ra != rb || ca != cb || pa != pb {
+			shift = &shiftOf{sheet: sa.Name, row: ra, col: ca, old: x.Formula, now: y.Formula}
+		}
 	case fa != fb && (fa || fb) && !(ka && kb):
 		// A formula added or removed.
 		c := changedCell{Cell: here, Was: was, Kind: "formula", Before: repr(x, va), After: repr(y, vb)}
@@ -1461,12 +1465,18 @@ func (r *report) rewrites(old, home string) []string {
 	}
 	out := []string{f}
 	lost, excel := f, f
-	for _, name := range r.removedSheets {
+	for i, name := range r.removedSheets {
 		if !mentions(f, "", name) {
 			continue
 		}
+		if r.removedRefs == nil {
+			for _, n := range r.removedSheets {
+				r.removedRefs = append(r.removedRefs, regexp.MustCompile(`(?i)(`+regexp.QuoteMeta(n)+`|'`+regexp.QuoteMeta(strings.ReplaceAll(n, "'", "''"))+`')!#REF!`))
+			}
+		}
+		// DeleteLines leaves the sheet's name before #REF!; sheets writes none.
 		lost = formula.DeleteLines(formula.DeleteLines(lost, home, name, false, 1, grid.MaxRows), home, name, true, 1, grid.MaxCols)
-		lost = regexp.MustCompile(`(?i)(`+regexp.QuoteMeta(name)+`|'`+regexp.QuoteMeta(strings.ReplaceAll(name, "'", "''"))+`')!#REF!`).ReplaceAllString(lost, "#REF!")
+		lost = r.removedRefs[i].ReplaceAllString(lost, "#REF!")
 		excel = strings.ReplaceAll(formula.RenameSheet(excel, strings.ToLower(name), removedMark), removedMark+"!", "#REF!")
 	}
 	if lost != f {
@@ -1566,7 +1576,7 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	// those whose values are unknown), and, failing all else, what moved the
 	// formulas a sort or lines added or removed moved or Excel rewrote for
 	// them.
-	var unknownOf, shiftOf map[xlsx.At]int
+	var unknownOf, shiftReach map[xlsx.At]int
 	var shiftSrc []xlsx.Source
 	var shiftCause []string
 	for _, c := range r.candidates {
@@ -1582,7 +1592,7 @@ func (r *report) trace(tr *xlsx.Tracer) {
 		}
 	}
 	if len(shiftSrc) > 0 {
-		shiftOf = tr.Spread(shiftSrc)
+		shiftReach = tr.Spread(shiftSrc)
 	}
 	for _, c := range r.candidates {
 		here := cellAt(c.at.Sheet, c.at.Row, c.at.Col)
@@ -1606,7 +1616,7 @@ func (r *report) trace(tr *xlsx.Tracer) {
 			out.Unknown = append(out.Unknown, unknownValue{Cell: here, Before: c.before.text, After: c.after.text, Why: "moved, and sheets cannot tell why: it reads " + r.unknownWhy[k]})
 			continue
 		}
-		if k, ok := cause(shiftOf, c); ok {
+		if k, ok := cause(shiftReach, c); ok {
 			moved.Cause = shiftCause[k]
 			out.Moved = append(out.Moved, moved)
 			continue

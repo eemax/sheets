@@ -96,7 +96,7 @@ func alignBlocks(A, B side, opts Options, full sheetAlign) sheetAlign {
 	ua, ub := A.s.Used(), B.s.Used()
 	ra, rb := max(ua.R2, 0), max(ub.R2, 0)
 	inPlace := make([][2]int, max(ra, rb))
-	same := len(fullRows) == len(inPlace) // whole rows paired in place
+	asIs := len(fullRows) == len(inPlace) // whole rows paired in place
 	for r := range inPlace {
 		inPlace[r] = [2]int{r, r}
 		if r >= ra {
@@ -105,7 +105,7 @@ func alignBlocks(A, B side, opts Options, full sheetAlign) sheetAlign {
 		if r >= rb {
 			inPlace[r][1] = -1
 		}
-		same = same && fullRows[r] == inPlace[r]
+		asIs = asIs && fullRows[r] == inPlace[r]
 	}
 	// runs of columns, by block apart from the rest, and whether each is
 	// changed
@@ -116,7 +116,7 @@ func alignBlocks(A, B side, opts Options, full sheetAlign) sheetAlign {
 		var runs [][][2]int
 		var flags []bool
 		for k, p := range g {
-			changed := differs(A, B, fullRows, p) && (same || differs(A, B, inPlace, p))
+			changed := differs(A, B, fullRows, p) && (asIs || differs(A, B, inPlace, p))
 			if k == 0 || changed != flags[len(flags)-1] {
 				runs, flags = append(runs, nil), append(flags, changed)
 			}
