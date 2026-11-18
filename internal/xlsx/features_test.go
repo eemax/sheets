@@ -104,6 +104,16 @@ func TestTracer(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("from Data!D2: %v", got)
 	}
+	// Readers only: the totals in row 7 are not reached for being there,
+	// and nothing reads them; D2 is, for reading B2 and C2.
+	got = tr.Spread([]Source{{Sheet: "Data", Range: grid.Range{R1: 7, C1: 1, R2: 7, C2: 4}, Readers: true}})
+	if len(got) != 0 {
+		t.Errorf("readers of Data!7: %v", got)
+	}
+	got = tr.Spread([]Source{{Sheet: "Data", Range: grid.Range{R1: 2, C1: 1, R2: 2, C2: 4}, Readers: true}})
+	if _, ok := got[At{"Data", 2, 4}]; !ok || len(got) != 9 {
+		t.Errorf("readers of Data!2: %v", got)
+	}
 	if tr.Opaque("Summary", 4, 2) != "" || !tr.Formula("Data", 2, 4) || tr.Formula("Data", 2, 2) {
 		t.Error("formulas")
 	}

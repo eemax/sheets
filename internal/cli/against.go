@@ -318,6 +318,10 @@ type report struct {
 
 	sources []xlsx.Source
 	causes  []string
+	// lineSources are rows, columns and sheets added or moved, which come
+	// after the cells changed.
+	lineSources []xlsx.Source
+	lineCauses  []string
 	// candidates are computed values that moved, to trace.
 	candidates []candidate
 	// unknownSrc are formulas whose values are unknown, and why.
@@ -349,9 +353,17 @@ type candidate struct {
 	note   string
 }
 
+// cause adds a change whose cells others follow: a cell's own (an input
+// or formula), which is the nearer cause, or rows and columns added,
+// removed or moved (structural).
 func (r *report) cause(sheet string, rg grid.Range, label string) {
 	r.sources = append(r.sources, xlsx.Source{Sheet: sheet, Range: rg})
 	r.causes = append(r.causes, label)
+}
+
+func (r *report) structural(sheet string, rg grid.Range, label string) {
+	r.lineSources = append(r.lineSources, xlsx.Source{Sheet: sheet, Range: rg, Readers: true})
+	r.lineCauses = append(r.lineCauses, label)
 }
 
 func lineRange(sheet string, from, to int, cols bool) string {
@@ -366,6 +378,135 @@ func lineRange(sheet string, from, to int, cols bool) string {
 		return q + strconv.Itoa(from)
 	}
 	return q + strconv.Itoa(from) + ":" + strconv.Itoa(to)
+}
+
+// pairReplaced pairs, in order, the rows removed and added in the same
+// place: a row whose every value changed is changed, not replaced.
+func pairReplaced(rows []diff.Pair) []diff.Pair {
+	var out []diff.Pair
+	for i := 0; i < len(rows); {
+		if rows[i].Old != 0 && rows[i].New != 0 {
+			out = append(out, rows[i])
+			i++
+			continue
+		}
+		var olds, news []int
+		for ; i < len(rows) && (rows[i].Old == 0 || rows[i].New == 0); i++ {
+			if rows[i].New == 0 {
+				olds = append(olds, rows[i].Old)
+			} else {
+				news = append(news, rows[i].New)
+			}
+		}
+		n := min(len(olds), len(news))
+		for k := 0; k < n; k++ {
+			out = append(out, diff.Pair{Old: olds[k], New: news[k]})
+		}
+		for _, o := range olds[n:] {
+			out = append(out, diff.Pair{Old: o})
+		}
+		for _, w := range news[n:] {
+			out = append(out, diff.Pair{New: w})
+		}
+	}
+	return out
+}
+
+// alikeLimit bounds the rows pairAlike compares, each with each.
+const alikeLimit = 500
+
+// pairAlike pairs the rows removed with the rows added that are mostly
+// alike (at least half their cells the same, formulas by their pattern):
+// rows a sort moved and an edit changed. It gives the rows, and those
+// pairs as moved.
+func (r *report) pairAlike(sa, sb *grid.Sheet, rows []diff.Pair, cols [][2]int) ([]diff.Pair, []diff.Moved) {
+	var olds, news []int
+	for _, q := range rows {
+		switch {
+		case q.New == 0:
+			olds = append(olds, q.Old)
+		case q.Old == 0:
+			news = append(news, q.New)
+		}
+	}
+	if len(olds) == 0 || len(news) == 0 || len(olds)*len(news) > alikeLimit*alikeLimit {
+		return rows, nil
+	}
+	key := func(wb *grid.Workbook, s *grid.Sheet, row, col int) string {
+		c := s.At(row, col)
+		if c == nil || c.IsEmpty() {
+			return ""
+		}
+		if c.Formula != "" {
+			k, _ := formula.Pattern(folded(c.Formula), row, col)
+			return "=" + k
+		}
+		return value(wb, s, row, col).text
+	}
+	taken := map[int]bool{}
+	paired := map[int]int{} // new row → old row
+	for _, nr := range news {
+		best, score := 0, 0
+		for _, or := range olds {
+			if taken[or] {
+				continue
+			}
+			same, used := 0, 0
+			for _, c := range cols {
+				ka, kb := key(r.A.wb, sa, or, c[0]), key(r.B.wb, sb, nr, c[1])
+				if ka == "" && kb == "" {
+					continue
+				}
+				used++
+				if ka == kb {
+					same++
+				}
+			}
+			if used > 0 && same*2 >= used && same > score {
+				best, score = or, same
+			}
+		}
+		if best > 0 {
+			taken[best], paired[nr] = true, best
+		}
+	}
+	if len(paired) == 0 {
+		return rows, nil
+	}
+	var out []diff.Pair
+	var moved []diff.Moved
+	for _, q := range rows {
+		switch {
+		case q.New == 0 && taken[q.Old]:
+			continue
+		case q.Old == 0 && paired[q.New] > 0:
+			o := paired[q.New]
+			out = append(out, diff.Pair{Old: o, New: q.New})
+			if o != q.New {
+				moved = append(moved, diff.Moved{From: o, To: q.New, Rows: 1})
+			}
+			continue
+		}
+		out = append(out, q)
+	}
+	return out, moved
+}
+
+// folded is a formula as Excel compares it: letters outside text in
+// double quotes in one case (function names, references, sheet names).
+func folded(f string) string {
+	var b strings.Builder
+	in := false
+	for _, r := range f {
+		if r == '"' {
+			in = !in
+		}
+		if !in {
+			r = []rune(strings.ToUpper(string(r)))[0]
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // runs joins line numbers into runs.
@@ -384,6 +525,16 @@ func runs(lines []int) [][2]int {
 
 func (r *report) compare() {
 	A, B, out := r.A, r.B, r.out
+	if out.ValuesOnly && len(A.wb.Sheets) > 0 && len(B.wb.Sheets) > 0 {
+		// A CSV file's one sheet is the workbook's first: it is named
+		// after the file.
+		switch {
+		case A.csv && !B.csv:
+			A.wb.Sheets[0].Name = B.wb.Sheets[0].Name
+		case B.csv && !A.csv:
+			B.wb.Sheets[0].Name = A.wb.Sheets[0].Name
+		}
+	}
 	al := diff.Align(A.wb, B.wb, diff.Options{Moves: true})
 	r.renamed = map[string]string{}
 	r.formulaSrc = map[xlsx.At]string{}
@@ -409,7 +560,7 @@ func (r *report) compare() {
 		case p.Old == nil:
 			out.Structure = append(out.Structure, structureEntry{"sheet added", grid.QuoteSheet(p.New.Name)})
 			if u := p.New.Used(); !u.Empty() {
-				r.cause(p.New.Name, u, "sheet added: "+grid.QuoteSheet(p.New.Name))
+				r.structural(p.New.Name, u, "sheet added: "+grid.QuoteSheet(p.New.Name))
 			}
 			continue
 		case p.New == nil:
@@ -422,6 +573,7 @@ func (r *report) compare() {
 			out.Structure = append(out.Structure, structureEntry{"sheet renamed", grid.QuoteSheet(p.Old.Name) + " → " + grid.QuoteSheet(p.New.Name)})
 		}
 		sa, sb := p.Old, p.New
+		p.Rows = pairReplaced(p.Rows)
 		var rowsAdded, rowsRemoved, colsAdded, colsRemoved []int
 		var cols [][2]int
 		for _, c := range p.Cols {
@@ -433,6 +585,13 @@ func (r *report) compare() {
 			default:
 				cols = append(cols, [2]int{c.Old, c.New})
 			}
+		}
+		if len(p.Moved) > 0 {
+			// Rows sorted and changed too: alike, they moved.
+			var more []diff.Moved
+			p.Rows, more = r.pairAlike(sa, sb, p.Rows, cols)
+			p.Moved = append(p.Moved, more...)
+			sort.Slice(p.Moved, func(i, j int) bool { return p.Moved[i].To < p.Moved[j].To })
 		}
 		// Where removed lines were, in the new version: the line after
 		// them, or after the last line kept above them.
@@ -470,7 +629,7 @@ func (r *report) compare() {
 		for _, run := range runs(rowsAdded) {
 			w := lineRange(sb.Name, run[0], run[1], false)
 			out.Structure = append(out.Structure, structureEntry{map[bool]string{true: "row added", false: "rows added"}[run[0] == run[1]], w})
-			r.cause(sb.Name, grid.Range{R1: run[0], C1: 1, R2: run[1], C2: grid.MaxCols}, "rows added: "+w)
+			r.structural(sb.Name, grid.Range{R1: run[0], C1: 1, R2: run[1], C2: grid.MaxCols}, "rows added: "+w)
 		}
 		for _, run := range runs(rowsRemoved) {
 			out.Structure = append(out.Structure, structureEntry{map[bool]string{true: "row removed", false: "rows removed"}[run[0] == run[1]], lineRange(sa.Name, run[0], run[1], false) + " in " + A.path})
@@ -478,7 +637,7 @@ func (r *report) compare() {
 		for _, run := range runs(colsAdded) {
 			w := lineRange(sb.Name, run[0], run[1], true)
 			out.Structure = append(out.Structure, structureEntry{map[bool]string{true: "column added", false: "columns added"}[run[0] == run[1]], w})
-			r.cause(sb.Name, grid.Range{R1: 1, C1: run[0], R2: grid.MaxRows, C2: run[1]}, "columns added: "+w)
+			r.structural(sb.Name, grid.Range{R1: 1, C1: run[0], R2: grid.MaxRows, C2: run[1]}, "columns added: "+w)
 		}
 		for _, run := range runs(colsRemoved) {
 			out.Structure = append(out.Structure, structureEntry{map[bool]string{true: "column removed", false: "columns removed"}[run[0] == run[1]], lineRange(sa.Name, run[0], run[1], true) + " in " + A.path})
@@ -489,10 +648,19 @@ func (r *report) compare() {
 		if len(colsRemoved) > 0 {
 			gaps = append(gaps, gapAt(p.Cols, colsRemoved, true))
 		}
+		lo, hi := 0, 0
 		for _, m := range p.Moved {
 			out.MovedRows = append(out.MovedRows, movedRows{Sheet: sb.Name, From: m.From, To: m.To, Rows: m.Rows})
-			r.cause(sb.Name, grid.Range{R1: m.To, C1: 1, R2: m.To + m.Rows - 1, C2: grid.MaxCols},
+			r.structural(sb.Name, grid.Range{R1: m.To, C1: 1, R2: m.To + m.Rows - 1, C2: grid.MaxCols},
 				"rows moved: "+lineRange(sb.Name, m.To, m.To+m.Rows-1, false)+" (were "+lineRange(sa.Name, m.From, m.From+m.Rows-1, false)+")")
+			if lo == 0 || min(m.From, m.To) < lo {
+				lo = min(m.From, m.To)
+			}
+			hi = max(hi, m.From+m.Rows-1, m.To+m.Rows-1)
+		}
+		if lo > 0 {
+			// What a sort spans: every cell there may hold another row's now.
+			r.structural(sb.Name, grid.Range{R1: lo, C1: 1, R2: hi, C2: grid.MaxCols}, "rows moved: "+lineRange(sb.Name, lo, hi, false))
 		}
 		jobs = append(jobs, job{sa, sb, p.Rows, cols})
 		r.edits = append(r.edits, lineEdit{sheet: sb.Name, rowsRemoved: runs(rowsRemoved), rowsAdded: runs(rowsAdded), colsRemoved: runs(colsRemoved), colsAdded: runs(colsAdded)})
@@ -629,9 +797,9 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 		}
 		return
 	case fa && fb:
-		pa, _ := formula.Pattern(x.Formula, ra, ca)
-		pb, _ := formula.Pattern(y.Formula, rb, cb)
-		if pa != pb && !r.adjusted(x.Formula, sb.Name, y.Formula, rb, cb) {
+		pa, _ := formula.Pattern(folded(x.Formula), ra, ca)
+		pb, _ := formula.Pattern(folded(y.Formula), rb, cb)
+		if pa != pb && !r.adjusted(folded(x.Formula), sb.Name, folded(y.Formula), rb, cb) {
 			c := changedCell{Cell: here, Was: was, Kind: "formula", Before: "=" + x.Formula, After: "=" + y.Formula}
 			c.Flag = brokenRow(sb, rb, cb, pa, pb)
 			out.Changed = append(out.Changed, c)
@@ -642,7 +810,7 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 		// A formula added or removed.
 		c := changedCell{Cell: here, Was: was, Kind: "formula", Before: repr(x, va), After: repr(y, vb)}
 		if fa && !kb {
-			pa, _ := formula.Pattern(x.Formula, ra, ca)
+			pa, _ := formula.Pattern(folded(x.Formula), ra, ca)
 			c.Flag = brokenRow(sb, rb, cb, pa, "")
 		}
 		out.Changed = append(out.Changed, c)
@@ -742,7 +910,8 @@ func brokenRow(s *grid.Sheet, row, col int, old, now string) string {
 		if c == nil || c.Formula == "" {
 			continue
 		}
-		k, d := formula.Pattern(c.Formula, r, col)
+		k, _ := formula.Pattern(folded(c.Formula), r, col)
+		_, d := formula.Pattern(c.Formula, r, col)
 		switch k {
 		case old:
 			keep++
@@ -763,6 +932,8 @@ func brokenRow(s *grid.Sheet, row, col int, old, now string) string {
 // trace finds each moved value's cause.
 func (r *report) trace(tr *xlsx.Tracer) {
 	out := r.out
+	r.sources = append(r.sources, r.lineSources...)
+	r.causes = append(r.causes, r.lineCauses...)
 	causeOf := tr.Spread(r.sources)
 	// What sheets cannot follow: formulas whose reads cannot be told, and
 	// those whose values are unknown.

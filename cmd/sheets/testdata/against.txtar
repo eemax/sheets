@@ -47,14 +47,36 @@ exec sheets --json check sorted.xlsx --against against_before.xlsx
 stdout '"moved_rows":\[\{"sheet":"Data","from":4,"to":2,"rows":1\},'
 stdout '"changed":\[\],'
 
+# Sorted, and a sorted row changed: it moved, and its change is a change.
+# What reads a cell the sort spans by its place moves, the sort its cause.
+cp against_before.xlsx reads.xlsx
+exec sheets set reads.xlsx Summary!C1 '=Data!B4'
+cp reads.xlsx sortedit.xlsx
+exec sheets sort sortedit.xlsx Data!A1:D6 Units
+exec sheets set sortedit.xlsx Data!C2 99
+exec sheets check sortedit.xlsx --against reads.xlsx
+stdout '^  Data!C2 \(was C4\)  input  50 → 99$'
+stdout '^  Data!D2 \(was D4\)  150 → 297 +input Data!C2$'
+stdout '^  Summary!C1 +3 → 5 +rows moved: Data!2:6$'
+stdout '^  Data!2, were 4$'
+stdout ', 0 unexplained,'
+
 # Rows added and removed: totals Excel rewrites to take them in are not
 # changes; what they move is explained by the rows.
 cp against_before.xlsx rows.xlsx
 exec sheets rows insert rows.xlsx Data!4
 exec sheets set rows.xlsx Data!A4 Extra Data!B4 10 Data!C4 5 Data!D4 '=B4*C4'
-exec sheets rows delete rows.xlsx Data!3
+exec sheets rows delete rows.xlsx Data!7
 exec sheets check rows.xlsx --against against_before.xlsx
 cmp stdout rows.out
+
+# A row whose every value changed is a changed row, not one removed and
+# one added.
+cp against_before.xlsx retyped.xlsx
+exec sheets set retyped.xlsx Data!A3 Extra Data!B3 10 Data!C3 5
+exec sheets check retyped.xlsx --against against_before.xlsx
+stdout '^  Data!A3  input  "South" → "Extra"$'
+! stdout 'removed'
 
 # A value that moved with nothing upstream changed: Excel stored 999 for
 # =B2*2, which sheets computes as 10 once the formula is entered again.
@@ -155,16 +177,16 @@ warning  Summary!B7  labelled "North units" but reads Data!B2, the "East" line; 
 -- rows.out --
 rows.xlsx against against_before.xlsx: 0 inputs changed, 0 formulas changed, 7 computed values moved (each with its cause), 0 unexplained, 0 features lost, 0 unknown
 moved, each with its cause:
-  Data!B7     28 → 31      rows removed: Data!3 in against_before.xlsx
-  Data!D7     630 → 540    rows removed: Data!3 in against_before.xlsx
-  Summary!B2  28 → 31      rows removed: Data!3 in against_before.xlsx
-  Summary!B3  630 → 540    rows removed: Data!3 in against_before.xlsx
-  Summary!B4  157.5 → 135  rows removed: Data!3 in against_before.xlsx
-  Summary!B5  472.5 → 405  rows removed: Data!3 in against_before.xlsx
-  Summary!B6  9 → 10       rows removed: Data!3 in against_before.xlsx
+  Data!B7     28 → 34      rows added: Data!4
+  Data!D7     630 → 580    rows added: Data!4
+  Summary!B2  28 → 34      rows added: Data!4
+  Summary!B3  630 → 580    rows added: Data!4
+  Summary!B4  157.5 → 145  rows added: Data!4
+  Summary!B5  472.5 → 435  rows added: Data!4
+  Summary!B6  9 → 10       rows added: Data!4
 structure:
-  row added: Data!3
-  row removed: Data!3 in against_before.xlsx
+  row added: Data!4
+  row removed: Data!6 in against_before.xlsx
 check of rows.xlsx: no problems found
 -- unknown.out --
 vol2.xlsx against vol.xlsx: 1 input changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 2 unknown

@@ -25,6 +25,9 @@ type At struct {
 type Source struct {
 	Sheet string
 	Range grid.Range
+	// Readers: only what reads the cells follows, not the formulas among
+	// them (rows that moved, with their formulas, which read as before).
+	Readers bool
 }
 
 // Tracer follows a workbook's formulas forward from cells.
@@ -174,15 +177,23 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 		src int
 	}
 	var queue []item
-	seen := map[cellKey]bool{}
+	// queued: cells whose readers are looked for; reached: formulas (and
+	// array results) that follow a source.
+	queued, reached := map[cellKey]bool{}, map[cellKey]bool{}
+	push := func(k cellKey, src int) {
+		if !queued[k] {
+			queued[k] = true
+			queue = append(queue, item{k, src})
+		}
+	}
 	var reach func(k cellKey, src int)
 	reach = func(k cellKey, src int) {
-		if seen[k] {
+		if reached[k] {
 			return
 		}
-		seen[k] = true
+		reached[k] = true
 		out[t.atOf(k)] = src
-		queue = append(queue, item{k, src})
+		push(k, src)
 		if a, ok := t.arrays[k]; ok {
 			for r := a.rg.R1; r <= a.rg.R2; r++ {
 				for c := a.rg.C1; c <= a.rg.C2; c++ {
@@ -203,14 +214,11 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 		for r := rg.R1; r <= rg.R2; r++ {
 			for c := rg.C1; c <= rg.C2; c++ {
 				k := keyOf(s.Sheet, r, c)
-				if _, ok := t.at[k]; ok {
+				if _, ok := t.at[k]; ok && !s.Readers {
 					reach(k, i) // a formula changed: what it computes follows
 					continue
 				}
-				if !seen[k] {
-					seen[k] = true
-					queue = append(queue, item{k, i})
-				}
+				push(k, i)
 			}
 		}
 	}

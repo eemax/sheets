@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eemax/sheets/internal/diff"
 	"github.com/eemax/sheets/internal/formula"
 	"github.com/eemax/sheets/internal/grid"
 	"github.com/eemax/sheets/internal/xlsx"
@@ -59,10 +60,10 @@ func TestBrokenRow(t *testing.T) {
 	}
 	s.Set(3, 3, grid.Cell{Formula: "A3*B2"})
 	old := func(r int) string {
-		k, _ := formula.Pattern(fmt.Sprintf("A%d*B%d", r, r), r, 3)
+		k, _ := formula.Pattern(folded(fmt.Sprintf("a%d*B%d", r, r)), r, 3)
 		return k
 	}
-	now, _ := formula.Pattern("A3*B2", 3, 3)
+	now, _ := formula.Pattern(folded("A3*B2"), 3, 3)
 	if got := brokenRow(s, 3, 3, old(3), now); !strings.Contains(got, "unlike the rows around it, which compute =A{r}*B{r}") {
 		t.Errorf("one row broken: %q", got)
 	}
@@ -74,9 +75,24 @@ func TestBrokenRow(t *testing.T) {
 	for r := 2; r <= 4; r++ {
 		t2.Set(r, 3, grid.Cell{Formula: fmt.Sprintf("A%d+B%d", r, r)})
 	}
-	now2, _ := formula.Pattern("A3+B3", 3, 3)
+	now2, _ := formula.Pattern(folded("A3+B3"), 3, 3)
 	if got := brokenRow(t2, 3, 3, old(3), now2); got != "" {
 		t.Errorf("a column changed alike: %q", got)
+	}
+}
+
+func TestFolded(t *testing.T) {
+	if got := folded(`maxifs(a1:a2,'my sheet'!b1,"<>Mid")`); got != `MAXIFS(A1:A2,'MY SHEET'!B1,"<>Mid")` {
+		t.Errorf("folded %s", got)
+	}
+}
+
+func TestPairReplaced(t *testing.T) {
+	p := func(o, n int) diff.Pair { return diff.Pair{Old: o, New: n} }
+	got := pairReplaced([]diff.Pair{p(1, 1), p(2, 0), p(3, 0), p(0, 2), p(4, 3), p(0, 4), p(5, 5)})
+	want := []diff.Pair{p(1, 1), p(2, 2), p(3, 0), p(4, 3), p(0, 4), p(5, 5)}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("pairs %v", got)
 	}
 }
 
