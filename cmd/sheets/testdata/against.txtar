@@ -2,7 +2,7 @@
 # workbook, and why, whoever wrote either file: the planted cases of the
 # change report. against_before.xlsx is XlsxWriter's, with Excel's results
 # stored: Summary's formulas read Data!B2:B6.
-fixture against_before.xlsx against_openpyxl.xlsx vouched.xlsx
+fixture against_before.xlsx against_openpyxl.xlsx vouched.xlsx against_1904.xlsx
 
 # An input changed: every value it moves is explained, by that input.
 cp against_before.xlsx input.xlsx
@@ -191,6 +191,20 @@ exec sheets set bool3.xlsx Data!B1 6
 exec sheets check bool3.xlsx --against bool1.xlsx
 stdout ': 1 input changed, 0 formulas changed, 1 computed value moved'
 stdout '^  Data!C1 +5 → 6 +input Data!B1$'
+
+# A date is the same date whichever date system its workbook counts from
+# (a Mac's counts from 1904, so 2024-01-31 is another serial): dates compare
+# as dates, and a different date is a change.
+exec sheets set date1900.xlsx Data!A1 2024-01-31 Data!B1 5 Data!C1 '=YEAR(A1)'
+exec sheets check date1900.xlsx --against against_1904.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained,'
+exec sheets check against_1904.xlsx --against date1900.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained,'
+exec sheets set date1900.xlsx Data!A1 2024-02-01
+exec sheets check date1900.xlsx --against against_1904.xlsx
+stdout ': 1 input changed, '
+stdout '^  Data!A1  input  2024-01-31 → 2024-02-01$'
+! stdout 'unexplained:'
 
 # A row inserted above a defined name's cell: Excel rewrites the name to
 # follow it, which is not a name changed. What reads the name is explained

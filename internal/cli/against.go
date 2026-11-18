@@ -124,10 +124,17 @@ func cellAt(sheet string, row, col int) string {
 // valueOf is a cell's value as a reader sees it, and whether sheets knows
 // it.
 type valueOf struct {
-	text  string
-	cell  grid.Cell
+	text string
+	cell grid.Cell
+	// num is a number as the 1900 date system counts it: a date in a 1904
+	// workbook is 1,462 days earlier by its serial, which says nothing of
+	// the date.
+	num   float64
 	known bool
 }
+
+// epochDays are the days between the 1900 and the 1904 date systems.
+const epochDays = 1462
 
 // value reads a cell's value, computing a formula's when the file holds
 // none.
@@ -139,7 +146,11 @@ func value(wb *grid.Workbook, s *grid.Sheet, row, col int) valueOf {
 	if c.Pending {
 		return valueOf{text: "?"}
 	}
-	return valueOf{text: valueText(wb, c), cell: *c, known: true}
+	v := valueOf{text: valueText(wb, c), cell: *c, num: c.Num, known: true}
+	if f := wb.FormatOf(c); c.Kind == grid.Number && wb.Date1904 && (f.Kind == grid.Date || f.Kind == grid.DateTime) {
+		v.num += epochDays
+	}
+	return v
 }
 
 func valueText(wb *grid.Workbook, c *grid.Cell) string {
@@ -162,7 +173,7 @@ func sameValues(a, b valueOf) bool {
 	}
 	switch x.Kind {
 	case grid.Number:
-		return math.Abs(x.Num-y.Num) <= 1e-9*math.Max(1, math.Max(math.Abs(x.Num), math.Abs(y.Num)))
+		return math.Abs(a.num-b.num) <= 1e-9*math.Max(1, math.Max(math.Abs(a.num), math.Abs(b.num)))
 	case grid.Text, grid.Error:
 		return x.Text == y.Text
 	case grid.Bool:
@@ -677,7 +688,7 @@ func (r *report) compare() {
 			B.wb.Sheets[0].Name = A.wb.Sheets[0].Name
 		}
 	}
-	al := diff.Align(A.wb, B.wb, diff.Options{Moves: true, LostRefs: true})
+	al := diff.Align(A.wb, B.wb, diff.Options{Moves: true, LostRefs: true, Dates: true})
 	r.renamed = map[string]string{}
 	r.formulaSrc = map[xlsx.At]string{}
 	var tr *xlsx.Tracer

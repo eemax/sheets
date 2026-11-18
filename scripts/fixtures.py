@@ -591,3 +591,14 @@ cs.close()
 wb = openpyxl.load_workbook(f"{out}/against_chartsheet.xlsx")
 del wb["Chart1"]
 wb.save(f"{out}/against_chartsheet_deleted.xlsx")
+
+# against_1904.xlsx: a workbook counting dates from 1904 (a Mac's), with a
+# date typed in and a formula reading it, as XlsxWriter stores them: the
+# date 2024-01-31 is the serial 43860 here, 45322 in a workbook counting from
+# 1900. check --against against a file that counts from 1900 compares dates.
+d1904 = xlsxwriter.Workbook(f"{out}/against_1904.xlsx", {"date_1904": True})
+d1904_data = d1904.add_worksheet("Data")
+d1904_data.write_datetime("A1", datetime.datetime(2024, 1, 31), d1904.add_format({"num_format": "yyyy-mm-dd"}))
+d1904_data.write("B1", 5)
+d1904_data.write_formula("C1", "=YEAR(A1)", None, 2024)
+d1904.close()

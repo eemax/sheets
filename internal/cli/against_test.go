@@ -83,6 +83,35 @@ func TestLostChartsheet(t *testing.T) {
 	}
 }
 
+// TestSameValuesDates checks that dates compare as dates, whichever date
+// system each workbook counts from (1904 is 1,462 days behind 1900), and
+// that plain numbers do not move with it.
+func TestSameValuesDates(t *testing.T) {
+	mk := func(date1904 bool, serial float64, style uint16) valueOf {
+		wb := &grid.Workbook{Date1904: date1904, Formats: []grid.Format{{}, {Kind: grid.Date}}}
+		s := grid.NewSheet("S")
+		s.Set(1, 1, grid.Cell{Kind: grid.Number, Num: serial, Fmt: style})
+		wb.Sheets = append(wb.Sheets, s)
+		return value(wb, s, 1, 1)
+	}
+	for _, c := range []struct {
+		name string
+		a, b valueOf
+		same bool
+	}{
+		{"the same date", mk(true, 43860, 1), mk(false, 45322, 1), true},
+		{"the same date, the other way", mk(false, 45322, 1), mk(true, 43860, 1), true},
+		{"a serial kept, another date", mk(true, 43860, 1), mk(false, 43860, 1), false},
+		{"one system", mk(false, 45322, 1), mk(false, 45322, 1), true},
+		{"numbers", mk(true, 43860, 0), mk(false, 43860, 0), true},
+		{"numbers, 1,462 apart", mk(true, 43860, 0), mk(false, 45322, 0), false},
+	} {
+		if got := sameValues(c.a, c.b); got != c.same {
+			t.Errorf("%s: %v, want %v", c.name, got, c.same)
+		}
+	}
+}
+
 func TestBrokenRow(t *testing.T) {
 	s := grid.NewSheet("S")
 	for r := 2; r <= 5; r++ {

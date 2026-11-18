@@ -89,6 +89,11 @@ type Options struct {
 	// same column or row, not one removed and another added. sheets diff
 	// leaves it off; check --against turns it on.
 	LostRefs bool
+	// Dates pairs dates by the date they are, whatever date system each
+	// workbook uses (a Mac workbook counts from 1904, the rest from 1900):
+	// rows holding the same dates are the same rows. sheets diff leaves it
+	// off; check --against turns it on.
+	Dates bool
 }
 
 // Moved is a run of rows that moved together: old rows From to
@@ -138,7 +143,7 @@ func Align(a, b *grid.Workbook, opts Options) Alignment {
 			al.Sheets = append(al.Sheets, SheetPair{New: sb})
 			continue
 		}
-		sl := alignSheet(side{a, sa}, side{b, sb}, opts)
+		sl := alignSheet(side{wb: a, s: sa}, side{wb: b, s: sb}, opts)
 		p := SheetPair{Old: sa, New: sb}
 		for _, st := range sl.cols {
 			p.Cols = append(p.Cols, Pair{st.a + 1, st.b + 1})
@@ -365,7 +370,13 @@ func names(a, b *grid.Workbook) []NameChange {
 type side struct {
 	wb *grid.Workbook
 	s  *grid.Sheet
+	// epoch counts the dates of a 1904 workbook as the 1900 system does,
+	// for alignment.
+	epoch bool
 }
+
+// epochDays are the days between the 1900 and the 1904 date systems.
+const epochDays = 1462
 
 // key describes a cell for alignment: constants by value, formulas by their
 // pattern relative to the cell (so a formula moved with its row matches).
@@ -377,6 +388,13 @@ func (x side) key(row, col int) string {
 	if c.Formula != "" {
 		k, _ := formula.Pattern(c.Formula, row, col)
 		return "=" + k
+	}
+	if x.epoch && c.Kind == grid.Number {
+		if f := x.wb.FormatOf(c); f.Kind == grid.Date || f.Kind == grid.DateTime {
+			shifted := *c
+			shifted.Num += epochDays
+			c = &shifted
+		}
 	}
 	return strconv.Itoa(int(c.Kind)) + ":" + grid.Display(c, grid.Format{}, false)
 }
@@ -426,7 +444,7 @@ func rowOverlap(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.S
 		}
 		return m
 	}
-	ma, mb := rows(side{wa, sa}, ua), rows(side{wb, sb}, ub)
+	ma, mb := rows(side{wb: wa, s: sa}, ua), rows(side{wb: wb, s: sb}, ub)
 	common, na, nb := 0, 0, 0
 	for h, n := range ma {
 		common += min(n, mb[h])
@@ -453,6 +471,7 @@ type sheetAlign struct {
 // alignSheet aligns a sheet's columns, then its rows over the columns
 // both have.
 func alignSheet(A, B side, opts Options) sheetAlign {
+	A.epoch, B.epoch = opts.Dates && A.wb.Date1904, opts.Dates && B.wb.Date1904
 	ua, ub := A.s.Used(), B.s.Used()
 	ra, rb := max(ua.R2, 0), max(ub.R2, 0)
 	ca, cb := max(ua.C2, 0), max(ub.C2, 0)
@@ -526,7 +545,7 @@ func matched(colSteps []step) [][2]int {
 
 func sheet(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.Sheet, opts Options) Sheet {
 	d := Sheet{Name: sb.Name}
-	A, B := side{wa, sa}, side{wb, sb}
+	A, B := side{wb: wa, s: sa}, side{wb: wb, s: sb}
 	ua, ub := sa.Used(), sb.Used()
 	ca, cb := max(ua.C2, 0), max(ub.C2, 0)
 	al := alignSheet(A, B, opts)
