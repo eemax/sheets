@@ -32,7 +32,8 @@ import (
 // SHEETS_CHECK_CORPUS_EXCEL names a folder holding the same workbooks as
 // Excel saved them, under the same paths (the corpus being, say, their
 // openpyxl round trips): each result the fix stores is compared with the
-// one Excel stored.
+// one Excel stored, but for volatile formulas (TODAY, NOW, RAND), whose
+// result Excel stored on the day it saved.
 // SHEETS_STREAM=never runs the fixes through the full editor.
 func TestCheckCorpus(t *testing.T) {
 	dir := os.Getenv("SHEETS_CHECK_CORPUS")
@@ -41,7 +42,7 @@ func TestCheckCorpus(t *testing.T) {
 	}
 	soffice := os.Getenv("SHEETS_CHECK_CORPUS_SOFFICE")
 	excelDir := os.Getenv("SHEETS_CHECK_CORPUS_EXCEL")
-	var asExcel, unlikeExcel, notInExcel int
+	var asExcel, unlikeExcel, notInExcel, volatileExcel int
 	var unlike []string
 	unlikeBy, unlikeEx := map[string]int{}, map[string]string{}
 	out := os.Getenv("SHEETS_CHECK_CORPUS_OUT")
@@ -146,6 +147,8 @@ func TestCheckCorpus(t *testing.T) {
 						switch {
 						case e.Formula == "" || e.Pending:
 							notInExcel++
+						case formula.DepsOf(e.Formula).Volatile:
+							volatileExcel++
 						case agreesCell(c.After, valueOnly(e)):
 							asExcel++
 						default:
@@ -197,7 +200,7 @@ func TestCheckCorpus(t *testing.T) {
 		failedOpen, loFailed, soffice != "", vouchedChanged, otherChanged, secondChanged, badOrder)
 	t.Logf("slowest: %s, %s", slowFile, slowest.Round(time.Millisecond))
 	if excelDir != "" {
-		t.Logf("results stored, against Excel's: %d the same, %d different, %d Excel did not store", asExcel, unlikeExcel, notInExcel)
+		t.Logf("results stored, against Excel's: %d the same, %d different, %d Excel did not store, %d volatile (not compared)", asExcel, unlikeExcel, notInExcel, volatileExcel)
 		keys := make([]string, 0, len(unlikeBy))
 		for k := range unlikeBy {
 			keys = append(keys, k)
