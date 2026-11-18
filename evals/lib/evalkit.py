@@ -93,7 +93,7 @@ def lo_values(path, ref):
     """Rows of computed values of a range, as {row: [values...]} and the
     column letters, the way `values` gives them, but computed by LibreOffice
     on a copy of the file instead of by sheets. REF is `Sheet!A1:C5`,
-    `'My sheet'!B2` or a sheet name alone (its used range). Numbers come
+    `'My sheet'!B2` or a sheet name alone (its used range, trimmed). Numbers come
     back as numbers, dates as datetimes, text as text, errors as their text
     (`#DIV/0!`) and empty cells as None. Use this where a check must not
     depend on the tool under test."""
@@ -102,7 +102,14 @@ def lo_values(path, ref):
         sheet, rng = rng, ""
     sheet = sheet[1:-1].replace("''", "'") if sheet[:1] == "'" else sheet
     ws = _lo_recalculated(path)[sheet]
-    cells = ws[rng] if rng else ws[ws.dimensions]
+    if rng:
+        cells = ws[rng]
+    else:  # the used range, less the empty rows and columns a validation or a format leaves at its end
+        cells = ws[ws.dimensions]
+        filled = [c for row in cells for c in row if c.value is not None]
+        if filled:
+            last_row, last_col = max(c.row for c in filled), max(c.column for c in filled)
+            cells = tuple(tuple(c for c in row if c.column <= last_col) for row in cells if row[0].row <= last_row)
     if not isinstance(cells, tuple):  # one cell
         cells = ((cells,),)
     rows = {r[0].row: [c.value for c in r] for r in cells}
