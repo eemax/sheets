@@ -242,18 +242,74 @@ func Shrink(pool []Workbook, f Finding, dir string) (Finding, error) {
 		return f, fmt.Errorf("workbook %s not in the pool", f.Workbook)
 	}
 	edits := f.Edits
-	for i := len(edits) - 2; i >= 0; i-- {
-		try := append(append([]Edit{}, edits[:i]...), edits[i+1:]...)
+	same := func(try []Edit) (bool, error) {
 		g, err := replayEdits(wb, try, dir)
 		if err != nil {
-			return f, err
+			return false, err
 		}
 		if g != nil && g.edit == len(try)-1 && try[g.edit].Class == f.Class && g.invariant == f.Invariant {
-			edits, f.Detail = try, g.detail
+			f.Detail = g.detail
+			return true, nil
+		}
+		return false, nil
+	}
+	for i := len(edits) - 2; i >= 0; i-- {
+		try := append(append([]Edit{}, edits[:i]...), edits[i+1:]...)
+		if ok, err := same(try); err != nil {
+			return f, err
+		} else if ok {
+			edits = try
+		}
+	}
+	// Then the lines of batches and scripts.
+	for i := range edits {
+		for j := len(lines(edits[i])) - 1; j >= 0; j-- {
+			e, ok := withoutLine(edits[i], j)
+			if !ok {
+				continue
+			}
+			try := append([]Edit{}, edits...)
+			try[i] = e
+			if ok, err := same(try); err != nil {
+				return f, err
+			} else if ok {
+				edits = try
+			}
 		}
 	}
 	f.Edits = edits
 	return f, nil
+}
+
+// lines are the commands of a do batch, or the statements of a script
+// after its first (which names the sheet).
+func lines(e Edit) []string {
+	switch e.Class {
+	case "do":
+		return strings.Split(strings.TrimSuffix(e.Stdin, "\n"), "\n")
+	case "script":
+		return strings.Split(strings.TrimSuffix(e.Args[len(e.Args)-1], "\n"), "\n")[1:]
+	}
+	return nil
+}
+
+// withoutLine is a batch or script without one of its lines; false when it
+// would have none left.
+func withoutLine(e Edit, j int) (Edit, bool) {
+	ls := lines(e)
+	if len(ls) < 2 {
+		return e, false
+	}
+	rest := strings.Join(append(append([]string{}, ls[:j]...), ls[j+1:]...), "\n") + "\n"
+	switch e.Class {
+	case "do":
+		e.Stdin = rest
+	case "script":
+		code := e.Args[len(e.Args)-1]
+		head := code[:strings.IndexByte(code, '\n')+1]
+		e.Args = append(append([]string{}, e.Args[:len(e.Args)-1]...), head+rest)
+	}
+	return e, true
 }
 
 type broke struct {
