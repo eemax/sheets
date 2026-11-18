@@ -107,7 +107,9 @@ type SheetPair struct {
 	Old, New *grid.Sheet
 	// Rows and Cols pair line numbers of the old sheet with the new one's
 	// (1-based); 0 on one side is a line only the other side has (added,
-	// or removed). Rows that moved come last, out of order.
+	// or removed). Rows paired out of the others' order come last: those
+	// that moved, and those rows added or removed put where they are while
+	// others moved.
 	Rows, Cols []Pair
 	// Moved are the rows that moved (with Options.Moves), as runs.
 	Moved []Moved
@@ -139,7 +141,7 @@ func Align(a, b *grid.Workbook, opts Options) Alignment {
 		for _, st := range sl.rows {
 			p.Rows = append(p.Rows, Pair{st.a + 1, st.b + 1})
 		}
-		for _, m := range sl.moved {
+		for _, m := range append(append([][2]int{}, sl.placed...), sl.moved...) {
 			p.Rows = append(p.Rows, Pair{m[0] + 1, m[1] + 1})
 		}
 		p.Moved = movedRuns(sl.moved)
@@ -409,8 +411,8 @@ func rowOverlap(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.S
 // sheetAlign is how a sheet's columns and rows pair up: steps in order,
 // and the rows that moved (old and new index, 0-based).
 type sheetAlign struct {
-	cols, rows []step
-	moved      [][2]int
+	cols, rows    []step
+	moved, placed [][2]int
 }
 
 // alignSheet aligns a sheet's columns, then its rows over the columns
@@ -464,16 +466,16 @@ func alignSheet(A, B side, opts Options) sheetAlign {
 		return used > 0 && same*2 >= used
 	}
 	matches := align(sa1, sb1)
-	var moved [][2]int
+	var moved, placed [][2]int
 	var skipA, skipB map[int]bool
 	if opts.Moves {
-		matches, moved = findMoves(sa1, sb1, matches, blankA, blankB)
+		matches, moved, placed = findMoves(sa1, sb1, fillGaps(sa1, sb1, matches), blankA, blankB)
 		skipA, skipB = map[int]bool{}, map[int]bool{}
-		for _, m := range moved {
+		for _, m := range append(append([][2]int{}, moved...), placed...) {
 			skipA[m[0]], skipB[m[1]] = true, true
 		}
 	}
-	return sheetAlign{cols: colSteps, rows: pairUpSkipping(ra, rb, matches, similar, skipA, skipB), moved: moved}
+	return sheetAlign{cols: colSteps, rows: pairUpSkipping(ra, rb, matches, similar, skipA, skipB), moved: moved, placed: placed}
 }
 
 // matched are the column pairs in both versions, 1-based.
@@ -558,9 +560,9 @@ func sheet(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.Sheet,
 	for _, c := range cols {
 		flushRun(c)
 	}
-	// Rows that moved: their cells against where they were (number
-	// formats aside).
-	for _, m := range al.moved {
+	// Rows that moved, or were paired apart from the others: their cells
+	// against where they were (number formats aside).
+	for _, m := range append(append([][2]int{}, al.placed...), al.moved...) {
 		for _, p := range pairs {
 			if ch, _, _, changed := compare(A, m[0]+1, p[0], B, m[1]+1, p[1]); changed {
 				if opts.MaxCells > 0 && listed >= opts.MaxCells {

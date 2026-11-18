@@ -67,7 +67,11 @@ reads give computed values, and it saves once, as one undo step.
    script left out and adds the prefix Excel needs to newer functions
    (`#NAME?` in Excel otherwise).
 3. `sheets diff book.xlsx` shows what the last command changed, and
-   `sheets undo book.xlsx` takes it back.
+   `sheets undo book.xlsx` takes it back. For a whole change, whoever
+   made it (a script among them), keep a copy first and run
+   `sheets check book.xlsx --against before.xlsx`: each moved value with
+   its cause, and it fails on values that moved with no cause and on
+   charts, validations or shapes lost.
 4. After formatting a sheet or adding a chart, look at it:
    `sheets render book.xlsx Sales` writes a PNG.
 

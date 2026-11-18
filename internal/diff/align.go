@@ -207,8 +207,9 @@ func pairUpSkipping(na, nb int, matches [][2]int, similar func(i, j int) bool, s
 // findMoves pairs the lines an alignment left unmatched that are the same
 // on both sides (a row a sort took elsewhere), blank lines aside. Of all
 // the pairs, those keeping their order stay matches; the rest moved, and
-// so did those whose number changed among them.
-func findMoves(a, b []uint64, matches [][2]int, blankA, blankB []bool) (inOrder, moved [][2]int) {
+// so did those whose number changed among them, but for those that rows
+// added or removed shifted (placed: paired, in their place).
+func findMoves(a, b []uint64, matches [][2]int, blankA, blankB []bool) (inOrder, moved, placed [][2]int) {
 	inA, inB := make([]bool, len(a)), make([]bool, len(b))
 	for _, m := range matches {
 		inA[m[0]], inB[m[1]] = true, true
@@ -230,7 +231,7 @@ func findMoves(a, b []uint64, matches [][2]int, blankA, blankB []bool) (inOrder,
 		}
 	}
 	if len(all) == len(matches) {
-		return matches, nil
+		return matches, nil, nil
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i][0] < all[j][0] })
 	inOrder = longestIncreasing(all)
@@ -245,17 +246,109 @@ func findMoves(a, b []uint64, matches [][2]int, blankA, blankB []bool) (inOrder,
 			lo, hi = minOr(lo, min(p[0], p[1])), max(hi, p[0], p[1])
 		}
 	}
+	if moved == nil {
+		return inOrder, nil, nil
+	}
 	// Within the rows a sort spans, every row whose number changed moved,
-	// though its order among the others held.
+	// though its order among the others held: its offset is not that of
+	// the rows kept in order around the span (rows added or removed above
+	// shift those).
+	before, after := 0, 0
+	seenAfter := false
+	for _, p := range inOrder {
+		switch {
+		case p[0] < lo && p[1] < lo:
+			before = p[1] - p[0]
+		case (p[0] > hi || p[1] > hi) && !seenAfter:
+			after, seenAfter = p[1]-p[0], true
+		}
+	}
+	// Lines added above the span, less those removed.
+	pairedA, pairedB := make([]bool, len(a)), make([]bool, len(b))
+	for _, p := range all {
+		pairedA[p[0]], pairedB[p[1]] = true, true
+	}
+	shift := 0
+	for j := 0; j < lo && j < len(b); j++ {
+		if !pairedB[j] {
+			shift++
+		}
+	}
+	for i := 0; i < lo && i < len(a); i++ {
+		if !pairedA[i] {
+			shift--
+		}
+	}
+	base := map[int]bool{before: true, after: true, shift: true}
+	// Out of the others' order but where rows added or removed put it: in
+	// its place, so not moved (though paired apart from the rest).
+	var out [][2]int
+	for _, p := range moved {
+		if base[p[1]-p[0]] {
+			placed = append(placed, p)
+		} else {
+			out = append(out, p)
+		}
+	}
+	moved = out
 	var stay [][2]int
 	for _, p := range inOrder {
-		if moved != nil && p[0] != p[1] && p[0] >= lo && p[0] <= hi && p[1] >= lo && p[1] <= hi {
+		if p[0] >= lo && p[0] <= hi && p[1] >= lo && p[1] <= hi && !base[p[1]-p[0]] {
 			moved = append(moved, p)
 			continue
 		}
 		stay = append(stay, p)
 	}
-	return stay, moved
+	return stay, moved, placed
+}
+
+// lookAhead bounds how far fillGaps looks for a line's match.
+const lookAhead = 64
+
+// fillGaps matches, in order, the lines an alignment left unmatched
+// between its matches that are the same on both sides, looking a few lines
+// ahead past lines added, removed or changed. Patience diff anchors only on
+// lines unique in both versions, so rows that repeat (and gaps too large to
+// align line by line) are left to it; without it, move detection would pair
+// repeated rows far apart.
+func fillGaps(a, b []uint64, matches [][2]int) [][2]int {
+	var out [][2]int
+	pi, pj := 0, 0
+	gap := func(i2, j2 int) {
+		i, j := pi, pj
+		for i < i2 && j < j2 {
+			if a[i] == b[j] {
+				out = append(out, [2]int{i, j})
+				i++
+				j++
+				continue
+			}
+			found := false
+			for k := 1; k <= lookAhead; k++ {
+				if j+k < j2 && a[i] == b[j+k] {
+					j += k // lines added
+					found = true
+					break
+				}
+				if i+k < i2 && a[i+k] == b[j] {
+					i += k // lines removed
+					found = true
+					break
+				}
+			}
+			if !found {
+				i++ // a line changed
+				j++
+			}
+		}
+	}
+	for _, m := range matches {
+		gap(m[0], m[1])
+		out = append(out, m)
+		pi, pj = m[0]+1, m[1]+1
+	}
+	gap(len(a), len(b))
+	return out
 }
 
 func minOr(a, b int) int {

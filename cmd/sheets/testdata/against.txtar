@@ -1,0 +1,186 @@
+# check --against reports what changed since an earlier version of a
+# workbook, and why, whoever wrote either file: the planted cases of the
+# change report. against_before.xlsx is XlsxWriter's, with Excel's results
+# stored: Summary's formulas read Data!B2:B6.
+fixture against_before.xlsx against_openpyxl.xlsx vouched.xlsx
+
+# An input changed: every value it moves is explained, by that input.
+cp against_before.xlsx input.xlsx
+exec sheets set input.xlsx Data!B3 10
+exec sheets check input.xlsx --against against_before.xlsx
+cmp stdout input.out
+
+# openpyxl's round trip, Data!B2 changed: the moved values are explained,
+# but the chart grouped with a text box, the text box and the list
+# validation in Excel 2010's extension list are lost, and every stored
+# result with them: exit 1.
+! exec sheets check against_openpyxl.xlsx --against against_before.xlsx
+cmp stdout openpyxl.out
+! exec sheets --json check against_openpyxl.xlsx --against against_before.xlsx
+stdout '"features_lost":\[\{"kind":"validation","where":"Data!A2:A6","what":"list validation"\},\{"kind":"chart","where":"Data!F2","what":"column chart"\},\{"kind":"shape","where":"Data!F2","what":"TextBox 2"\}\]'
+stdout '\{"cell":"Summary!B3","before":"630","after":"660","cause":"input Data!B2","note":"computed by sheets: the file stores no result"\}'
+stdout '"rule":"missing-result","severity":"error"'
+stdout '"unexplained":\[\],'
+stdout '"summary":\{"inputs_changed":1,"formulas_changed":0,"flagged":0,"moved":8,"unexplained":0,"features_lost":3,"unknown":0,"moved_rows":0\}'
+
+# One row's formula broken: flagged, as unlike the rows around it; what it
+# moves is explained by it.
+cp against_before.xlsx broken.xlsx
+exec sheets set broken.xlsx Data!D4 '=B4*C3'
+exec sheets check broken.xlsx --against against_before.xlsx
+cmp stdout broken.out
+
+# A formula made a value: flagged too.
+cp against_before.xlsx typed.xlsx
+exec sheets set typed.xlsx Data!D5 90
+exec sheets check typed.xlsx --against against_before.xlsx
+stdout '^  Data!D5  =B5\*C5 → 90  \(a value where the rows around it compute =B\{r\}\*C\{r\}\)$'
+stdout '^check of typed.xlsx: 0 errors, 1 warning, 0 notes$'
+
+# A sort: moved rows, not changes. A formula reading a sorted row by its
+# place moves, the sort its cause.
+cp against_before.xlsx sorted.xlsx
+exec sheets sort sorted.xlsx Data!A1:D6 Units
+exec sheets check sorted.xlsx --against against_before.xlsx
+cmp stdout sorted.out
+exec sheets --json check sorted.xlsx --against against_before.xlsx
+stdout '"moved_rows":\[\{"sheet":"Data","from":4,"to":2,"rows":1\},'
+stdout '"changed":\[\],'
+
+# Rows added and removed: totals Excel rewrites to take them in are not
+# changes; what they move is explained by the rows.
+cp against_before.xlsx rows.xlsx
+exec sheets rows insert rows.xlsx Data!4
+exec sheets set rows.xlsx Data!A4 Extra Data!B4 10 Data!C4 5 Data!D4 '=B4*C4'
+exec sheets rows delete rows.xlsx Data!3
+exec sheets check rows.xlsx --against against_before.xlsx
+cmp stdout rows.out
+
+# A value that moved with nothing upstream changed: Excel stored 999 for
+# =B2*2, which sheets computes as 10 once the formula is entered again.
+cp vouched.xlsx again.xlsx
+exec sheets set again.xlsx Data!C3 '=B2*2'
+! exec sheets check again.xlsx --against vouched.xlsx
+stdout '^again.xlsx against vouched.xlsx: 0 inputs changed, 0 formulas changed, 0 computed values moved, 1 unexplained, 0 features lost, 0 unknown$'
+stdout '^  Data!C3  999 → 10$'
+
+# A value whose cause sheets cannot trace is unknown, not unexplained:
+# INDIRECT names what it reads in text, and what reads it follows.
+exec sheets set vol.xlsx Data!A1 5 Data!B1 '=INDIRECT("A1")*2' Data!C1 '=B1+1'
+cp vol.xlsx vol2.xlsx
+exec sheets set vol2.xlsx Data!A1 7
+exec sheets check --fix vol2.xlsx
+exec sheets check vol2.xlsx --against vol.xlsx
+cmp stdout unknown.out
+
+# CSV files: values only, and rows moved.
+exec sheets check after.csv --against before.csv
+cmp stdout csv.out
+
+# Nothing changed.
+exec sheets check against_before.xlsx --against against_before.xlsx
+stdout '^against_before.xlsx against against_before.xlsx: 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown$'
+
+! exec sheets check --fix input.xlsx --against against_before.xlsx
+stderr 'run sheets check --fix on its own'
+
+-- before.csv --
+Name,Score
+Ada,92
+Bob,47
+Cy,75
+Di,60
+-- after.csv --
+Name,Score
+Bob,47
+Ada,92
+Cy,80
+Di,60
+-- input.out --
+input.xlsx against against_before.xlsx: 1 input changed, 0 formulas changed, 8 computed values moved (each with its cause), 0 unexplained, 0 features lost, 0 unknown
+changed:
+  Data!B3  input  7 → 10
+moved, each with its cause:
+  Data!D3     140 → 200      input Data!B3
+  Data!B7     28 → 31        input Data!B3
+  Data!D7     630 → 690      input Data!B3
+  Summary!B2  28 → 31        input Data!B3
+  Summary!B3  630 → 690      input Data!B3
+  Summary!B4  157.5 → 172.5  input Data!B3
+  Summary!B5  472.5 → 517.5  input Data!B3
+  Summary!B6  9 → 10         input Data!B3
+check of input.xlsx: no problems found
+-- openpyxl.out --
+against_openpyxl.xlsx against against_before.xlsx: 1 input changed, 0 formulas changed, 8 computed values moved (each with its cause), 0 unexplained, 3 features lost, 0 unknown
+features lost:
+  validation  Data!A2:A6  list validation
+  chart       Data!F2     column chart
+  shape       Data!F2     TextBox 2
+changed:
+  Data!B2  input  5 → 6
+moved, each with its cause:
+  Data!D2     150 → 180    input Data!B2
+  Data!B7     28 → 29      input Data!B2
+  Data!D7     630 → 660    input Data!B2
+  Summary!B2  28 → 29      input Data!B2
+  Summary!B3  630 → 660    input Data!B2
+  Summary!B4  157.5 → 165  input Data!B2
+  Summary!B5  472.5 → 495  input Data!B2
+  Summary!B7  5 → 6        input Data!B2
+check of against_openpyxl.xlsx: 2 errors, 0 warnings, 0 notes
+error  Data!D2, D3, D4, D5, D6, B7, D7  7 formulas have no stored result, so pandas, openpyxl and previews read blanks; sheets computes them (D2 = 180): sheets check --fix stores them
+error  Summary!B2, B3, B4, B5, B6, B7   6 formulas have no stored result, so pandas, openpyxl and previews read blanks; sheets computes them (B2 = 29): sheets check --fix stores them
+-- broken.out --
+broken.xlsx against against_before.xlsx: 0 inputs changed, 1 formula changed, 4 computed values moved (each with its cause), 0 unexplained, 0 features lost, 0 unknown
+flagged: formula changes unlike the rows around them:
+  Data!D4  =B4*C4 → =B4*C3  (unlike the rows around it, which compute =B{r}*C{r})
+moved, each with its cause:
+  Data!D7     630 → 540    formula Data!D4
+  Summary!B3  630 → 540    formula Data!D4
+  Summary!B4  157.5 → 135  formula Data!D4
+  Summary!B5  472.5 → 405  formula Data!D4
+check of broken.xlsx: 0 errors, 1 warning, 0 notes
+warning  Data!D4  =B4*C3 breaks the column pattern =B{r}*C{r}
+-- sorted.out --
+sorted.xlsx against against_before.xlsx: 0 inputs changed, 0 formulas changed, 1 computed value moved (each with its cause), 0 unexplained, 0 features lost, 0 unknown, 5 rows moved
+moved, each with its cause:
+  Summary!B7  5 → 3  rows moved: Data!2 (were Data!4)
+rows moved (as by a sort; not changes):
+  Data!2, were 4
+  Data!3, were 6
+  Data!4:5, were 2:3
+  Data!6, were 5
+check of sorted.xlsx: 0 errors, 1 warning, 0 notes
+warning  Summary!B7  labelled "North units" but reads Data!B2, the "East" line; the North units line is Data!B4
+-- rows.out --
+rows.xlsx against against_before.xlsx: 0 inputs changed, 0 formulas changed, 7 computed values moved (each with its cause), 0 unexplained, 0 features lost, 0 unknown
+moved, each with its cause:
+  Data!B7     28 → 31      rows removed: Data!3 in against_before.xlsx
+  Data!D7     630 → 540    rows removed: Data!3 in against_before.xlsx
+  Summary!B2  28 → 31      rows removed: Data!3 in against_before.xlsx
+  Summary!B3  630 → 540    rows removed: Data!3 in against_before.xlsx
+  Summary!B4  157.5 → 135  rows removed: Data!3 in against_before.xlsx
+  Summary!B5  472.5 → 405  rows removed: Data!3 in against_before.xlsx
+  Summary!B6  9 → 10       rows removed: Data!3 in against_before.xlsx
+structure:
+  row added: Data!3
+  row removed: Data!3 in against_before.xlsx
+check of rows.xlsx: no problems found
+-- unknown.out --
+vol2.xlsx against vol.xlsx: 1 input changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 2 unknown
+changed:
+  Data!A1  input  5 → 7
+unknown: values sheets cannot compare:
+  Data!B1  10 → 14  moved, and sheets cannot tell why: it calls INDIRECT, whose result can change while what it names does not
+  Data!C1  11 → 15  moved, and sheets cannot tell why: it reads Data!B1, whose reads sheets cannot follow (it calls INDIRECT, whose result can change while what it names does not)
+check of vol2.xlsx: 0 errors, 0 warnings, 1 note
+note  Data!B1  1 formula use INDIRECT, which recalculate on every change
+-- csv.out --
+after.csv against before.csv: 1 value changed, 2 rows moved
+a CSV file holds values only: formulas, causes and features are not compared
+changed:
+  after!B4  value  75 → 80
+rows moved (as by a sort; not changes):
+  after!2, were 3
+  after!3, were 2
+check of after.csv: no problems found

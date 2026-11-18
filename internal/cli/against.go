@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"sort"
@@ -169,10 +170,23 @@ func sameValues(a, b valueOf) bool {
 	return true
 }
 
-// arrayAnchor gives the cell of the array formula whose result holds a
-// cell, when that is another cell.
-func arrayAnchor(s *grid.Sheet, row, col int) (int, int, bool) {
-	for _, rg := range append(append([]grid.Range{}, s.Spills...), s.Arrays...) {
+// arrays finds the array formulas whose results hold cells, sheet by
+// sheet.
+type arrays map[*grid.Sheet][]grid.Range
+
+// anchor gives the cell of the array formula whose result holds a cell,
+// when that is another cell.
+func (x arrays) anchor(s *grid.Sheet, row, col int) (int, int, bool) {
+	rgs, ok := x[s]
+	if !ok {
+		for _, rg := range append(append([]grid.Range{}, s.Spills...), s.Arrays...) {
+			if rg.Rows()*rg.Cols() > 1 {
+				rgs = append(rgs, rg)
+			}
+		}
+		x[s] = rgs
+	}
+	for _, rg := range rgs {
 		if rg.Contains(row, col) && (rg.R1 != row || rg.C1 != col) {
 			return rg.R1, rg.C1, true
 		}
@@ -189,7 +203,6 @@ type sideOf struct {
 	why    map[string]string // by cellAt, lower-cased
 	stored map[string]string // results sheets computed: by cellAt, lower-cased, a note
 	csv    bool
-	arrays map[*grid.Sheet]bool
 }
 
 func (x *sideOf) unknownWhy(sheet string, row, col int) string {
@@ -199,13 +212,13 @@ func (x *sideOf) unknownWhy(sheet string, row, col int) string {
 	return "the sheets calculator cannot compute it"
 }
 
-// computedCell tells whether a cell holds a computed value: a formula, or
+// computed tells whether a cell holds a computed value: a formula, or
 // part of an array formula's result.
-func computedCell(s *grid.Sheet, row, col int) bool {
+func (x arrays) computed(s *grid.Sheet, row, col int) bool {
 	if c := s.At(row, col); c != nil && c.Formula != "" {
 		return true
 	}
-	_, _, ok := arrayAnchor(s, row, col)
+	_, _, ok := x.anchor(s, row, col)
 	return ok
 }
 
@@ -264,7 +277,7 @@ func (a *app) against(path, before string, res *checkResult, cr *xlsx.CheckResul
 		return nil, err
 	}
 	out.ValuesOnly = A.csv || B.csv
-	r := &report{out: out, A: A, B: B}
+	r := &report{out: out, A: A, B: B, arrays: arrays{}}
 	r.compare()
 	if !out.ValuesOnly {
 		fa, err := xlsx.Features(A.data)
@@ -317,6 +330,7 @@ type report struct {
 	// renames the sheets renamed (old name lower-cased, new name).
 	edits   []lineEdit
 	renames [][2]string
+	arrays  arrays
 }
 
 // lineEdit is the rows and columns added (numbered as now) and removed
@@ -587,10 +601,12 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 		return
 	}
 	here := cellAt(sb.Name, rb, cb)
+	// A CSV file's one sheet is named after the file: the same sheet.
+	renamed := !strings.EqualFold(sa.Name, sb.Name) && !(out.ValuesOnly && len(A.wb.Sheets) == 1 && len(B.wb.Sheets) == 1)
 	was := ""
-	if ra != rb || ca != cb || !strings.EqualFold(sa.Name, sb.Name) {
+	if ra != rb || ca != cb || renamed {
 		was = grid.CellName(ra, ca)
-		if !strings.EqualFold(sa.Name, sb.Name) {
+		if renamed {
 			was = cellAt(sa.Name, ra, ca)
 		}
 	}
@@ -602,7 +618,7 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 		return
 	}
 	fa, fb := !xe && x.Formula != "", !ye && y.Formula != ""
-	ka, kb := computedCell(sa, ra, ca), computedCell(sb, rb, cb)
+	ka, kb := r.arrays.computed(sa, ra, ca), r.arrays.computed(sb, rb, cb)
 	one := grid.Range{R1: rb, C1: cb, R2: rb, C2: cb}
 	switch {
 	case !ka && !kb:
@@ -763,7 +779,7 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	for _, c := range r.candidates {
 		here := cellAt(c.at.Sheet, c.at.Row, c.at.Col)
 		at := c.at
-		if ar, ac, ok := arrayAnchor(r.B.wb.Sheet(at.Sheet), at.Row, at.Col); ok {
+		if ar, ac, ok := r.arrays.anchor(r.B.wb.Sheet(at.Sheet), at.Row, at.Col); ok {
 			at = xlsx.At{Sheet: at.Sheet, Row: ar, Col: ac}
 		}
 		if k, ok := causeOf[c.at]; ok {
@@ -883,17 +899,17 @@ func (a *app) printAgainst(r *againstResult) {
 	head := fmt.Sprintf("%s against %s: ", r.File, r.Against)
 	var parts []string
 	if r.ValuesOnly {
-		parts = append(parts, plural(s.Inputs, "value")+" changed")
+		parts = append(parts, countOf(s.Inputs, "value")+" changed")
 	} else {
-		parts = append(parts, plural(s.Inputs, "input")+" changed", plural(s.Formulas, "formula")+" changed")
-		moved := plural(s.Moved, "computed value") + " moved"
+		parts = append(parts, countOf(s.Inputs, "input")+" changed", countOf(s.Formulas, "formula")+" changed")
+		moved := countOf(s.Moved, "computed value") + " moved"
 		if s.Moved > 0 {
 			moved += " (each with its cause)"
 		}
-		parts = append(parts, moved, fmt.Sprintf("%d unexplained", s.Unexplained), plural(s.FeaturesLost, "feature")+" lost", fmt.Sprintf("%d unknown", s.Unknown))
+		parts = append(parts, moved, grid.FormatNumber(float64(s.Unexplained))+" unexplained", countOf(s.FeaturesLost, "feature")+" lost", grid.FormatNumber(float64(s.Unknown))+" unknown")
 	}
 	if s.MovedRows > 0 {
-		parts = append(parts, plural(s.MovedRows, "row")+" moved")
+		parts = append(parts, countOf(s.MovedRows, "row")+" moved")
 	}
 	a.printf("%s%s\n", head, strings.Join(parts, ", "))
 	if r.ValuesOnly {
@@ -912,17 +928,17 @@ func (a *app) printAgainst(r *againstResult) {
 		return true
 	}
 	if section("unexplained: values that moved with nothing upstream changed", len(r.Unexplained)) {
-		tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
+		tw := a.table()
 		for _, m := range r.Unexplained[:min(len(r.Unexplained), againstListed)] {
-			fmt.Fprintf(tw, "  %s\t%s → %s\t%s\n", withWas(m.Cell, m.Was), orEmpty(m.Before), orEmpty(m.After), m.Note)
+			tw.row("  "+withWas(m.Cell, m.Was), orEmpty(m.Before)+" → "+orEmpty(m.After), m.Note)
 		}
 		tw.Flush()
 		more(len(r.Unexplained))
 	}
 	if section("features lost", len(r.FeaturesLost)) {
-		tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
+		tw := a.table()
 		for _, f := range r.FeaturesLost[:min(len(r.FeaturesLost), againstListed)] {
-			fmt.Fprintf(tw, "  %s\t%s\t%s\n", f.Kind, f.Where, f.What)
+			tw.row("  "+f.Kind, f.Where, f.What)
 		}
 		tw.Flush()
 		more(len(r.FeaturesLost))
@@ -942,25 +958,25 @@ func (a *app) printAgainst(r *againstResult) {
 		more(len(flagged))
 	}
 	if section("changed", len(plain)) {
-		tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
+		tw := a.table()
 		for _, c := range plain[:min(len(plain), againstListed)] {
-			fmt.Fprintf(tw, "  %s\t%s\t%s → %s\n", withWas(c.Cell, c.Was), c.Kind, orEmpty(c.Before), orEmpty(c.After))
+			tw.row("  "+withWas(c.Cell, c.Was), c.Kind, orEmpty(c.Before)+" → "+orEmpty(c.After))
 		}
 		tw.Flush()
 		more(len(plain))
 	}
 	if section("moved, each with its cause", len(r.Moved)) {
-		tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
+		tw := a.table()
 		for _, m := range r.Moved[:min(len(r.Moved), againstListed)] {
-			fmt.Fprintf(tw, "  %s\t%s → %s\t%s\n", withWas(m.Cell, m.Was), orEmpty(m.Before), orEmpty(m.After), m.Cause)
+			tw.row("  "+withWas(m.Cell, m.Was), orEmpty(m.Before)+" → "+orEmpty(m.After), m.Cause)
 		}
 		tw.Flush()
 		more(len(r.Moved))
 	}
 	if section("unknown: values sheets cannot compare", len(r.Unknown)) {
-		tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
+		tw := a.table()
 		for _, u := range r.Unknown[:min(len(r.Unknown), againstListed)] {
-			fmt.Fprintf(tw, "  %s\t%s → %s\t%s\n", u.Cell, orEmpty(u.Before), orEmpty(u.After), u.Why)
+			tw.row("  "+u.Cell, orEmpty(u.Before)+" → "+orEmpty(u.After), u.Why)
 		}
 		tw.Flush()
 		more(len(r.Unknown))
@@ -982,11 +998,38 @@ func (a *app) printAgainst(r *againstResult) {
 		a.printf("no problems found\n")
 	} else {
 		a.printf("%s, %s, %s\n", plural(r.Errors, "error"), plural(r.Warnings, "warning"), plural(r.Notes, "note"))
-		tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
+		tw := a.table()
 		for _, f := range r.Findings {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Severity, findingCells(f), f.Message)
+			tw.row(f.Severity.String(), findingCells(f), f.Message)
 		}
 		tw.Flush()
+	}
+}
+
+// table lines up columns, as check's report does, without trailing
+// spaces where a line's last column is empty.
+type table struct {
+	a   *app
+	buf bytes.Buffer
+	tw  *tabwriter.Writer
+}
+
+func (a *app) table() *table {
+	t := &table{a: a}
+	t.tw = tabwriter.NewWriter(&t.buf, 0, 0, 2, ' ', 0)
+	return t
+}
+
+func (t *table) row(cells ...string) {
+	fmt.Fprintln(t.tw, strings.Join(cells, "\t"))
+}
+
+func (t *table) Flush() {
+	t.tw.Flush()
+	for _, l := range strings.SplitAfter(t.buf.String(), "\n") {
+		if l != "" {
+			t.a.printf("%s\n", strings.TrimRight(l, " \n"))
+		}
 	}
 }
 

@@ -121,3 +121,58 @@ func TestAlignSheets(t *testing.T) {
 		t.Errorf("added %+v removed %+v", n, g)
 	}
 }
+
+// Rows that repeat, a row inserted near the top and every tenth row
+// changed: no row moved.
+func TestMovesRepeatedRows(t *testing.T) {
+	var before, after [][]any
+	before = append(before, []any{"Region", "Units", "Double"})
+	after = append(after, []any{"Region", "Units", "Double"})
+	for i := 1; i <= 400; i++ {
+		if i == 3 {
+			after = append(after, []any{"New", 99, "=B4*2"})
+		}
+		u := i % 5
+		before = append(before, []any{"R" + string(rune('a'+i%3)), u, ""})
+		if i%10 == 0 {
+			u += 7
+		}
+		after = append(after, []any{"R" + string(rune('a'+i%3)), u, ""})
+	}
+	al := Align(book("S", before), book("S", after), Options{Moves: true})
+	if m := al.Sheets[0].Moved; len(m) != 0 {
+		t.Errorf("rows moved: %+v", m)
+	}
+	r := Workbooks(book("S", before), book("S", after), Options{Moves: true})
+	d := r.Sheets[0]
+	if len(d.RowsAdded) != 1 || d.RowsAdded[0].From != 4 || len(d.Cells) != 40 {
+		t.Errorf("added %+v, %d cells changed", d.RowsAdded, len(d.Cells))
+	}
+}
+
+// A sort below a row inserted: the rows the sort renumbered moved, not
+// those the insertion shifted.
+func TestMovesSortShifted(t *testing.T) {
+	before, _ := sorted()
+	shifted := [][]any{
+		{"Region", "Units", "Double"},
+		{"Inserted", 0, ""},
+		{"East", 1, "=B3*2"},
+		{"Mid", 3, "=B4*2"},
+		{"North", 5, "=B5*2"},
+		{"West", 7, "=B6*2"},
+		{"South", 9, "=B7*2"},
+		{"Total", "", "=SUM(C3:C7)"},
+	}
+	al := Align(book("Data", before), book("Data", shifted), Options{Moves: true})
+	var n int
+	for _, m := range al.Sheets[0].Moved {
+		n += m.Rows
+		if m.To == 8 {
+			t.Errorf("the total moved: %+v", al.Sheets[0].Moved)
+		}
+	}
+	if n != 4 {
+		t.Errorf("moved %+v", al.Sheets[0].Moved)
+	}
+}

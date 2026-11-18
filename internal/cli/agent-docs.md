@@ -344,6 +344,7 @@ cells. Excel 365 comment threads are listed but cannot be changed.
 
     sheets check book.xlsx                # formula results, unknowns, errors, and lint
     sheets check --fix book.xlsx          # store every result sheets can compute, add prefixes
+    sheets check book.xlsx --against before.xlsx  # what changed since before.xlsx, and why
     sheets lint book.xlsx                 # errors, broken patterns, totals that miss rows
     sheets lint book.xlsx --rules         # what it checks
     sheets diff book.xlsx                 # what the last sheets command changed
@@ -386,6 +387,35 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   file, `check` runs lint.
 - On 150,000 rows (300,000 formulas openpyxl left without results),
   `check --fix` takes about 15 seconds, and a second run about 4.
+- `check book.xlsx --against before.xlsx` says what a change did, whoever
+  made it (a script, openpyxl, LibreOffice, Excel, sheets). Keep a copy
+  before you change a workbook, then run it before handing the workbook
+  over. It reports:
+  - `changed`: inputs and formulas that changed; one row of a formula
+    column changed unlike the rows around it, or made a typed-in value, is
+    flagged;
+  - `moved`: computed values that moved, each with its cause upstream (an
+    input or formula change, rows added, removed or moved, a name
+    changed), traced through what each formula reads;
+  - `unexplained`: values that moved with nothing upstream changed, the
+    sign of a broken formula or a wrong stored result;
+  - `features_lost`: charts, validations, conditional formats, shapes,
+    pictures, names and tables the old version had (openpyxl drops shapes,
+    a chart grouped with a shape, and validations in Excel 2010's
+    extension list, such as a list read from another sheet);
+  - `unknown`: values sheets cannot compare, with why (a function the
+    calculator lacks, INDIRECT or OFFSET, a link to another workbook, or a
+    formula reading one of them): never called unexplained;
+  - `moved_rows`: rows moved as by a sort, which are not changes;
+  - then the check of book.xlsx, as above.
+
+  Formulas Excel rewrites for rows or columns added or removed, or a
+  sheet renamed, are not changes. Text lists ten of each, with counts;
+  `--json` lists everything (each moved value with `cell`, `before`,
+  `after` and `cause`). It exits 1 when a value is unexplained, a feature
+  is lost, or the check finds errors. On a CSV file it compares values
+  only. On 150,000 rows, 15,000 of them changed, it takes about 3
+  seconds.
 - `lint` finds error values, `#REF!` from deleted cells, unknown functions,
   cells that break their column's formula pattern, rows a formula column
   misses, totals that leave out rows, sums that add a total together with
@@ -561,5 +591,6 @@ results.
 
 0 on success. 1 on errors (a message goes to stderr, or `{"error": ...}`
 with `--json`), when `fmt --check` finds changes, when `check` or `lint`
-finds problems at `--fail-on` level, and when `diff --exit-code` finds
+finds problems at `--fail-on` level, when `check --against` finds values
+unexplained or features lost, and when `diff --exit-code` finds
 differences.
