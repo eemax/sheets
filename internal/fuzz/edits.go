@@ -21,16 +21,27 @@ var Classes = []struct {
 }
 
 // The formulas edits add, by the kind Excel 365 stores each typed in: {r}
-// is the row of its cell, {s} a sheet of the workbook.
+// is the row of its cell, {s} a sheet of the workbook. Each carries its kind
+// as the always-true condition of an IF, IF(N("p")=0,...), which keeps the
+// type of the result: numbers, texts, empty texts and booleans are all here
+// (a marker added to the result would turn the others into errors).
 var (
-	plainFormulas = []string{
-		`=B{r}*2+N("p")`, `=SUM(B2:B6)+N("p")`, `=IF(B{r}>3,1,0)+N("p")`, `=MAX(C2:C5)+N("p")`,
-		`=MIN(B2:D2)+N("p")`, `={s}!B2+1+N("p")`, `=COUNTIF(B2:B9,">3")+N("p")`, `=ROUND(C{r}*1.1,2)+N("p")`,
-	}
-	dynamicFormulas = []string{
-		`=SEQUENCE(2)+N("d")`, `=B2:B4*2+N("d")`, `=SUM(IF(B2:B6>3,B2:B6))+N("d")`, `=SEQUENCE(1,2)+N("d")`,
-		`=MAX(B2:B6-D2:D6)+N("d")`,
-	}
+	plainFormulas = marked(Plain,
+		`B{r}*2`, `SUM(B2:B6)`, `IF(B{r}>3,1,0)`, `MAX(C2:C5)`,
+		`MIN(B2:D2)`, `{s}!B2+1`, `COUNTIF(B2:B9,">3")`, `ROUND(C{r}*1.1,2)`,
+		// texts
+		`A{r}&"-x"`, `IF(B{r}>3,"hi","lo")`, `UPPER(A{r})`, `IF(A{r}="","none",A{r})`, `{s}!A2&"!"`,
+		// empty texts
+		`IF(B{r}>1000,1,"")`, `IF(A{r}="Fig","x","")`, `IF(F{r},"yes","")`, `IF(B{r}>3,"big","")`,
+		// booleans
+		`B{r}>3`, `AND(B{r}>3,C{r}<50)`, `ISNUMBER(B{r})`, `NOT(F{r})`, `OR(F{r},D{r}>250)`,
+	)
+	dynamicFormulas = marked(Dynamic,
+		`SEQUENCE(2)`, `B2:B4*2`, `SUM(IF(B2:B6>3,B2:B6))`, `SEQUENCE(1,2)`,
+		`MAX(B2:B6-D2:D6)`,
+		// texts and booleans in an array
+		`UPPER(A2:A4)`, `A2:A4&"!"`, `B2:B5>3`,
+	)
 	values   = []string{"5", "-3", "12.5", "0", "Apple", "N/A", "Acme Inc.", "2026-07-01", "TRUE", "hello", "1,200"}
 	finds    = []string{"Apple", "N/A", "Fig", "Total", "5", "apple", "Acme Inc.", "Pear"}
 	replaces = []string{"Apple", "Pear", "", "1,200", "7", "Acme Corp", "2026-01-31"}
@@ -38,6 +49,15 @@ var (
 	formulaReplaces = [][2]string{{"SUM(", "PRODUCT("}, {"PRODUCT(", "SUM("}, {"MIN(", "MAX("}, {"MAX(", "MIN("}}
 	newNames        = []string{"Copy", "Data 2", "Q 2027", "Old", "Backup", "Plan"}
 )
+
+// marked puts each formula in an IF named by its kind's marker.
+func marked(kind string, formulas ...string) []string {
+	out := make([]string, len(formulas))
+	for i, f := range formulas {
+		out[i] = `=IF(N("` + kind + `")=0,` + f + `)`
+	}
+	return out
+}
 
 type gen struct {
 	rng *rand.Rand

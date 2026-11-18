@@ -5,13 +5,26 @@ values of every type, formulas of all three kinds (plain, legacy array
 entered with Ctrl+Shift+Enter, dynamic array), Excel tables, defined names,
 charts, validations and conditional formats.
 
-Every formula carries its kind in its text, as N("p"), N("l") or N("d")
-(N of a text is 0, so the marker changes no result). The fuzzer checks after
-each edit that every formula is still stored as the kind it names. After
-saving, this script reads each file back and refuses one whose stored kinds
-do not match their markers: a producer that stores a kind of its own choice
-(XlsxWriter makes any formula calling SEQUENCE a dynamic array) would
-otherwise put a false finding into the pool.
+Every formula carries its kind in its text, as the condition N("p")=0,
+N("l")=0 or N("d")=0 of an IF that is always true: IF(N("p")=0,B2*C2). N of
+a text is 0, so the marker changes no result and, unlike an addition, no
+result's type: a text, an empty text, a boolean and an error stay what they
+are. The fuzzer checks after each edit that every formula is still stored as
+the kind it names. After saving, this script reads each file back and
+refuses one whose stored kinds do not match their markers: a producer that
+stores a kind of its own choice (XlsxWriter makes any formula calling
+SEQUENCE a dynamic array) would otherwise put a false finding into the pool.
+
+Results of every type are in the pool. Formulas return numbers, texts, empty
+texts (IF(B2>1000,1,"")), booleans and errors. XlsxWriter stores each
+formula's result, as it does for a formula given one (text as t="str",
+a boolean as t="b", an empty text as an empty <v>); openpyxl stores none,
+which sheets reads as pending. About half the XlsxWriter files store an empty
+text as Excel does (t="str" with an empty <v>) and half as XlsxWriter does
+(an empty <v> with no type, which reads as no result). The filled-down column of about two files in
+three is rewritten as shared formulas (<f t="shared" si="0" ref=...>, and
+followers <f t="shared" si="0"/>), the way Excel and LibreOffice store it:
+neither producer writes them.
 
 It also writes the checkers' must-refuse cases (testdata/refuse/): pool
 files with one defect each, which the fuzzer's invariants must catch.
@@ -55,8 +68,41 @@ def col(c):
 
 
 def mark(text, kind):
-    """A formula's text with its kind marker added."""
-    return f'{text}+N("{kind}")'
+    """A formula's text with its kind marker: IF(N("p")=0,text). The marker is
+    the condition of an IF that is always true, so the result keeps its type."""
+    return f'IF(N("{kind}")=0,{text})'
+
+
+# Formulas whose results are not numbers, by the row they sit in: the text of
+# the formula ({r} is the row; columns as on Data) and its result, from the
+# cells the formula reads (v: the value of column letter at row r, None when
+# empty). A producer that stores results gets them from here.
+def _a(v, r):
+    return v("A", r) or ""
+
+
+def _b(v, r):
+    return v("B", r) or 0
+
+
+TEXTS = [
+    ('A{r}&"-x"', lambda v, r: _a(v, r) + "-x"),
+    ('IF(B{r}>3,"hi","lo")', lambda v, r: "hi" if _b(v, r) > 3 else "lo"),
+    ("UPPER(A{r})", lambda v, r: _a(v, r).upper()),
+    ('IF(A{r}="","none",A{r})', lambda v, r: _a(v, r) or "none"),
+]
+EMPTY_TEXTS = [  # empty for some rows or all
+    ('IF(B{r}>1000,1,"")', lambda v, r: ""),
+    ('IF(A{r}="Fig","x","")', lambda v, r: "x" if _a(v, r).lower() == "fig" else ""),
+    ('IF(F{r},"yes","")', lambda v, r: "yes" if v("F", r) else ""),
+]
+BOOLS = [
+    ("B{r}>3", lambda v, r: _b(v, r) > 3),
+    ("AND(B{r}>3,C{r}<50)", lambda v, r: _b(v, r) > 3 and v("C", r) < 50),
+    ("ISNUMBER(B{r})", lambda v, r: v("B", r) is not None),
+    ("NOT(F{r})", lambda v, r: not v("F", r)),
+    ("OR(F{r},D{r}>250)", lambda v, r: bool(v("F", r)) or v("D", r) > 250),
+]
 
 
 class Plan:
@@ -78,6 +124,9 @@ class Plan:
         self.charts = []  # (sheet, data rows, anchor)
         self.validations = []  # (sheet, kind, ref)
         self.conds = []  # (sheet, kind, ref)
+        self.results = {}  # (sheet, "A1") -> the result of a formula that is no number
+        self.shared = []  # (column letter, first row, last row): shared formula groups on Data
+        self.typed_empty = False  # XlsxWriter: an empty text result stored as Excel does (t="str")
         self.n = rng.randint(4, 14)  # data rows on Data
         self.build(dynamic)
 
@@ -166,6 +215,62 @@ class Plan:
             self.validations.append(("Data", rng.choice(["list", "whole"]), f"A2:B{last}"))
         if rng.random() < 0.6:
             self.conds.append(("Data", rng.choice(["cell", "expr"]), f"B2:D{last}"))
+        self.typed(last)
+        # The filled-down column as shared formulas, in one group or two.
+        if rng.random() < 0.65:
+            if last - 1 >= 6 and rng.random() < 0.4:
+                cut = rng.randint(3, last - 2)
+                self.shared = [("G", 2, cut), ("G", cut + 1, last)]
+            else:
+                self.shared = [("G", 2, last)]
+        self.typed_empty = rng.random() < 0.5
+
+    def value(self, sheet, c, r):
+        """What the cell holds, for the results typed formulas compute."""
+        v = self.cells.get((sheet, r, ord(c) - 64))
+        return None if v == "" else v
+
+    def typed(self, last):
+        """Formulas whose results are texts, empty texts and booleans: filled
+        down columns L (text) and P (boolean) of Data, a text array and a
+        dynamic text array (T, U), and one on each second sheet."""
+        rng = self.rng
+
+        def v(c, r):
+            return self.value("Data", c, r)
+
+        def put(sheet, r, c, template, fn, kind):
+            self.cells[(sheet, r, c)] = "=" + mark(template.replace("{r}", str(r)), kind)
+            self.results[(sheet, f"{col(c)}{r}")] = fn(v, r)
+
+        # Text and empty texts, mixed or all one: column L.
+        template, fn = rng.choice(TEXTS + EMPTY_TEXTS)
+        self.cells[("Data", 1, 12)] = "Label"
+        for r in range(2, last + 1):
+            put("Data", r, 12, template, fn, "p")
+        # Booleans: column P.
+        template, fn = rng.choice(BOOLS)
+        self.cells[("Data", 1, 16)] = "Test"
+        for r in range(2, last + 1):
+            put("Data", r, 16, template, fn, "p")
+        # A text in a legacy array (several cells), and in a dynamic one.
+        h = rng.randint(2, 3)
+        if rng.random() < 0.6:
+            self.legacy.append(("Data", f"T2:T{1 + h}", "=" + mark(f"UPPER(A2:A{1 + h})", "l")))
+            self.results[("Data", "T2")] = _a(v, 2).upper()
+        if rng.random() < 0.6:
+            self.dynamic.append(("Data", f"U2:U{1 + h}", "=" + mark(f'A2:A{1 + h}&"!"', "d")))
+            self.results[("Data", "U2")] = _a(v, 2) + "!"
+        # On each second sheet: a text or empty text, and a boolean, reading
+        # Data.
+        for s in self.sheets[1:]:
+            ref = rng.choice(["Data", "'Data'"])
+            if rng.random() < 0.7:
+                self.cells[(s, 2, 6)] = "=" + mark(f'IF({ref}!B2>3,"hi","")', "p")
+                self.results[(s, "F2")] = "hi" if (v("B", 2) or 0) > 3 else ""
+            if rng.random() < 0.6:
+                self.cells[(s, 3, 6)] = "=" + mark(f"{ref}!B2>3", "p")
+                self.results[(s, "F3")] = (v("B", 2) or 0) > 3
 
 
 def write_openpyxl(plan, path):
@@ -215,7 +320,7 @@ def write_xlsxwriter(plan, path):
         if v is None:
             continue
         if isinstance(v, str) and v.startswith("="):
-            ws.write_formula(cell, v)
+            ws.write_formula(cell, v, None, plan.results.get((s, cell), 0))
         elif isinstance(v, datetime.date):
             ws.write_datetime(cell, datetime.datetime(v.year, v.month, v.day), date)
         else:
@@ -223,10 +328,10 @@ def write_xlsxwriter(plan, path):
     for s, ref, text in plan.legacy:
         ws = sheets[s]
         a = ref.split(":")
-        ws.write_array_formula(f"{a[0]}:{a[-1]}", "{" + text + "}")
+        ws.write_array_formula(f"{a[0]}:{a[-1]}", "{" + text + "}", None, plan.results.get((s, a[0]), 0))
     for s, ref, text in plan.dynamic:
         a = ref.split(":")
-        sheets[s].write_dynamic_array_formula(f"{a[0]}:{a[-1]}", text)
+        sheets[s].write_dynamic_array_formula(f"{a[0]}:{a[-1]}", text, None, plan.results.get((s, a[0]), 0))
     for name, ref in plan.names:
         wb.define_name(name, "=" + ref)
     for s, name, ref in plan.tables:
@@ -251,6 +356,45 @@ def write_xlsxwriter(plan, path):
         else:
             sheets[s].conditional_format(ref, {"type": "formula", "criteria": f"=${top[0]}{top[1:]}>10", "format": red})
     wb.close()
+
+
+def type_empty_texts(path):
+    """XlsxWriter stores a formula's empty text result as an empty <v> with no
+    type, which reads as no result. Excel and LibreOffice store it as t="str"
+    with an empty <v>: this rewrites the cells that way, in place."""
+    part = "xl/worksheets/sheet1.xml"
+
+    def fn(xml):
+        return re.sub(r'(<c r="[A-Z]+[0-9]+")(><f[^>]*>[^<]*</f><v></v></c>)', r'\1 t="str"\2', xml)
+
+    tmp = path + ".tmp"
+    rewrite(path, tmp, part, fn, strict=False)  # a file may have no empty text
+    os.replace(tmp, path)
+
+
+def share_formulas(path, groups):
+    """Rewrite filled-down formulas of Data as shared formulas, in place: each
+    group's first cell holds the formula text with the group's range, and the
+    others only point to it (si), the way Excel and LibreOffice store a
+    formula filled down. Neither producer writes them."""
+    part = "xl/worksheets/sheet1.xml"  # Data is the first sheet
+
+    def fn(xml):
+        for si, (c, r1, r2) in enumerate(groups):
+            for r in range(r1, r2 + 1):
+                pat = re.compile(rf'(<c r="{c}{r}"[^>]*>)<f>(.*?)</f>', re.S)
+                if r == r1:
+                    sub = lambda m: f'{m.group(1)}<f t="shared" ref="{c}{r1}:{c}{r2}" si="{si}">{m.group(2)}</f>'
+                else:
+                    sub = lambda m: f'{m.group(1)}<f t="shared" si="{si}"/>'
+                xml, n = pat.subn(sub, xml, count=1)
+                if n != 1:
+                    raise SystemExit(f"{path}: no plain formula at {c}{r} to share")
+        return xml
+
+    tmp = path + ".tmp"
+    rewrite(path, tmp, part, fn)
+    os.replace(tmp, path)
 
 
 CELL = re.compile(r"<c ([^>]*?)(/>|>(.*?)</c>)", re.S)
@@ -289,14 +433,15 @@ def kinds_ok(path):
     return bad
 
 
-def rewrite(src, dst, part, fn):
-    """Copy a package, passing one part's text through fn."""
+def rewrite(src, dst, part, fn, strict=True):
+    """Copy a package, passing one part's text through fn. A mutation that
+    changes nothing is an error, unless strict is False."""
     with zipfile.ZipFile(src) as zi, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zo:
         for info in zi.infolist():
             data = zi.read(info.filename)
             if info.filename == part:
                 new = fn(data.decode())
-                if new == data.decode():
+                if strict and new == data.decode():
                     raise SystemExit(f"{dst}: the mutation changed nothing")
                 data = new.encode()
             zo.writestr(info, data)
@@ -334,8 +479,14 @@ def refuse_cases(pool, out):
         m = re.search(r'<c r="B2"[^>]*?(/>|>.*?</c>)', x, re.S)
         return x[: m.end()] + m.group(0) + x[m.end():]
     rewrite(plain, f"{out}/xml-cell-twice.xlsx", sheet, dup_cell)
+    # xml: well-formedness Go's decoder lets through but expat, and Excel,
+    # reject: an attribute twice on one element, and a prefix no namespace
+    # declaration binds.
+    rewrite(plain, f"{out}/xml-attribute-twice.xlsx", sheet, lambda x: re.sub(r'<c r="([A-Z]+[0-9]+)"', r'<c r="\1" r="\1"', x, count=1))
+    rewrite(plain, f"{out}/xml-prefix-unbound.xlsx", sheet, lambda x: x.replace("<sheetData>", "<sheetData><zz:x/>", 1))
     # kinds: a dynamic array stored without its cell metadata (plain now).
-    dyn = first(has('cm="1"'))
+    # (Its file keeps G2 a plain formula: not one of a shared group.)
+    dyn = first(lambda n: has('cm="1"')(n) and not has('t="shared"')(n))
     rewrite(dyn, f"{out}/kinds-dynamic-lost.xlsx", sheet, lambda x: re.sub(r' cm="1"', "", x, count=1))
     # kinds: a legacy array stored as a plain formula.
     leg = first(lambda n: re.search(r'<c r="[A-Z]+\d+"( s="\d+")?><f t="array" ref="[^"]+">[^<]*N\((&quot;|")l', zipfile.ZipFile(n).read(sheet).decode()) is not None)
@@ -346,7 +497,25 @@ def refuse_cases(pool, out):
     # (named in the refuse case's own name after the double dash).
     base = os.path.basename(plain)[: -len(".xlsx")]
     rewrite(plain, f"{out}/editors-value--{base}.xlsx", sheet, lambda x: re.sub(r'(<c r="D2"[^>]*><v>)(\d+)', lambda m: m.group(1) + str(int(m.group(2)) + 1), x, count=1))
-    rewrite(plain, f"{out}/editors-formula--{base}.xlsx", sheet, lambda x: x.replace("+N(&quot;p&quot;)", "+N(&quot;p&quot;)+1", 1) if "&quot;" in x else x.replace('+N("p")', '+N("p")+1', 1))
+    # editors: a stored text, boolean or empty text result that differs, in a
+    # file from XlsxWriter (it stores results): the results the editors must
+    # agree on as they do on numbers.
+    def stored(n):
+        x = zipfile.ZipFile(n).read(sheet).decode()
+        return (
+            "xlsxwriter" in n
+            and 't="shared"' not in x
+            and re.search(r'<c r="[A-Z]+\d+" t="str"><f>[^<]*</f><v>[^<]+</v>', x)
+            and re.search(r'<c r="[A-Z]+\d+" t="b"><f>[^<]*</f><v>[01]</v>', x)
+            and re.search(r'<c r="[A-Z]+\d+" t="str"><f>[^<]*</f><v></v>', x)
+        )
+
+    typed = first(stored)
+    tbase = os.path.basename(typed)[: -len(".xlsx")]
+    rewrite(typed, f"{out}/editors-text--{tbase}.xlsx", sheet, lambda x: re.sub(r'(<c r="[A-Z]+\d+" t="str"><f>[^<]*</f><v>)([^<]+)(</v>)', r"\1\2x\3", x, count=1))
+    rewrite(typed, f"{out}/editors-boolean--{tbase}.xlsx", sheet, lambda x: re.sub(r'(<c r="[A-Z]+\d+" t="b"><f>[^<]*</f><v>)([01])', lambda m: m.group(1) + str(1 - int(m.group(2))), x, count=1))
+    rewrite(typed, f"{out}/editors-empty-text-lost--{tbase}.xlsx", sheet, lambda x: re.sub(r'(<c r="[A-Z]+\d+") t="str">(<f>[^<]*</f>)<v></v>', r"\1>\2", x, count=1))
+    rewrite(plain, f"{out}/editors-formula--{base}.xlsx", sheet, lambda x: x.replace("N(&quot;p&quot;)=0,", "N(&quot;p&quot;)=0,+", 1) if "&quot;" in x else x.replace('N("p")=0,', 'N("p")=0,+', 1))
 
 
 def main():
@@ -364,6 +533,10 @@ def main():
         plan = Plan(rng, dynamic=producer == "xlsxwriter")
         path = os.path.join(pool, f"{producer}-{i:02d}.xlsx")
         (write_openpyxl if producer == "openpyxl" else write_xlsxwriter)(plan, path)
+        if plan.shared:
+            share_formulas(path, plan.shared)
+        if producer == "xlsxwriter" and plan.typed_empty:
+            type_empty_texts(path)
         bad = kinds_ok(path)
         if bad:
             raise SystemExit(f"{path}: kinds stored unlike their markers:\n  " + "\n  ".join(bad))

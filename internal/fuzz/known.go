@@ -36,9 +36,10 @@ func ParseKnown(text string) (map[Signature]bool, error) {
 	return known, nil
 }
 
-// Invariants are the invariants findings name; panic is a command that
-// panicked, after which nothing can be judged.
-var Invariants = []string{"xml", "kinds", "editors", "undo", "panic"}
+// Invariants are the invariants findings name; repeat is an edit that gave
+// different files on the same bytes, and panic a command that panicked,
+// after which nothing can be judged.
+var Invariants = []string{"xml", "kinds", "editors", "undo", "repeat", "panic"}
 
 func knownClass(name string) bool {
 	for _, c := range Classes {

@@ -89,6 +89,32 @@ func TestPool(t *testing.T) {
 	}
 }
 
+// TestPoolResults: the pool holds a formula result of every stored form but
+// an error (XlsxWriter stores results, openpyxl none), and shared formulas,
+// which neither producer writes: fuzzgen.py rewrites a filled-down column.
+func TestPoolResults(t *testing.T) {
+	seen := map[string]int{}
+	for _, wb := range loadPool(t) {
+		_, cells := inspect(wb.Data)
+		files := map[string]bool{}
+		for _, f := range cells {
+			files[f.result()] = true
+			if f.shared {
+				files[resShared] = true
+			}
+		}
+		for form := range files {
+			seen[form]++
+		}
+	}
+	for _, f := range []string{resNumber, resText, resEmptyText, resBoolean, resNone, resShared} {
+		if seen[f] == 0 {
+			t.Errorf("no pool file holds a %s", f)
+		}
+	}
+	t.Logf("pool files holding each form: %v", seen)
+}
+
 // TestPoolKinds: the pool holds every kind, for the kinds invariant to
 // have something to keep.
 func TestPoolKinds(t *testing.T) {
@@ -381,6 +407,20 @@ func TestFuzz(t *testing.T) {
 	}
 	for _, l := range lines {
 		t.Log(l)
+	}
+	var forms []string
+	for _, f := range Results {
+		forms = append(forms, fmt.Sprintf("%s %d", f, res.Saved[f]))
+	}
+	t.Logf("fuzz %s: saved files holding a formula result of each form: %s; %d edits removed several dynamic arrays and were made again", mode, strings.Join(forms, ", "), res.Repeated)
+	if !custom {
+		// The invariants must have been put to every type of result and to
+		// shared formulas, or the pool and the edits have lost them.
+		for _, f := range []string{resNumber, resText, resEmptyText, resBoolean, resShared} {
+			if res.Saved[f] == 0 {
+				t.Errorf("no file the editors saved held a %s: the pool and the edits no longer put the invariants to it", f)
+			}
+		}
 	}
 	var stale []string
 	for s := range known {

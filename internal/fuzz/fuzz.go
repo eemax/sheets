@@ -141,6 +141,14 @@ type Result struct {
 	Capped    bool // stopped by the time cap before Edits
 	Elapsed   time.Duration
 	Findings  []Finding
+	// Saved counts the files the editors saved (an edit, two editors) that
+	// hold a formula result of each stored form, and a shared formula (see
+	// Results): the forms the invariants were put to.
+	Saved map[string]int
+	// Repeated counts the edits that removed several dynamic arrays and were
+	// made again, by each editor, on the bytes they first found (see
+	// repeats).
+	Repeated int
 }
 
 // SequenceSeed is the seed of sequence i of a run.
@@ -149,14 +157,14 @@ func SequenceSeed(run uint64, i int) uint64 { return run*100000 + uint64(i) }
 // Run runs sequences until the edit count or the time cap is reached.
 func Run(pool []Workbook, o Options) (*Result, error) {
 	start := time.Now()
-	r := &Result{}
+	r := &Result{Saved: map[string]int{}}
 	for i := 0; r.Edits < o.Edits; i++ {
 		if o.Time > 0 && r.Edits >= o.Min && time.Since(start) > o.Time {
 			r.Capped = true
 			break
 		}
 		seed := SequenceSeed(o.Seed, i)
-		f, made, applied, err := sequence(pool, seed, o.Dir, o.steps(), o.Edits-r.Edits, nil)
+		f, made, applied, err := sequence(pool, seed, o.Dir, o.steps(), o.Edits-r.Edits, nil, r)
 		if err != nil {
 			return r, err
 		}
@@ -184,13 +192,14 @@ func Replay(pool []Workbook, seed uint64, dir string, steps int, log func(string
 	if steps <= 0 {
 		steps = 12
 	}
-	f, _, _, err := sequence(pool, seed, dir, steps, steps, log)
+	f, _, _, err := sequence(pool, seed, dir, steps, steps, log, nil)
 	return f, err
 }
 
 // sequence makes up to steps edits (at most budget) on a workbook the seed
-// picks, and stops at the first finding.
-func sequence(pool []Workbook, seed uint64, dir string, steps, budget int, log func(string)) (f *Finding, made, applied int, err error) {
+// picks, and stops at the first finding. It counts what it saves and repeats
+// into res, when not nil.
+func sequence(pool []Workbook, seed uint64, dir string, steps, budget int, log func(string), res *Result) (f *Finding, made, applied int, err error) {
 	rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
 	wb := pool[rng.IntN(len(pool))]
 	n := min(1+rng.IntN(steps), budget)
@@ -199,6 +208,7 @@ func sequence(pool []Workbook, seed uint64, dir string, steps, budget int, log f
 		return nil, 0, 0, err
 	}
 	defer s.close()
+	s.res = res
 	var edits []Edit
 	for i := 0; i < n; i++ {
 		e, err := s.generate(rng)
@@ -346,6 +356,7 @@ type session struct {
 	root  string
 	paths [2]string
 	cur   *grid.Workbook // the streaming copy, parsed: what the next edit is made from
+	res   *Result        // counts the stored forms saved and the edits repeated, when not nil
 }
 
 func newSession(dir string, data []byte) (*session, error) {
@@ -449,13 +460,29 @@ func (s *session) step(e Edit, i int) (outcome, error) {
 		return o, nil
 	}
 	o.applied = true
+	wb, d := compareEditors(after[0], after[1])
+	// An edit that removes several dynamic arrays is made again (see repeats).
+	if prev, err := s.before(before[0]); err != nil {
+		return o, err
+	} else if wb != nil && arraysGone(prev, wb) >= repeatFrom {
+		v, err := s.repeat(e, before, after)
+		if err != nil {
+			return o, err
+		}
+		if v != nil {
+			s.cur = wb
+			o.broken = append(o.broken, *v)
+			return o, nil
+		}
+	}
 	for k, ed := range editors {
-		for _, v := range checkFile(after[k]) {
+		vs, cells := inspect(after[k])
+		for _, v := range vs {
 			v.detail = ed.name + " editor: " + v.detail
 			o.broken = append(o.broken, v)
 		}
+		s.count(cells)
 	}
-	wb, d := compareEditors(after[0], after[1])
 	if d != "" {
 		o.broken = append(o.broken, violation{"editors", d})
 	}
@@ -470,6 +497,93 @@ func (s *session) step(e Edit, i int) (outcome, error) {
 		}
 	}
 	return o, nil
+}
+
+// before is the streaming copy's workbook as the next edit finds it, given
+// its bytes.
+func (s *session) before(data []byte) (*grid.Workbook, error) {
+	if s.cur != nil {
+		return s.cur, nil
+	}
+	wb, err := xlsx.ReadBytes(data)
+	if err != nil {
+		return nil, fmt.Errorf("the workbook does not read: %w", err)
+	}
+	return wb, nil
+}
+
+// arraysGone counts the dynamic arrays an edit removed from the workbook: how
+// many fewer each sheet holds (arrays that only moved are not gone), on the
+// sheets at the same position in both.
+func arraysGone(a, b *grid.Workbook) int {
+	gone := 0
+	for i := 0; i < min(len(a.Sheets), len(b.Sheets)); i++ {
+		gone += max(0, len(a.Sheets[i].Spills)-len(b.Sheets[i].Spills))
+	}
+	return gone
+}
+
+// An edit that removes this many dynamic arrays or more is made again on the
+// bytes it first found, repeats more times by each editor. Sheets lays the
+// results of dynamic arrays out in map order (spillResults), so a paste over
+// several of them can give a different workbook from one run to the next
+// (see known.txt); a finding that came and went would make two runs of one
+// seed differ. Fewer arrays are not made again: it would cost a third of the
+// run, and one array has no order.
+const (
+	repeatFrom = 2
+	repeats    = 8
+)
+
+// repeat makes the edit again on the bytes it first found, repeats times
+// with each editor, and reports a file that holds other cells, formulas or
+// values than the first one saved. (The bytes may differ: the order of the
+// shared strings a spill adds varies, and means nothing.) Both files are
+// put back as the first run left them.
+func (s *session) repeat(e Edit, before, after [2][]byte) (*violation, error) {
+	if s.res != nil {
+		s.res.Repeated++
+	}
+	var v *violation
+	for k, ed := range editors {
+		for n := 0; n < repeats && v == nil; n++ {
+			if err := os.WriteFile(s.paths[k], before[k], 0o644); err != nil {
+				return nil, err
+			}
+			code, msg := run(ed.env, false, e, s.paths[k])
+			got, err := os.ReadFile(s.paths[k])
+			if err != nil {
+				return nil, err
+			}
+			if code != 0 {
+				v = &violation{"repeat", fmt.Sprintf("%s editor: the same edit on the same bytes worked once and failed once (exit %d: %s)", ed.name, code, firstLine(msg))}
+			} else if _, d := compareEditors(after[k], got); d != "" {
+				v = &violation{"repeat", fmt.Sprintf("%s editor: the same edit on the same bytes saved two different workbooks: %s", ed.name, strings.ReplaceAll(d, "stream has", "once"))}
+			}
+		}
+		if err := os.WriteFile(s.paths[k], after[k], 0o644); err != nil {
+			return nil, err
+		}
+	}
+	return v, nil
+}
+
+// count adds a saved file's formulas to the count of stored forms: each form
+// the file holds, once.
+func (s *session) count(cells []formulaCell) {
+	if s.res == nil {
+		return
+	}
+	held := map[string]bool{}
+	for _, f := range cells {
+		held[f.result()] = true
+		if f.shared {
+			held[resShared] = true
+		}
+	}
+	for form := range held {
+		s.res.Saved[form]++
+	}
 }
 
 // checkUndo runs sheets undo on the file an edit with editor k changed

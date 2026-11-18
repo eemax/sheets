@@ -60,9 +60,16 @@ func marker(formula string) string {
 
 // checkFile checks a saved workbook's own invariants: xml and kinds.
 func checkFile(data []byte) []violation {
+	vs, _ := inspect(data)
+	return vs
+}
+
+// inspect checks a saved workbook's own invariants, and returns the formulas
+// it read for them (none when the xml is broken).
+func inspect(data []byte) ([]violation, []formulaCell) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return []violation{{"xml", "not a zip package: " + err.Error()}}
+		return []violation{{"xml", "not a zip package: " + err.Error()}}, nil
 	}
 	var out []violation
 	for _, zf := range zr.File {
@@ -74,12 +81,16 @@ func checkFile(data []byte) []violation {
 		}
 	}
 	if len(out) > 0 {
-		return out
+		return out, nil
 	}
 	if err := xlsxtest.CheckOrder(data); err != nil {
-		return []violation{{"xml", err.Error()}}
+		return []violation{{"xml", err.Error()}}, nil
 	}
-	return checkKinds(zr)
+	cells, metadata, err := formulas(zr)
+	if err != nil {
+		return []violation{{"xml", err.Error()}}, nil
+	}
+	return checkKinds(cells, metadata), cells
 }
 
 func wellFormed(zf *zip.File) error {
@@ -209,16 +220,49 @@ type formulaCell struct {
 	text        string // the formula; a shared formula's follower has its master's
 	ref         string // an array's range
 	cm          int
+	shared      bool   // stored as a shared formula (the master or a follower)
+	typ, value  string // the cell's t attribute, and its stored result (<v>)
+	hasValue    bool   // the cell has a <v>, empty or not
+}
+
+// The stored forms of a formula's result.
+const (
+	resNumber    = "number"
+	resText      = "text"
+	resEmptyText = "empty-text" // t="str" with an empty <v>: a formula that gives ""
+	resBoolean   = "boolean"
+	resError     = "error"
+	resNone      = "no-result" // no <v>, or an empty one with no type: pending
+	resShared    = "shared"    // not a result: stored as a shared formula
+)
+
+// Results are the stored forms of a formula's result, and the storage form
+// that is no result, the run counts in the files it saves.
+var Results = []string{resNumber, resText, resEmptyText, resBoolean, resError, resNone, resShared}
+
+// result is the stored form of the formula's result.
+func (f formulaCell) result() string {
+	switch f.typ {
+	case "b":
+		return resBoolean
+	case "e":
+		return resError
+	case "str", "s", "inlineStr":
+		if f.value == "" {
+			return resEmptyText
+		}
+		return resText
+	}
+	if f.value == "" {
+		return resNone
+	}
+	return resNumber
 }
 
 // checkKinds checks every formula's stored kind against its marker, and
 // that each array is stored as Excel requires: its range starts at its
 // cell, and a dynamic array's cell metadata exists.
-func checkKinds(zr *zip.Reader) []violation {
-	cells, metadata, err := formulas(zr)
-	if err != nil {
-		return []violation{{"xml", err.Error()}}
-	}
+func checkKinds(cells []formulaCell, metadata int) []violation {
 	var out []violation
 	for _, f := range cells {
 		where := f.sheet + " " + f.cell
@@ -308,8 +352,9 @@ func sheetFormulas(zf *zip.File) ([]formulaCell, error) {
 	sheet := path.Base(zf.Name)
 	shared := map[string]string{} // si -> the master's text
 	var out []formulaCell
-	var cell string
+	var cell, typ string
 	var cm int
+	last := -1 // the formula of the cell being read, in out
 	for {
 		tok, err := d.Token()
 		if err == io.EOF {
@@ -324,9 +369,17 @@ func sheetFormulas(zf *zip.File) ([]formulaCell, error) {
 		}
 		switch se.Name.Local {
 		case "c":
-			cell, cm = attr(se, "r"), 0
+			cell, typ, cm, last = attr(se, "r"), attr(se, "t"), 0, -1
 			if v := attr(se, "cm"); v != "" {
 				cm, _ = strconv.Atoi(v)
+			}
+		case "v":
+			var text string
+			if err := d.DecodeElement(&text, &se); err != nil {
+				return nil, err
+			}
+			if last >= 0 {
+				out[last].value, out[last].hasValue = text, true
 			}
 		case "f":
 			t, ref, si := attr(se, "t"), attr(se, "ref"), attr(se, "si")
@@ -334,7 +387,7 @@ func sheetFormulas(zf *zip.File) ([]formulaCell, error) {
 			if err := d.DecodeElement(&text, &se); err != nil {
 				return nil, err
 			}
-			f := formulaCell{sheet: sheet, cell: cell, kind: Plain, text: text, ref: ref, cm: cm}
+			f := formulaCell{sheet: sheet, cell: cell, kind: Plain, text: text, ref: ref, cm: cm, typ: typ, shared: t == "shared"}
 			switch t {
 			case "array":
 				f.kind = Legacy
@@ -350,6 +403,7 @@ func sheetFormulas(zf *zip.File) ([]formulaCell, error) {
 			}
 			if f.text != "" {
 				out = append(out, f)
+				last = len(out) - 1
 			}
 		}
 	}
