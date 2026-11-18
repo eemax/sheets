@@ -65,6 +65,7 @@ func TestModelReadsGeneratedEdits(t *testing.T) {
 		for range draws {
 			e := generate(rng, wb)
 			mo := newModel(wb)
+			mo.r = newReach(wb) // and the model of its reach
 			mo.apply(e)
 			if mo.why != "" {
 				t.Errorf("%s: the model cannot read %s: %s", w.Name, e, mo.why)

@@ -41,7 +41,7 @@ func ParseKnown(text string) (map[Signature]bool, error) {
 // command that panicked or a panic in judging the files it saved, after which
 // nothing can be judged, and missing an edit that left no workbook at its path.
 // A hang (an edit that did not finish) is never known: it ends the run.
-var Invariants = []string{"xml", "kinds", "text", "editors", "undo", "repeat", "panic", "missing"}
+var Invariants = []string{"xml", "kinds", "reach", "text", "editors", "undo", "repeat", "panic", "missing"}
 
 func knownClass(name string) bool {
 	for _, c := range Classes {

@@ -641,11 +641,15 @@ func (s *session) stepNow(e Edit, i int) (outcome, error) {
 	} else if wb != nil {
 		// Where the formulas went: the model of kinds, followed through the edit.
 		m := newModel(prev)
+		m.r = newReach(prev)
 		m.apply(e)
 		if msg := m.check(wb); msg != "" {
 			o.broken = append(o.broken, violation{"kinds", msg})
 		} else if msg := checkTyped(e, wb); msg != "" {
 			o.broken = append(o.broken, violation{"text", msg})
+		} else if msg := m.reached(wb); msg != "" {
+			// Nothing outside the edit's reach changed (see reach.go).
+			o.broken = append(o.broken, violation{"reach", msg})
 		}
 	}
 	s.cur = wb

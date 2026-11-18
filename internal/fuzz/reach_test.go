@@ -1,0 +1,234 @@
+package fuzz
+
+import (
+	"sort"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/eemax/sheets/internal/grid"
+)
+
+// reachBook builds a workbook from cells named "Sheet!A1": "5" is a number,
+// "'x" a text, "=F" a formula with no result (pending), "=F|7" one whose
+// result is 7. spills ("Data!M2:M4") are dynamic arrays, names "Units=Data!B2:B4".
+func reachBook(cells map[string]string, extra ...string) *grid.Workbook {
+	wb := &grid.Workbook{}
+	sheet := func(name string) *grid.Sheet {
+		if s := wb.Sheet(name); s != nil {
+			return s
+		}
+		s := grid.NewSheet(name)
+		wb.Sheets = append(wb.Sheets, s)
+		return s
+	}
+	if len(cells) == 0 {
+		sheet("Data")
+	}
+	var refs []string
+	for ref := range cells {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	for _, ref := range refs {
+		name, at, _ := strings.Cut(ref, "!")
+		r, c, _ := grid.ParseCell(at)
+		v := cells[ref]
+		var cl grid.Cell
+		switch {
+		case strings.HasPrefix(v, "="):
+			f, res, ok := strings.Cut(v[1:], "|")
+			cl = grid.Cell{Formula: f, Pending: !ok}
+			if ok {
+				cl.Kind, cl.Num = grid.Number, mustFloat(res)
+			}
+		case strings.HasPrefix(v, "'"):
+			cl = grid.Cell{Kind: grid.Text, Text: v[1:]}
+		default:
+			cl = grid.Cell{Kind: grid.Number, Num: mustFloat(v)}
+		}
+		sheet(name).Set(r, c, cl)
+	}
+	for _, x := range extra {
+		if n, ref, ok := strings.Cut(x, "="); ok {
+			wb.Names = append(wb.Names, grid.DefinedName{Name: n, Ref: ref})
+			continue
+		}
+		name, rg, _ := strings.Cut(x, "!")
+		r, _ := grid.ParseRange(rg)
+		sheet(name).Spills = append(sheet(name).Spills, r)
+	}
+	return wb
+}
+
+func mustFloat(s string) float64 {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		panic(err)
+	}
+	return f
+}
+
+// TestReach: the model of an edit's reach passes what an edit may change
+// (its cells, references it rewrites, recomputed dependents, arrays that
+// fill again) and refuses anything else that changed: a cell it does not
+// name, one left behind, a formula rewritten or recomputed with nothing it
+// reads changed, a sheet made out of nothing.
+func TestReach(t *testing.T) {
+	edit := func(args ...string) Edit {
+		e := Edit{Class: args[0], Args: append([]string{args[0], FileArg}, args[1:]...)}
+		switch args[0] {
+		case "rows", "cols", "sheet":
+			e.Class = args[0] + "-" + args[1]
+			e.Args = append([]string{args[0], args[1], FileArg}, args[2:]...)
+		}
+		return e
+	}
+	script := func(lines ...string) Edit {
+		return Edit{Class: "script", Args: []string{"script", FileArg, "-e", "const ws = workbook.getWorksheet(\"Data\");\n" + strings.Join(lines, "\n") + "\n"}}
+	}
+	type m = map[string]string
+	for _, tc := range []struct {
+		name          string
+		before, after m
+		extra         []string // spills and names, before and after alike
+		afterExtra    []string // the spills and names after, when other
+		edit          Edit
+		wantErr       string // part of the finding; "" when the edit kept to its reach
+	}{
+		{name: "set", before: m{"Data!A1": "1", "Data!B1": "2"}, edit: edit("set", "Data!A1", "5"),
+			after: m{"Data!A1": "5", "Data!B1": "2"}},
+		{name: "set writes a neighbour", before: m{"Data!A1": "1", "Data!B1": "2"}, edit: edit("set", "Data!A1", "5"),
+			after: m{"Data!A1": "5", "Data!B1": "3"}, wantErr: "Data!B1: outside the edit's reach, it held number 2, and holds number 3 now"},
+		{name: "set fills an empty cell it does not name", before: m{"Data!A1": "1"}, edit: edit("set", "Data!A1", "5"),
+			after: m{"Data!A1": "5", "Data!Z9": "'x"}, wantErr: `Data!Z9: outside the edit's reach, it was empty, and holds text "x" now`},
+		{name: "set loses a cell", before: m{"Data!A1": "1", "Data!C3": "'x"}, edit: edit("set", "Data!A1", "5"),
+			after: m{"Data!A1": "5"}, wantErr: `Data!C3: outside the edit's reach, it held text "x", and holds nothing now`},
+		{name: "set a range", before: m{"Data!A1": "1", "Data!A3": "1", "Data!A4": "1"}, edit: edit("set", "Data!A1:A3", "5"),
+			after: m{"Data!A1": "5", "Data!A2": "5", "Data!A3": "5", "Data!A4": "1"}},
+		{name: "a dependent recomputed", before: m{"Data!A1": "1", "Data!B1": "=A1*2|2", "Data!C1": "=SUM(B1:B2)|2"}, edit: edit("set", "Data!A1", "5"),
+			after: m{"Data!A1": "5", "Data!B1": "=A1*2|10", "Data!C1": "=SUM(B1:B2)|10"}},
+		{name: "a formula recomputed with nothing it reads changed", before: m{"Data!A1": "1", "Data!B1": "=C1*2|2", "Data!C1": "1"}, edit: edit("set", "Data!A1", "5"),
+			after: m{"Data!A1": "5", "Data!B1": "=C1*2|4", "Data!C1": "1"}, wantErr: "Data!B1: outside the edit's reach, it held =C1*2 (number 2), and holds =C1*2 (number 4) now, and nothing it reads may have changed"},
+		{name: "a pending result computed", before: m{"Data!A1": "1", "Data!B1": "=C1*2", "Data!C1": "1"}, edit: edit("set", "Data!A1", "5"),
+			after: m{"Data!A1": "5", "Data!B1": "=C1*2|2", "Data!C1": "1"}},
+		{name: "a formula rewritten by an edit that moves nothing", before: m{"Data!A1": "1", "Data!B1": "=C1*2|2"}, edit: edit("set", "Data!A1", "5"),
+			after: m{"Data!A1": "5", "Data!B1": "=C2*2|2"}, wantErr: "its formula =C1*2 is rewritten as =C2*2 by an edit that moves no cells"},
+		{name: "a formula lost", before: m{"Data!A1": "1", "Data!B1": "=C1*2|2"}, edit: edit("set", "Data!A1", "5"),
+			after: m{"Data!A1": "5", "Data!B1": "2"}, wantErr: "Data!B1: outside the edit's reach, it held =C1*2 (number 2), and holds number 2 now"},
+		{name: "a value turned formula", before: m{"Data!A1": "1", "Data!B1": "2"}, edit: edit("set", "Data!A1", "5"),
+			after: m{"Data!A1": "5", "Data!B1": "=1+1|2"}, wantErr: "Data!B1: outside the edit's reach, it held number 2, and holds =1+1 (number 2) now"},
+		{name: "a name's input", before: m{"Data!B2": "1", "Data!H1": "=SUM(Units)|1"}, extra: []string{"Units=Data!$B$2:$B$4"}, edit: edit("set", "Data!B3", "5"),
+			after: m{"Data!B2": "1", "Data!B3": "5", "Data!H1": "=SUM(Units)|6"}},
+		{name: "a name's range shrunk by rows deleted", before: m{"Data!B2": "1", "Data!B3": "5", "Data!H1": "=SUM(Units)|6"}, extra: []string{"Units=Data!$B$2:$B$4"},
+			afterExtra: []string{"Units=Data!$B$2:$B$3"}, edit: edit("rows", "delete", "Data!3"),
+			after: m{"Data!B2": "1", "Data!H1": "=SUM(Units)|1"}},
+		{name: "a name's value with its range unchanged", before: m{"Data!B2": "1", "Data!H1": "=SUM(Units)|1", "Data!Z1": "3"}, extra: []string{"Units=Data!$B$2:$B$4"}, edit: edit("set", "Data!Z1", "5"),
+			after: m{"Data!B2": "1", "Data!H1": "=SUM(Units)|9", "Data!Z1": "5"}, wantErr: "Data!H1: outside the edit's reach"},
+		{name: "clear", before: m{"Data!A1": "1", "Data!A2": "2", "Data!A3": "3"}, edit: edit("clear", "Data!A1:A2"),
+			after: m{"Data!A3": "3"}},
+		{name: "clear one more", before: m{"Data!A1": "1", "Data!A2": "2", "Data!A3": "3"}, edit: edit("clear", "Data!A1:A2"),
+			after: m{}, wantErr: "Data!A3: outside the edit's reach, it held number 3, and holds nothing now"},
+		{name: "write", before: m{"Data!A1": "1", "Data!C2": "3"}, edit: Edit{Class: "write", Args: []string{"write", FileArg, "Data!A1", "--from", "tsv"}, Stdin: "7\t8\n9\n"},
+			after: m{"Data!A1": "7", "Data!B1": "8", "Data!A2": "9", "Data!C2": "3"}},
+		{name: "write past its block", before: m{"Data!A1": "1"}, edit: Edit{Class: "write", Args: []string{"write", FileArg, "Data!A1", "--from", "tsv"}, Stdin: "7\t8\n9\n"},
+			after: m{"Data!A1": "7", "Data!B1": "8", "Data!A2": "9", "Data!B2": "8"}, wantErr: "Data!B2: outside the edit's reach, it was empty"},
+		{name: "copy", before: m{"Data!A1": "1", "Data!A2": "2", "Data!D1": "4"}, edit: edit("copy", "Data!A1:A2", "Data!C1"),
+			after: m{"Data!A1": "1", "Data!A2": "2", "Data!C1": "1", "Data!C2": "2", "Data!D1": "4"}},
+		{name: "copy moves", before: m{"Data!A1": "1", "Data!A2": "2"}, edit: edit("copy", "Data!A1:A2", "Data!C1"),
+			after: m{"Data!C1": "1", "Data!C2": "2"}, wantErr: "Data!A1: outside the edit's reach, it held number 1, and holds nothing now"},
+		{name: "move, and what reads it follows", before: m{"Data!A1": "1", "Data!B5": "=A1*2|2"}, edit: edit("move", "Data!A1", "Data!C1"),
+			after: m{"Data!C1": "1", "Data!B5": "=C1*2|2"}},
+		{name: "move rewrites a formula other than its references", before: m{"Data!A1": "1", "Data!B5": "=A1*2|2"}, edit: edit("move", "Data!A1", "Data!C1"),
+			after: m{"Data!C1": "1", "Data!B5": "=C1*3|3"}, wantErr: "its formula =A1*2 is rewritten as =C1*3, other than in its references"},
+		{name: "rows insert", before: m{"Data!A1": "1", "Data!A2": "2", "Data!A3": "3"}, edit: edit("rows", "insert", "Data!2", "-n", "2"),
+			after: m{"Data!A1": "1", "Data!A4": "2", "Data!A5": "3"}},
+		{name: "rows insert, and the rows inserted filled", before: m{"Data!A1": "1", "Data!A2": "2"}, edit: edit("rows", "insert", "Data!2"),
+			after: m{"Data!A1": "1", "Data!B2": "=1|1", "Data!A3": "2"}},
+		{name: "rows insert leaves a row behind", before: m{"Data!A1": "1", "Data!A2": "2", "Data!A3": "3"}, edit: edit("rows", "insert", "Data!2", "-n", "2"),
+			after: m{"Data!A1": "1", "Data!A4": "2", "Data!A3": "3"}, wantErr: "Data!A5: outside the edit's reach, it held number 3, and holds nothing now"},
+		{name: "rows delete, and the references", before: m{"Data!A1": "1", "Data!A2": "2", "Data!A3": "3", "Data!B9": "=SUM(A1:A3)|6", "Data!C9": "=A2|2"}, edit: edit("rows", "delete", "Data!2"),
+			after: m{"Data!A1": "1", "Data!A2": "3", "Data!B8": "=SUM(A1:A2)|4", "Data!C8": "=#REF!|0"}},
+		{name: "rows delete shifts by one too many", before: m{"Data!A1": "1", "Data!A3": "3", "Data!A4": "4"}, edit: edit("rows", "delete", "Data!2"),
+			after: m{"Data!A1": "1", "Data!A2": "4"}, wantErr: "Data!A2: outside the edit's reach, it held number 3, and holds number 4 now"},
+		{name: "cols delete", before: m{"Data!A1": "1", "Data!B1": "2", "Data!C1": "3"}, edit: edit("cols", "delete", "Data!B"),
+			after: m{"Data!A1": "1", "Data!B1": "3"}},
+		{name: "a dynamic array spills again", before: m{"Data!A1": "1", "Data!A2": "2", "Data!M2": "=A1:A2*2|2", "Data!M3": "4"}, extra: []string{"Data!M2:M3"}, edit: edit("set", "Data!A2", "5"),
+			after: m{"Data!A1": "1", "Data!A2": "5", "Data!M2": "=A1:A2*2|2", "Data!M3": "10"}},
+		{name: "a dynamic array's results change with nothing it reads changed", before: m{"Data!A1": "1", "Data!A2": "2", "Data!M2": "=A1:A2*2|2", "Data!M3": "4", "Data!Z1": "0"}, extra: []string{"Data!M2:M3"}, edit: edit("set", "Data!Z1", "5"),
+			after: m{"Data!A1": "1", "Data!A2": "2", "Data!M2": "=A1:A2*2|2", "Data!M3": "7", "Data!Z1": "5"}, wantErr: "Data!M3: outside the edit's reach, it held number 4, and holds number 7 now"},
+		{name: "a set in a dynamic array's results", before: m{"Data!M2": "=SEQUENCE(2)|1", "Data!M3": "2"}, extra: []string{"Data!M2:M3"}, edit: edit("set", "Data!M3", "'x"),
+			afterExtra: []string{}, after: m{"Data!M2": "=SEQUENCE(2)|0", "Data!M3": "'x"}},
+		{name: "rows inserted through a dynamic array", before: m{"Data!M2": "=SEQUENCE(2)|1", "Data!M3": "2"}, extra: []string{"Data!M2:M3"}, edit: edit("rows", "insert", "Data!3"),
+			after: m{"Data!M2": "=SEQUENCE(2)|1", "Data!M3": "2"}},
+		{name: "replace", before: m{"Data!A1": "'Apple pie", "Data!A2": "'Pear", "Data!A3": "5"}, edit: edit("replace", "apple", "Fig"),
+			after: m{"Data!A1": "'Fig pie", "Data!A2": "'Pear", "Data!A3": "5"}},
+		{name: "replace a text it does not find", before: m{"Data!A1": "'Apple pie", "Data!A2": "'Pear"}, edit: edit("replace", "apple", "Fig"),
+			after: m{"Data!A1": "'Fig pie", "Data!A2": "'Fig"}, wantErr: `Data!A2: outside the edit's reach, it held text "Pear"`},
+		{name: "replace in formulas", before: m{"Data!A1": "=SUM(B1:B2)|3", "Data!A2": "=MAX(B1:B2)|2"}, edit: edit("replace", "SUM(", "PRODUCT(", "--formulas"),
+			after: m{"Data!A1": "=PRODUCT(B1:B2)|2", "Data!A2": "=MAX(B1:B2)|2"}},
+		{name: "sort a range", before: m{"Data!A2": "2", "Data!A3": "1", "Data!B9": "=A2|2"}, edit: edit("sort", "Data!A2:A3", "A"),
+			after: m{"Data!A2": "1", "Data!A3": "2", "Data!B9": "=A2|1"}},
+		{name: "sort past its range", before: m{"Data!A2": "2", "Data!A3": "1", "Data!A4": "0"}, edit: edit("sort", "Data!A2:A3", "A"),
+			after: m{"Data!A2": "0", "Data!A3": "1", "Data!A4": "2"}, wantErr: "Data!A4: outside the edit's reach, it held number 0, and holds number 2 now"},
+		{name: "sheet copy", before: m{"Data!A1": "1"}, edit: edit("sheet", "copy", "Data", "Copy"),
+			after: m{"Data!A1": "1", "Copy!A1": "1"}},
+		{name: "sheet add, with something in it", before: m{"Data!A1": "1"}, edit: edit("sheet", "add", "New"),
+			after: m{"Data!A1": "1", "New!A1": "1"}, wantErr: "New!A1: outside the edit's reach, it was empty"},
+		{name: "a sheet the edit does not name", before: m{"Data!A1": "1"}, edit: edit("set", "Data!A1", "5"),
+			after: m{"Data!A1": "5", "Other!A1": "1"}, wantErr: "the edit made a sheet, Other, it does not name"},
+		{name: "sheet rename, and what reads it", before: m{"Data!A1": "1", "Plan!A1": "=Data!A1|1"}, edit: edit("sheet", "rename", "Data", "Old"),
+			after: m{"Old!A1": "1", "Plan!A1": "=Old!A1|1"}},
+		{name: "a batch", before: m{"Data!A1": "1", "Data!A2": "2", "Data!A5": "5"},
+			edit:  Edit{Class: "do", Args: []string{"do", FileArg}, Stdin: "rows insert Data!2\nset Data!A2 9\nclear Data!A1\n"},
+			after: m{"Data!A2": "9", "Data!A3": "2", "Data!A6": "5"}},
+		{name: "a batch leaves one in place", before: m{"Data!A1": "1", "Data!A2": "2", "Data!A5": "5"},
+			edit:  Edit{Class: "do", Args: []string{"do", FileArg}, Stdin: "rows insert Data!2\nset Data!A2 9\n"},
+			after: m{"Data!A1": "1", "Data!A2": "9", "Data!A3": "2", "Data!A5": "5"}, wantErr: "Data!A6: outside the edit's reach, it held number 5, and holds nothing now"},
+		{name: "a script", before: m{"Data!A1": "1", "Data!A2": "2", "Data!C1": "3"},
+			edit:  script(`ws.getRange("A1").moveTo("E1");`, `ws.getRange("B:B").delete("Left");`, `ws.getRange("A2").setValue(5);`),
+			after: m{"Data!A2": "5", "Data!B1": "3", "Data!D1": "1"}},
+		{name: "a script copies past its target", before: m{"Data!A1": "1", "Data!A2": "2"},
+			edit:  script(`ws.getRange("D1").copyFrom("A1:A2");`),
+			after: m{"Data!A1": "1", "Data!A2": "2", "Data!D1": "1", "Data!D2": "2", "Data!D3": "2"}, wantErr: "Data!D3: outside the edit's reach, it was empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := reachBook(tc.before, tc.extra...)
+			afterExtra := tc.extra
+			if tc.afterExtra != nil {
+				afterExtra = tc.afterExtra
+			}
+			mo := newModel(before)
+			mo.r = newReach(before)
+			mo.apply(tc.edit)
+			if mo.why != "" {
+				t.Fatalf("the model cannot read the edit: %s", mo.why)
+			}
+			got := mo.reached(reachBook(tc.after, afterExtra...))
+			if tc.wantErr == "" && got != "" {
+				t.Errorf("the model refuses an edit that kept to its reach: %s", got)
+			}
+			if tc.wantErr != "" && !strings.Contains(got, tc.wantErr) {
+				t.Errorf("the model says %q, want it to say %q", got, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestRefToken: a formula's references are read as one token each, so a
+// formula rewritten in its references only reads the same.
+func TestRefToken(t *testing.T) {
+	for _, tc := range []struct{ a, b string }{
+		{`IF(N("p")=0,B3*2)`, `IF(N("p")=0,B5*2)`},
+		{`SUM(Data!B2:B10)`, `SUM('Q 2027'!B2:B12)`},
+		{`'Bob''s Plan'!A1+1`, `#REF!+1`},
+		{`Data!$C$2*2`, `Data!#REF!*2`},
+	} {
+		if masked(tc.a) != masked(tc.b) {
+			t.Errorf("%s and %s read %s and %s", tc.a, tc.b, masked(tc.a), masked(tc.b))
+		}
+	}
+	if masked("B3*2") == masked("B3*3") || masked("SUM(B2:B4)") == masked("MAX(B2:B4)") {
+		t.Error("a formula rewritten other than in its references reads the same")
+	}
+}
