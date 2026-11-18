@@ -535,6 +535,10 @@ const (
 	repeats    = 8
 )
 
+// repeatWords name the two workbooks a repeat compares, which compareEditors
+// calls the stream's and the full editor's.
+var repeatWords = strings.NewReplacer("stream has", "the first run has", "full has", "the repeat has", "stream holds", "the first run holds", "full holds", "the repeat holds")
+
 // repeat makes the edit again on the bytes it first found, repeats times
 // with each editor, and reports a file that holds other cells, formulas or
 // values than the first one saved. (The bytes may differ: the order of the
@@ -558,7 +562,7 @@ func (s *session) repeat(e Edit, before, after [2][]byte) (*violation, error) {
 			if code != 0 {
 				v = &violation{"repeat", fmt.Sprintf("%s editor: the same edit on the same bytes worked once and failed once (exit %d: %s)", ed.name, code, firstLine(msg))}
 			} else if _, d := compareEditors(after[k], got); d != "" {
-				v = &violation{"repeat", fmt.Sprintf("%s editor: the same edit on the same bytes saved two different workbooks: %s", ed.name, strings.ReplaceAll(d, "stream has", "once"))}
+				v = &violation{"repeat", fmt.Sprintf("%s editor: the same edit on the same bytes saved two different workbooks: %s", ed.name, repeatWords.Replace(d))}
 			}
 		}
 		if err := os.WriteFile(s.paths[k], after[k], 0o644); err != nil {

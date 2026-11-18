@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eemax/sheets/internal/grid"
 	"github.com/eemax/sheets/internal/undo"
 )
 
@@ -260,6 +261,61 @@ func TestStrictXML(t *testing.T) {
 		}
 		if !c.ok && err == nil {
 			t.Errorf("%s: not refused", c.name)
+		}
+	}
+}
+
+// TestRepeatRefuses: the repeat check passes an edit that gives the same
+// workbook each time, and refuses one whose repeat gives another; and
+// arraysGone counts arrays removed, not moved.
+func TestRepeatRefuses(t *testing.T) {
+	pool := loadPool(t)
+	s, err := newSession(t.TempDir(), pool[0].Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.close()
+	e := Edit{Class: "set", Args: []string{"set", FileArg, "Data!B2", "5"}}
+	var before, after [2][]byte
+	for k, ed := range editors {
+		before[k] = pool[0].Data
+		if code, msg := run(ed.env, false, e, s.paths[k]); code != 0 {
+			t.Fatalf("%s: %s", ed.name, msg)
+		}
+		if after[k], err = os.ReadFile(s.paths[k]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if v, err := s.repeat(e, before, after); err != nil || v != nil {
+		t.Fatalf("an edit that gives the same workbook: %v, %v", v, err)
+	}
+	// The first run "saved" another workbook than the repeats do.
+	after[0] = pool[1].Data
+	v, err := s.repeat(e, before, after)
+	if err != nil || v == nil || v.invariant != "repeat" {
+		t.Fatalf("a repeat that gives another workbook: %v, %v", v, err)
+	}
+	t.Log(v.detail)
+	if got, _ := os.ReadFile(s.paths[0]); !bytes.Equal(got, after[0]) {
+		t.Error("the check did not put the first run's bytes back")
+	}
+
+	arrays := func(rs ...grid.Range) *grid.Workbook {
+		return &grid.Workbook{Sheets: []*grid.Sheet{{Spills: rs}}}
+	}
+	a, b, c := grid.Range{R1: 2, C1: 13, R2: 4, C2: 13}, grid.Range{R1: 2, C1: 14, R2: 2, C2: 14}, grid.Range{R1: 5, C1: 13, R2: 7, C2: 13}
+	for _, tc := range []struct {
+		before, after *grid.Workbook
+		want          int
+	}{
+		{arrays(a, b), arrays(a, b), 0},
+		{arrays(a, b), arrays(c, b), 0}, // one moved
+		{arrays(a, b, c), arrays(), 3},
+		{arrays(a, b), arrays(b), 1},
+		{arrays(a), arrays(a, b), 0}, // one added
+	} {
+		if got := arraysGone(tc.before, tc.after); got != tc.want {
+			t.Errorf("arraysGone(%v, %v) = %d, want %d", tc.before.Sheets[0].Spills, tc.after.Sheets[0].Spills, got, tc.want)
 		}
 	}
 }
