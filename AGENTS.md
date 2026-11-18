@@ -78,8 +78,9 @@ and CSV files without Excel. Module `github.com/eemax/sheets`.
   work account. Work that needs Excel installed is parked.
 - **Breaking changes are fine.** sheets has no external users to keep
   compatible with yet.
-- **Anthropic's xlsx skill is proprietary.** Use it locally, as an eval
-  baseline, and never commit it.
+- **Anthropic's xlsx skill is Apache 2.0** since 2026-11-06
+  (anthropics/skills #2146). The eval's skill arm is committed with its
+  LICENSE.
 
 ## Git
 
