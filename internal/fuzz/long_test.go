@@ -650,9 +650,14 @@ func TestBugRepros(t *testing.T) {
 // TestBugsFixedReported: a bug whose repro no longer shows it is listed as
 // fixed, and one whose pool cannot be made as not replayed, with its own
 // pool's failure; neither is an error (fuzzer-long's audit, f1.2, f1.5).
+// Under -race only the second: a fixed bug's repro is replayed 10 times,
+// 16 s there (1 s in the plain run, which holds both).
 func TestBugsFixedReported(t *testing.T) {
-	kn, err := ReadKnown(`bug escape: set,write text; repro 100001; detail typed the text "[^"]*_[xX][0-9A-Fa-f]{4}_[xX][0-9A-Fa-f]{4}_[^"]*", and the cell holds text "
-bug far: sort editors; repro long 700012; detail x
+	fixedLine := `bug escape: set,write text; repro 100001; detail typed the text "[^"]*_[xX][0-9A-Fa-f]{4}_[xX][0-9A-Fa-f]{4}_[^"]*", and the cell holds text "` + "\n"
+	if raceOn {
+		fixedLine = ""
+	}
+	kn, err := ReadKnown(fixedLine + `bug far: sort editors; repro long 700012; detail x
 bug farther: move kinds; repro long 701600; detail x
 `)
 	if err != nil {
@@ -665,7 +670,7 @@ bug farther: move kinds; repro long 701600; detail x
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fx) != 1 || !strings.HasPrefix(fx[0], "escape (known.txt:1): its repro, 100001, makes ") {
+	if !raceOn && (len(fx) != 1 || !strings.HasPrefix(fx[0], "escape (known.txt:1): its repro, 100001, makes ")) || raceOn && len(fx) != 0 {
 		t.Errorf("fixed: %q", fx)
 	}
 	if len(unchecked) != 2 || !strings.Contains(unchecked[0], "pool 7000: ") || !strings.Contains(unchecked[0], "--seed 7000 ") ||
