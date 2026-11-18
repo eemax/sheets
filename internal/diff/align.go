@@ -206,9 +206,12 @@ func pairUpSkipping(na, nb int, matches [][2]int, similar func(i, j int) bool, s
 
 // findMoves pairs the lines an alignment left unmatched that are the same
 // on both sides (a row a sort took elsewhere), blank lines aside. Of all
-// the pairs, those keeping their order stay matches; the rest moved, and
-// so did those whose number changed among them, but for those that rows
-// added or removed shifted (placed: paired, in their place).
+// the pairs, a row moved when its rank among the paired rows changed: rows
+// added or removed shift a row's number, not its rank, so a sort that comes
+// with rows inserted or removed above or inside it moves every row it
+// renumbered, whatever number each has now, and a row that kept its rank is
+// in its place (placed: paired, but not in the others' order). Blank rows
+// never move.
 func findMoves(a, b []uint64, matches [][2]int, blankA, blankB []bool) (inOrder, moved, placed [][2]int) {
 	inA, inB := make([]bool, len(a)), make([]bool, len(b))
 	for _, m := range matches {
@@ -234,72 +237,43 @@ func findMoves(a, b []uint64, matches [][2]int, blankA, blankB []bool) (inOrder,
 		return matches, nil, nil
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i][0] < all[j][0] })
-	inOrder = longestIncreasing(all)
-	kept := make(map[[2]int]bool, len(inOrder))
-	for _, p := range inOrder {
+	// A pair's rank in the old version is its place in all; in the new one,
+	// its place by new index.
+	byNew := make([]int, len(all))
+	for k := range byNew {
+		byNew[k] = k
+	}
+	sort.Slice(byNew, func(x, y int) bool { return all[byNew[x]][1] < all[byNew[y]][1] })
+	rankNew := make([]int, len(all))
+	for r, k := range byNew {
+		rankNew[k] = r
+	}
+	kept := make(map[[2]int]bool, len(matches))
+	for _, p := range longestIncreasing(all) {
 		kept[p] = true
 	}
-	lo, hi := -1, -1
-	for _, p := range all {
-		if !kept[p] {
+	for k, p := range all {
+		switch {
+		case blankA[p[0]] || blankB[p[1]]:
+			// A blank row never moves: matched in order it stays, else it is
+			// in its place.
+			if kept[p] {
+				inOrder = append(inOrder, p)
+			} else {
+				placed = append(placed, p)
+			}
+		case k != rankNew[k]:
 			moved = append(moved, p)
-			lo, hi = minOr(lo, min(p[0], p[1])), max(hi, p[0], p[1])
+		case kept[p]:
+			inOrder = append(inOrder, p)
+		default:
+			placed = append(placed, p)
 		}
 	}
 	if moved == nil {
-		return inOrder, nil, nil
+		return inOrder, nil, placed
 	}
-	// Within the rows a sort spans, every row whose number changed moved,
-	// though its order among the others held: its offset is not that of
-	// the rows kept in order around the span (rows added or removed above
-	// shift those).
-	before, after := 0, 0
-	seenAfter := false
-	for _, p := range inOrder {
-		switch {
-		case p[0] < lo && p[1] < lo:
-			before = p[1] - p[0]
-		case (p[0] > hi || p[1] > hi) && !seenAfter:
-			after, seenAfter = p[1]-p[0], true
-		}
-	}
-	// Lines added above the span, less those removed.
-	pairedA, pairedB := make([]bool, len(a)), make([]bool, len(b))
-	for _, p := range all {
-		pairedA[p[0]], pairedB[p[1]] = true, true
-	}
-	shift := 0
-	for j := 0; j < lo && j < len(b); j++ {
-		if !pairedB[j] {
-			shift++
-		}
-	}
-	for i := 0; i < lo && i < len(a); i++ {
-		if !pairedA[i] {
-			shift--
-		}
-	}
-	base := map[int]bool{before: true, after: true, shift: true}
-	// Out of the others' order but where rows added or removed put it: in
-	// its place, so not moved (though paired apart from the rest).
-	var out [][2]int
-	for _, p := range moved {
-		if base[p[1]-p[0]] {
-			placed = append(placed, p)
-		} else {
-			out = append(out, p)
-		}
-	}
-	moved = out
-	var stay [][2]int
-	for _, p := range inOrder {
-		if p[0] >= lo && p[0] <= hi && p[1] >= lo && p[1] <= hi && !base[p[1]-p[0]] {
-			moved = append(moved, p)
-			continue
-		}
-		stay = append(stay, p)
-	}
-	return stay, moved, placed
+	return inOrder, moved, placed
 }
 
 // lookAhead bounds how far fillGaps looks for a line's match.
@@ -349,11 +323,4 @@ func fillGaps(a, b []uint64, matches [][2]int) [][2]int {
 	}
 	gap(len(a), len(b))
 	return out
-}
-
-func minOr(a, b int) int {
-	if a < 0 {
-		return b
-	}
-	return min(a, b)
 }

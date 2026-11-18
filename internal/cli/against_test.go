@@ -159,6 +159,136 @@ func TestSameRef(t *testing.T) {
 	}
 }
 
+// TestReplay checks that what Excel writes for lines removed and added is
+// worked out for many runs of them (deleting every fourth row of a table is
+// hundreds), and that lines past what a formula reads touch nothing of it.
+func TestReplay(t *testing.T) {
+	var removed [][2]int
+	for r := 5; r <= 1001; r += 4 {
+		removed = append(removed, [2]int{r, r})
+	}
+	r := &report{edits: []lineEdit{{sheet: "Data", rowsRemoved: removed}}}
+	f, ok := r.replay("SUM(B2:B1001)", "Data", false)
+	if want := "SUM(B2:B751)"; !ok || f != want {
+		t.Errorf("replay %q %v, want %q", f, ok, want)
+	}
+	// A formula on another sheet, and one that reads only rows above.
+	f, ok = r.replay("SUM(Data!B2:B1001)+B3", "Summary", false)
+	if want := "SUM(Data!B2:B751)+B3"; !ok || f != want {
+		t.Errorf("replay %q %v, want %q", f, ok, want)
+	}
+	if f, _ := r.replay("B2*C2", "Data", false); f != "B2*C2" {
+		t.Errorf("above the rows removed: %q", f)
+	}
+	// Rows added or removed within what a sort moved are left out when sure.
+	r = &report{edits: []lineEdit{{sheet: "Data", rowsAdded: [][2]int{{3, 3}}, movedNew: [2]int{2, 8}}}}
+	if f, _ := r.replay("SUM(B2:B6)", "Data", true); f != "SUM(B2:B6)" {
+		t.Errorf("within a sort, sure: %q", f)
+	}
+	if f, _ := r.replay("SUM(B2:B6)", "Data", false); f != "SUM(B2:B7)" {
+		t.Errorf("within a sort: %q", f)
+	}
+	if _, ok := (&report{}).replay("SUM(B2:B6)", "Data", false); ok {
+		t.Errorf("nothing to replay, yet it did")
+	}
+	if _, ok := (&report{edits: r.edits, replayed: replayLimit + 1}).replay("SUM(B2:B6)", "Data", false); ok {
+		t.Errorf("past the limit, yet it replayed")
+	}
+}
+
+// Deleting every fourth row of a table (a filter, a script's delete_rows) is
+// hundreds of runs of rows removed: the total Excel shrank is no formula
+// changed, and its value moved with the rows removed as its cause.
+func TestCheckAgainstManyRuns(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	build := func(path string, drop bool) {
+		var b strings.Builder
+		b.WriteString("Region\tUnits\tPrice\n")
+		n := 0
+		for i := 1; i <= 1000; i++ {
+			if drop && i%4 == 0 {
+				continue
+			}
+			n++
+			fmt.Fprintf(&b, "R%d\t%d\t%d\n", i, i%50, 1+i%13)
+		}
+		fmt.Fprintf(&b, "Total\t=SUM(B2:B%d)\n", n+1)
+		if out, code := runCLI(b.String(), "write", path, "Data!A1"); code != 0 {
+			t.Fatalf("write: %s", out)
+		}
+	}
+	before, after := filepath.Join(dir, "a.xlsx"), filepath.Join(dir, "b.xlsx")
+	build(before, false)
+	build(after, true)
+	js, code := runCLI("", "--json", "check", after, "--against", before)
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, js)
+	}
+	var r againstResult
+	if err := json.Unmarshal([]byte(js), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Summary.Formulas != 0 || len(r.Changed) != 0 {
+		t.Errorf("formulas changed: %+v", r.Changed)
+	}
+	if len(r.Moved) != 1 || !strings.HasPrefix(r.Moved[0].Cause, "rows removed: ") {
+		t.Errorf("moved: %+v", r.Moved)
+	}
+}
+
+// runCLI runs sheets as a command, in-process.
+func runCLI(stdin string, args ...string) (string, int) {
+	var out, errs bytes.Buffer
+	code := Main(args, strings.NewReader(stdin), &out, &errs)
+	return out.String() + errs.String(), code
+}
+
+// A file with many findings (each formula that breaks its column's pattern
+// is one) does not make the text output long: ten are listed, with the
+// count of the rest; --json lists them all.
+func TestCheckAgainstFindingsBounded(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	build := func(path string, broken bool) {
+		var b strings.Builder
+		b.WriteString("Label\tVal\tCalc\n")
+		for i := 2; i <= 401; i++ {
+			if broken && i%4 == 0 {
+				fmt.Fprintf(&b, "L%d\t%d\t=B%d*%d\n", i, i, i-1, i)
+			} else {
+				fmt.Fprintf(&b, "L%d\t%d\t=B%d*2\n", i, i, i)
+			}
+		}
+		if out, code := runCLI(b.String(), "write", path, "Data!A1"); code != 0 {
+			t.Fatalf("write: %s", out)
+		}
+	}
+	before, after := filepath.Join(dir, "a.xlsx"), filepath.Join(dir, "b.xlsx")
+	build(before, false)
+	build(after, true)
+	out, code := runCLI("", "check", after, "--against", before)
+	if lines := strings.Split(strings.TrimSpace(out), "\n"); len(lines) > 60 {
+		t.Errorf("%d lines:\n%s", len(lines), out)
+	}
+	if code != 0 && code != 1 {
+		t.Errorf("exit %d", code)
+	}
+	if !strings.Contains(out, "  … ") || !strings.Contains(out, "more (--json lists them all)") {
+		t.Errorf("no count of the rest:\n%s", out)
+	}
+	js, _ := runCLI("", "--json", "check", after, "--against", before)
+	var r struct {
+		Findings []json.RawMessage `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(js), &r); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Findings) < 100 {
+		t.Errorf("--json lists %d findings, want them all (100 broken rows)", len(r.Findings))
+	}
+}
+
 // TestCheckAgainstLarge checks that check --against stays bounded, and
 // records its time, on 150,000 rows of which every tenth changed. Run
 // with SHEETS_LARGE=1.

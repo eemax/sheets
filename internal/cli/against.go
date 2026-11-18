@@ -335,6 +335,9 @@ type report struct {
 	edits   []lineEdit
 	renames [][2]string
 	arrays  arrays
+	// replayed counts the runs of lines replayed on formulas, against
+	// replayLimit.
+	replayed int
 	// lines pairs each old sheet's rows and columns with the new version's
 	// (by the old name, lower-cased); cur is the sheet being compared.
 	lines map[string]*lineMap
@@ -346,6 +349,9 @@ type report struct {
 type lineMap struct {
 	sheet    string
 	row, col map[int]int
+	// moved are the old rows a sort moved: a formula in one moved with it,
+	// its references rewritten as for a copy.
+	moved map[int]bool
 }
 
 // removal is rows or columns removed from a sheet, as runs numbered as
@@ -363,6 +369,11 @@ type lineEdit struct {
 	sheet                  string
 	rowsRemoved, rowsAdded [][2]int
 	colsRemoved, colsAdded [][2]int
+	// movedOld and movedNew span the rows a sort moved (as numbered before
+	// and now; zero when none moved), with the rows removed or added joining
+	// them. Where rows were added or removed within them cannot be told: the
+	// sort took them elsewhere.
+	movedOld, movedNew [2]int
 }
 
 type candidate struct {
@@ -388,6 +399,24 @@ func (r *report) cause(sheet string, rg grid.Range, label string) {
 func (r *report) structural(sheet string, rg grid.Range, label string) {
 	r.lineSources = append(r.lineSources, xlsx.Source{Sheet: sheet, Range: rg, Readers: true})
 	r.lineCauses = append(r.lineCauses, label)
+}
+
+// wasRows says where moved rows were, for a cause: nothing when they kept
+// their numbers (rows added or removed around them moved the rest).
+func wasRows(sheet string, m diff.Moved) string {
+	if m.From == m.To {
+		return ""
+	}
+	return " (were " + lineRange(sheet, m.From, m.From+m.Rows-1, false) + ")"
+}
+
+// sameNumber notes rows that moved yet kept their numbers: the rows around
+// them moved, or rows were added or removed above them.
+func sameNumber(m movedRows) string {
+	if m.From == m.To {
+		return " (its number held; the rows around it moved)"
+	}
+	return ""
 }
 
 func lineRange(sheet string, from, to int, cols bool) string {
@@ -441,9 +470,9 @@ const alikeLimit = 500
 
 // pairAlike pairs the rows removed with the rows added that are mostly
 // alike (at least half their cells the same, formulas by their pattern):
-// rows a sort moved and an edit changed. It gives the rows, and those
-// pairs as moved.
-func (r *report) pairAlike(sa, sb *grid.Sheet, rows []diff.Pair, cols [][2]int) ([]diff.Pair, []diff.Moved) {
+// rows a sort moved and an edit changed. It gives the rows, with those
+// pairs.
+func (r *report) pairAlike(sa, sb *grid.Sheet, rows []diff.Pair, cols [][2]int) []diff.Pair {
 	var olds, news []int
 	for _, q := range rows {
 		switch {
@@ -454,7 +483,7 @@ func (r *report) pairAlike(sa, sb *grid.Sheet, rows []diff.Pair, cols [][2]int) 
 		}
 	}
 	if len(olds) == 0 || len(news) == 0 || len(olds)*len(news) > alikeLimit*alikeLimit {
-		return rows, nil
+		return rows
 	}
 	key := func(wb *grid.Workbook, s *grid.Sheet, row, col int) string {
 		c := s.At(row, col)
@@ -507,25 +536,20 @@ func (r *report) pairAlike(sa, sb *grid.Sheet, rows []diff.Pair, cols [][2]int) 
 		}
 	}
 	if len(paired) == 0 {
-		return rows, nil
+		return rows
 	}
 	var out []diff.Pair
-	var moved []diff.Moved
 	for _, q := range rows {
 		switch {
 		case q.New == 0 && taken[q.Old]:
 			continue
 		case q.Old == 0 && paired[q.New] > 0:
-			o := paired[q.New]
-			out = append(out, diff.Pair{Old: o, New: q.New})
-			if o != q.New {
-				moved = append(moved, diff.Moved{From: o, To: q.New, Rows: 1})
-			}
+			out = append(out, diff.Pair{Old: paired[q.New], New: q.New})
 			continue
 		}
 		out = append(out, q)
 	}
-	return out, moved
+	return out
 }
 
 // folded is a formula as Excel compares it: letters outside text in
@@ -649,6 +673,7 @@ func (r *report) compare() {
 		sa, sb *grid.Sheet
 		rows   []diff.Pair
 		cols   [][2]int
+		moved  []diff.Moved
 	}
 	var jobs []job
 	for _, p := range al.Sheets {
@@ -683,11 +708,12 @@ func (r *report) compare() {
 			}
 		}
 		if len(p.Moved) > 0 {
-			// Rows sorted and changed too: alike, they moved.
-			var more []diff.Moved
-			p.Rows, more = r.pairAlike(sa, sb, p.Rows, cols)
-			p.Moved = append(p.Moved, more...)
-			sort.Slice(p.Moved, func(i, j int) bool { return p.Moved[i].To < p.Moved[j].To })
+			// Rows sorted and changed too: alike, they moved. Of all the rows
+			// paired now, those whose rank among them changed are the rows
+			// moved.
+			p.Rows = r.pairAlike(sa, sb, p.Rows, cols)
+			ua, ub := sa.Used(), sb.Used()
+			p.Moved = diff.MovedRows(p.Rows, func(q diff.Pair) bool { return rowEmpty(sa, ua, q.Old) && rowEmpty(sb, ub, q.New) })
 		}
 		p.Rows = r.pairSpilled(sa, sb, p.Rows)
 		removalOf := func(removed []int, byCol bool) removal {
@@ -728,10 +754,12 @@ func (r *report) compare() {
 			removals = append(removals, removalOf(colsRemoved, true))
 		}
 		lo, hi := 0, 0
+		var spanOld, spanNew [2]int
 		for _, m := range p.Moved {
+			spanOld, spanNew = widen(spanOld, m.From, m.From+m.Rows-1), widen(spanNew, m.To, m.To+m.Rows-1)
 			out.MovedRows = append(out.MovedRows, movedRows{Sheet: sb.Name, From: m.From, To: m.To, Rows: m.Rows})
 			r.structural(sb.Name, grid.Range{R1: m.To, C1: 1, R2: m.To + m.Rows - 1, C2: grid.MaxCols},
-				"rows moved: "+lineRange(sb.Name, m.To, m.To+m.Rows-1, false)+" (were "+lineRange(sa.Name, m.From, m.From+m.Rows-1, false)+")")
+				"rows moved: "+lineRange(sb.Name, m.To, m.To+m.Rows-1, false)+wasRows(sa.Name, m))
 			if lo == 0 || min(m.From, m.To) < lo {
 				lo = min(m.From, m.To)
 			}
@@ -741,8 +769,9 @@ func (r *report) compare() {
 			// What a sort spans: every cell there may hold another row's now.
 			r.structural(sb.Name, grid.Range{R1: lo, C1: 1, R2: hi, C2: grid.MaxCols}, "rows moved: "+lineRange(sb.Name, lo, hi, false))
 		}
-		jobs = append(jobs, job{sa, sb, p.Rows, cols})
-		r.edits = append(r.edits, lineEdit{sheet: sb.Name, rowsRemoved: runs(rowsRemoved), rowsAdded: runs(rowsAdded), colsRemoved: runs(colsRemoved), colsAdded: runs(colsAdded)})
+		jobs = append(jobs, job{sa, sb, p.Rows, cols, p.Moved})
+		spanOld, spanNew = reach(spanOld, rowsRemoved), reach(spanNew, rowsAdded)
+		r.edits = append(r.edits, lineEdit{sheet: sb.Name, rowsRemoved: runs(rowsRemoved), rowsAdded: runs(rowsAdded), colsRemoved: runs(colsRemoved), colsAdded: runs(colsAdded), movedOld: spanOld, movedNew: spanNew})
 	}
 	for from, to := range r.renamed {
 		if to != "" && !strings.EqualFold(from, to) {
@@ -752,7 +781,12 @@ func (r *report) compare() {
 	sort.Slice(r.renames, func(i, j int) bool { return r.renames[i][0] < r.renames[j][0] })
 	r.lines = map[string]*lineMap{}
 	for _, j := range jobs {
-		m := &lineMap{sheet: j.sb.Name, row: map[int]int{}, col: map[int]int{}}
+		m := &lineMap{sheet: j.sb.Name, row: map[int]int{}, col: map[int]int{}, moved: map[int]bool{}}
+		for _, mv := range j.moved {
+			for k := 0; k < mv.Rows; k++ {
+				m.moved[mv.From+k] = true
+			}
+		}
 		for _, q := range j.rows {
 			if q.Old > 0 && q.New > 0 {
 				m.row[q.Old] = q.New
@@ -830,6 +864,33 @@ func (r *report) compare() {
 	r.trace(tr)
 }
 
+// reach takes in the rows added or removed (lines) that join a span of
+// moved rows without a row kept between: the sort may have taken them too.
+func reach(span [2]int, lines []int) [2]int {
+	if span[0] == 0 {
+		return span
+	}
+	in := make(map[int]bool, len(lines))
+	for _, n := range lines {
+		in[n] = true
+	}
+	for in[span[0]-1] {
+		span[0]--
+	}
+	for in[span[1]+1] {
+		span[1]++
+	}
+	return span
+}
+
+// widen extends a span of lines (zero for none) to take in from..to.
+func widen(span [2]int, from, to int) [2]int {
+	if span[0] == 0 {
+		return [2]int{from, to}
+	}
+	return [2]int{min(span[0], from), max(span[1], to)}
+}
+
 func lessAt(a, b xlsx.At) bool {
 	if a.Sheet != b.Sheet {
 		return a.Sheet < b.Sheet
@@ -846,7 +907,7 @@ func (r *report) sameRef(old, now string) bool {
 	if strings.EqualFold(old, now) {
 		return true
 	}
-	f, ok := r.replay(old, "")
+	f, ok := r.replay(old, "", false)
 	return ok && strings.EqualFold(f, now)
 }
 
@@ -889,8 +950,18 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 		return
 	case fa && fb:
 		if folded(x.Formula) == folded(y.Formula) {
-			// The same text: the formula is as it was (it reads the same
-			// cells), whatever rows were added or moved around it.
+			// The same text: the formula is as it was, whatever rows were
+			// moved around it, unless rows or columns added or removed moved
+			// what it reads and it was not rewritten for them.
+			// (A row a sort moved took its formula with it, rewritten as for a
+			// copy: where it reads is its own business.)
+			if want, ok := r.stale(x.Formula, sb.Name); ok && !r.cur.moved[ra] {
+				c := changedCell{Cell: here, Was: was, Kind: "formula", Before: "=" + x.Formula, After: "=" + y.Formula,
+					Flag: "its text is as it was, though rows or columns added or removed moved what it reads: Excel writes =" + want}
+				out.Changed = append(out.Changed, c)
+				r.cause(sb.Name, one, "formula "+here)
+				return
+			}
 			break
 		}
 		pa, _ := formula.Pattern(folded(x.Formula), ra, ca)
@@ -957,34 +1028,65 @@ func repr(c *grid.Cell, v valueOf) string {
 	return v.text
 }
 
-// adjustedLimit bounds the runs of lines replayed on a formula.
-const adjustedLimit = 200
+// replayLimit bounds the work of replaying lines added and removed on
+// formulas: each run of lines on each formula it can reach.
+const replayLimit = 2_000_000
+
+// within tells whether a run of lines meets a span (zero for none).
+func within(run, span [2]int) bool {
+	return span[0] > 0 && run[0] <= span[1] && run[1] >= span[0]
+}
 
 // replay rewrites a formula, or a name's reference (home ""), as Excel does
 // for the sheets renamed and the rows and columns added and removed. It
-// says false when there is nothing to replay, or too much.
-func (r *report) replay(old, home string) (string, bool) {
+// says false when there is nothing to replay, or too much. With sure set,
+// the rows added or removed within what a sort moved are left out: where
+// they were cannot be told, as the sort took the rows elsewhere.
+func (r *report) replay(old, home string, sure bool) (string, bool) {
 	n := 0
 	for _, e := range r.edits {
 		n += len(e.rowsRemoved) + len(e.rowsAdded) + len(e.colsRemoved) + len(e.colsAdded)
 	}
-	if n == 0 && len(r.renames) == 0 || n > adjustedLimit {
+	if n == 0 && len(r.renames) == 0 || r.replayed > replayLimit {
 		return "", false
 	}
 	f := old
 	for _, rn := range r.renames {
 		f = formula.RenameSheet(f, rn[0], rn[1])
 	}
+	// How far the formula reads on each sheet: lines past that touch nothing
+	// of it.
+	reach := map[string][2]int{}
+	for _, ref := range formula.Refs(f) {
+		sheet := strings.ToLower(ref.Sheet)
+		if ref.Sheet == "" {
+			sheet = strings.ToLower(home)
+		}
+		x := reach[sheet]
+		reach[sheet] = [2]int{max(x[0], ref.Range.R2), max(x[1], ref.Range.C2)}
+	}
 	for _, e := range r.edits {
+		x := reach[strings.ToLower(e.sheet)]
 		for _, dim := range []struct {
 			cols           bool
 			removed, added [][2]int
-		}{{false, e.rowsRemoved, e.rowsAdded}, {true, e.colsRemoved, e.colsAdded}} {
+			movedOld       [2]int
+			movedNew       [2]int
+			far            int
+		}{{false, e.rowsRemoved, e.rowsAdded, e.movedOld, e.movedNew, x[0]}, {true, e.colsRemoved, e.colsAdded, [2]int{}, [2]int{}, x[1]}} {
+			far := dim.far
 			for i := len(dim.removed) - 1; i >= 0; i-- {
-				f = formula.DeleteLines(f, home, e.sheet, dim.cols, dim.removed[i][0], dim.removed[i][1])
+				if run := dim.removed[i]; run[0] <= far && !(sure && within(run, dim.movedOld)) {
+					r.replayed++
+					f = formula.DeleteLines(f, home, e.sheet, dim.cols, run[0], run[1])
+				}
 			}
 			for _, a := range dim.added {
-				f = formula.InsertLines(f, home, e.sheet, dim.cols, a[0], a[1]-a[0]+1)
+				if a[0] <= far && !(sure && within(a, dim.movedNew)) {
+					r.replayed++
+					f = formula.InsertLines(f, home, e.sheet, dim.cols, a[0], a[1]-a[0]+1)
+					far += a[1] - a[0] + 1
+				}
 			}
 		}
 	}
@@ -995,7 +1097,7 @@ func (r *report) replay(old, home string) (string, bool) {
 // old self rewritten as Excel does for the sheets renamed and the rows and
 // columns added and removed.
 func (r *report) adjusted(old, home, now string, row, col int) bool {
-	f, ok := r.replay(old, home)
+	f, ok := r.replay(old, home, false)
 	if !ok {
 		return false
 	}
@@ -1003,6 +1105,15 @@ func (r *report) adjusted(old, home, now string, row, col int) bool {
 	pf, _ := formula.Pattern(folded(f), row, col)
 	pn, _ := formula.Pattern(now, row, col)
 	return pf == pn
+}
+
+// stale gives what Excel would have written for a formula whose text is as
+// it was, when rows or columns added or removed moved what it reads: Excel
+// rewrites such a formula, so one left as it was reads other cells now (the
+// usual slip of a script that inserts rows without rewriting formulas).
+func (r *report) stale(old, home string) (string, bool) {
+	f, ok := r.replay(old, home, true)
+	return f, ok && folded(f) != folded(old)
 }
 
 // brokenRow flags one row of a formula column changed unlike the rows
@@ -1255,7 +1366,7 @@ func (a *app) printAgainst(r *againstResult) {
 			plain = append(plain, c)
 		}
 	}
-	if section("flagged: formula changes unlike the rows around them", len(flagged)) {
+	if section("flagged: formula changes that look like mistakes", len(flagged)) {
 		for _, c := range flagged[:min(len(flagged), againstListed)] {
 			a.printf("  %s  %s → %s  (%s)\n", withWas(c.Cell, c.Was), orEmpty(c.Before), orEmpty(c.After), c.Flag)
 		}
@@ -1287,7 +1398,7 @@ func (a *app) printAgainst(r *againstResult) {
 	}
 	if section("rows moved (as by a sort; not changes)", len(r.MovedRows)) {
 		for _, m := range r.MovedRows[:min(len(r.MovedRows), againstListed)] {
-			a.printf("  %s, were %s\n", lineRange(m.Sheet, m.To, m.To+m.Rows-1, false), strings.TrimPrefix(lineRange(m.Sheet, m.From, m.From+m.Rows-1, false), grid.QuoteSheet(m.Sheet)+"!"))
+			a.printf("  %s, were %s%s\n", lineRange(m.Sheet, m.To, m.To+m.Rows-1, false), strings.TrimPrefix(lineRange(m.Sheet, m.From, m.From+m.Rows-1, false), grid.QuoteSheet(m.Sheet)+"!"), sameNumber(m))
 		}
 		more(len(r.MovedRows))
 	}
@@ -1302,11 +1413,15 @@ func (a *app) printAgainst(r *againstResult) {
 		a.printf("no problems found\n")
 	} else {
 		a.printf("%s, %s, %s\n", plural(r.Errors, "error"), plural(r.Warnings, "warning"), plural(r.Notes, "note"))
+		// The worst first, as check lists them; a file can have thousands.
+		fs := append([]checkFinding{}, r.Findings...)
+		sort.SliceStable(fs, func(i, j int) bool { return fs[i].Severity > fs[j].Severity })
 		tw := a.table()
-		for _, f := range r.Findings {
+		for _, f := range fs[:min(len(fs), againstListed)] {
 			tw.row(f.Severity.String(), findingCells(f), f.Message)
 		}
 		tw.Flush()
+		more(len(fs))
 	}
 }
 

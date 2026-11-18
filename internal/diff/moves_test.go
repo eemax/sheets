@@ -176,3 +176,76 @@ func TestMovesSortShifted(t *testing.T) {
 		t.Errorf("moved %+v", al.Sheets[0].Moved)
 	}
 }
+
+// unitsTable is a table of regions in the order given, with Units as
+// against_before.xlsx's Data has them and titles above it.
+func unitsTable(titles int, order []string) [][]any {
+	units := map[string]int{"North": 5, "South": 7, "East": 3, "West": 9, "Mid": 4, "Extra": 6}
+	var rows [][]any
+	for i := 0; i < titles; i++ {
+		rows = append(rows, []any{"Title"})
+	}
+	rows = append(rows, []any{"Region", "Units"})
+	for _, n := range order {
+		rows = append(rows, []any{n, units[n]})
+	}
+	return append(rows, []any{"Total", "=SUM(B1:B2)"})
+}
+
+// A sort that comes with rows inserted or removed above or inside it moves
+// every row it renumbered, whatever number each has now: a row's number
+// says nothing once rows were added or removed, its rank among the others
+// does.
+func TestMovesSortWithRowEdits(t *testing.T) {
+	was := []string{"North", "South", "East", "West", "Mid"}
+	sortedNames := []string{"East", "Mid", "North", "South", "West"}
+	for _, c := range []struct {
+		name   string
+		after  [][]any
+		before [][]any
+		moved  map[int]int // old row → new row
+	}{
+		{"two rows above", unitsTable(2, sortedNames), unitsTable(0, was),
+			map[int]int{2: 6, 3: 7, 4: 4, 5: 8, 6: 5}},
+		{"one row above", unitsTable(1, sortedNames), unitsTable(0, was),
+			map[int]int{2: 5, 3: 6, 4: 3, 5: 7, 6: 4}},
+		// South deleted, then sorted: West keeps number 5 but not its rank.
+		{"a row deleted inside", unitsTable(0, []string{"East", "Mid", "North", "West"}), unitsTable(0, was),
+			map[int]int{2: 4, 4: 2, 5: 5, 6: 3}},
+		// A row added inside the sort, wherever it landed.
+		{"a row added inside", unitsTable(0, []string{"East", "Mid", "North", "Extra", "South", "West"}), unitsTable(0, was),
+			map[int]int{2: 4, 3: 6, 4: 2, 5: 7, 6: 3}},
+	} {
+		al := Align(book("Data", c.before), book("Data", c.after), Options{Moves: true})
+		p := al.Sheets[0]
+		got := map[int]int{}
+		for _, m := range p.Moved {
+			for k := 0; k < m.Rows; k++ {
+				got[m.From+k] = m.To + k
+			}
+		}
+		if !reflect.DeepEqual(got, c.moved) {
+			t.Errorf("%s: moved %v (runs %+v), want %v", c.name, got, p.Moved, c.moved)
+		}
+	}
+}
+
+// Rows that kept their rank are not moved, though a sort moved the rows
+// around them, nor are rows inserted above one that stayed.
+func TestMovesKeptRank(t *testing.T) {
+	before, after := sorted() // West is row 5 in both
+	al := Align(book("Data", before), book("Data", after), Options{Moves: true})
+	for _, m := range al.Sheets[0].Moved {
+		if m.From == 5 || m.To == 5 {
+			t.Errorf("West kept its place: %+v", al.Sheets[0].Moved)
+		}
+	}
+	// With a row inserted above, West is row 6 now: it kept its rank.
+	shifted := append([][]any{after[0], {"Inserted", 0, ""}}, after[1:]...)
+	al = Align(book("Data", before), book("Data", shifted), Options{Moves: true})
+	for _, m := range al.Sheets[0].Moved {
+		if m.From == 5 || m.To == 6 {
+			t.Errorf("West kept its rank: %+v", al.Sheets[0].Moved)
+		}
+	}
+}

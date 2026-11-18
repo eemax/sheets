@@ -48,7 +48,8 @@ stdout '"moved_rows":\[\{"sheet":"Data","from":4,"to":2,"rows":1\},'
 stdout '"changed":\[\],'
 
 # Sorted, and a sorted row changed: it moved, and its change is a change.
-# What reads a cell the sort spans by its place moves, the sort its cause.
+# What reads a cell a sorted row came to by its place moves, the rows moved
+# its cause.
 cp against_before.xlsx reads.xlsx
 exec sheets set reads.xlsx Summary!C1 '=Data!B4'
 cp reads.xlsx sortedit.xlsx
@@ -57,7 +58,7 @@ exec sheets set sortedit.xlsx Data!C2 99
 exec sheets check sortedit.xlsx --against reads.xlsx
 stdout '^  Data!C2 \(was C4\)  input  50 → 99$'
 stdout '^  Data!D2 \(was D4\)  150 → 297 +input Data!C2$'
-stdout '^  Summary!C1 +3 → 5 +rows moved: Data!2:6$'
+stdout '^  Summary!C1 +3 → 5 +rows moved: Data!4:5 \(were Data!2:3\)$'
 stdout '^  Data!2, were 4$'
 stdout ', 0 unexplained,'
 
@@ -120,6 +121,63 @@ exec sheets check addsort.xlsx --against against_before.xlsx
 stdout ': 0 inputs changed, 0 formulas changed, '
 ! stdout '=SUM\(B2:B6\) → =SUM\(B2:B6\)'
 stdout ', 0 unexplained,'
+
+# A sort that comes with rows inserted above it: every row it renumbered
+# moved, whatever its number is now (East is row 4 in both versions), and
+# what reads one of them by its place moves with them.
+cp against_before.xlsx titled.xlsx
+exec sheets rows insert titled.xlsx Data!1 -n 2
+exec sheets sort titled.xlsx Data!A3:D8 Units
+exec sheets check titled.xlsx --against against_before.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 1 computed value moved \(each with its cause\), 0 unexplained, 0 features lost, 0 unknown, 5 rows moved$'
+stdout '^  Summary!B7 +5 → 3 +rows moved: Data!4$'
+stdout '^  Data!4, were 4 \(its number held; the rows around it moved\)$'
+stdout '^  Data!5, were 6$'
+stdout '^  Data!6:7, were 2:3$'
+stdout '^  Data!8, were 5$'
+! stdout 'flagged:'
+! stdout 'unexplained:'
+
+# One row inserted, then sorted; and one deleted inside the sorted rows.
+cp against_before.xlsx titled1.xlsx
+exec sheets rows insert titled1.xlsx Data!1
+exec sheets sort titled1.xlsx Data!A2:D7 Units
+exec sheets check titled1.xlsx --against against_before.xlsx
+stdout ', 5 rows moved$'
+stdout ', 0 unexplained,'
+cp against_before.xlsx deleted.xlsx
+exec sheets rows delete deleted.xlsx Data!3
+exec sheets sort deleted.xlsx Data!A1:D5 Units
+exec sheets check deleted.xlsx --against against_before.xlsx
+stdout ', 4 rows moved$'
+stdout '^  Data!5, were 5 \(its number held; the rows around it moved\)$'
+stdout ', 0 unexplained,'
+
+# A script that inserts a row without rewriting formulas (openpyxl's
+# insert_rows): the formulas still read what they did, which is not what
+# Excel would have them read. They are formulas changed, flagged, with what
+# Excel writes; what they move is explained by them.
+cp against_before.xlsx stale.xlsx
+exec sheets rows insert stale.xlsx Data!6
+exec sheets set stale.xlsx Data!A6 Extra Data!B6 10 Data!C6 5 Data!D6 '=B6*C6' Data!D7 '=B6*C6' Data!B8 '=SUM(B2:B6)' Data!D8 '=SUM(D2:D6)' Summary!B2 '=SUM(Data!B2:B6)' Summary!B3 '=SUM(Data!D2:D6)' Summary!B6 '=MAX(Data!B2:B6)'
+exec sheets check stale.xlsx --against against_before.xlsx
+stdout ': 0 inputs changed, 6 formulas changed, '
+stdout '^flagged: formula changes that look like mistakes:$'
+stdout '^  Data!D7 \(was D6\)  =B6\*C6 → =B6\*C6  \(its text is as it was, though rows or columns added or removed moved what it reads: Excel writes =B7\*C7\)$'
+stdout '^  Data!B8 \(was B7\)  =SUM\(B2:B6\) → =SUM\(B2:B6\)  .*Excel writes =SUM\(B2:B7\)\)$'
+stdout '^  Summary!B2  =SUM\(Data!B2:B6\) → =SUM\(Data!B2:B6\)  .*Excel writes =SUM\(Data!B2:B7\)\)$'
+stdout '^  Summary!B4 +157.5 → 145 +formula Summary!B3$'
+! stdout 'unexplained:'
+
+# The same for a row deleted: the total still reads the row that went (the
+# text as it was is no longer a circular reference nobody caused).
+cp against_before.xlsx staledel.xlsx
+exec sheets rows delete staledel.xlsx Data!3
+exec sheets set staledel.xlsx Data!B6 '=SUM(B2:B6)' Data!D6 '=SUM(D2:D6)' Summary!B2 '=SUM(Data!B2:B6)' Summary!B3 '=SUM(Data!D2:D6)' Summary!B6 '=MAX(Data!B2:B6)'
+exec sheets check staledel.xlsx --against against_before.xlsx
+stdout ': 0 inputs changed, 5 formulas changed, '
+stdout '^  Data!B6 \(was B7\)  =SUM\(B2:B6\) → =SUM\(B2:B6\)  .*Excel writes =SUM\(B2:B5\)\)$'
+stdout '^  Summary!B6  =MAX\(Data!B2:B6\) → =MAX\(Data!B2:B6\)  .*Excel writes =MAX\(Data!B2:B5\)\)$'
 
 # A row inserted above a defined name's cell: Excel rewrites the name to
 # follow it, which is not a name changed. What reads the name is explained
@@ -274,7 +332,7 @@ error  Data!D2, D3, D4, D5, D6, B7, D7  7 formulas have no stored result, so pan
 error  Summary!B2, B3, B4, B5, B6, B7   6 formulas have no stored result, so pandas, openpyxl and previews read blanks; sheets computes them (B2 = 29): sheets check --fix stores them
 -- broken.out --
 broken.xlsx against against_before.xlsx: 0 inputs changed, 1 formula changed, 4 computed values moved (each with its cause), 0 unexplained, 0 features lost, 0 unknown
-flagged: formula changes unlike the rows around them:
+flagged: formula changes that look like mistakes:
   Data!D4  =B4*C4 → =B4*C3  (unlike the rows around it, which compute =B{r}*C{r})
 moved, each with its cause:
   Data!D7     630 → 540    formula Data!D4

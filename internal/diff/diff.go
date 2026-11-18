@@ -160,15 +160,45 @@ func Align(a, b *grid.Workbook, opts Options) Alignment {
 	return al
 }
 
-// movedRuns joins moved rows into runs that moved together.
+// MovedRows finds, among the rows paired in both versions (a Pair with both
+// numbers), those whose rank among the paired rows changed: the rows a sort
+// moved, whatever rows added or removed did to their numbers. skip names the
+// pairs that never move (blank rows). The runs come in the new numbering's
+// order.
+func MovedRows(rows []Pair, skip func(Pair) bool) []Moved {
+	var ps []Pair
+	for _, p := range rows {
+		if p.Old > 0 && p.New > 0 {
+			ps = append(ps, p)
+		}
+	}
+	sort.Slice(ps, func(i, j int) bool { return ps[i].Old < ps[j].Old })
+	byNew := make([]int, len(ps))
+	for k := range byNew {
+		byNew[k] = k
+	}
+	sort.Slice(byNew, func(x, y int) bool { return ps[byNew[x]].New < ps[byNew[y]].New })
+	rankNew := make([]int, len(ps))
+	for r, k := range byNew {
+		rankNew[k] = r
+	}
+	var moved [][2]int
+	for k, p := range ps {
+		if k != rankNew[k] && (skip == nil || !skip(p)) {
+			moved = append(moved, [2]int{p.Old - 1, p.New - 1})
+		}
+	}
+	return movedRuns(moved)
+}
+
+// movedRuns joins moved rows into runs that moved together. A row keeps its
+// number and moves all the same when rows added or removed shifted the
+// others (the number says nothing: rank does, see findMoves).
 func movedRuns(moved [][2]int) []Moved {
 	ps := append([][2]int{}, moved...)
 	sort.Slice(ps, func(i, j int) bool { return ps[i][1] < ps[j][1] })
 	var out []Moved
 	for _, p := range ps {
-		if p[0] == p[1] {
-			continue // paired out of the others' order, but in its place
-		}
 		if k := len(out) - 1; k >= 0 && out[k].From+out[k].Rows == p[0]+1 && out[k].To+out[k].Rows == p[1]+1 {
 			out[k].Rows++
 			continue
