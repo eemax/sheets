@@ -55,7 +55,7 @@ def model(t):
     total = {k: sum(v[k] for v in reg.values()) for k in ("rev", "cost", "margin", "n", "gap")}
     ranked = sorted(t["regions"], key=lambda r: -reg[r]["rev"])
     assert len({round(reg[r]["rev"], 6) for r in reg}) == len(reg), "tie in region revenue"
-    cats, seen = {}, []
+    seen = []
     for o in orders:
         if o["cat"] not in seen:
             seen.append(o["cat"])
@@ -246,7 +246,6 @@ def e4():
     if r is None:
         return False, "no order of 2026-03-18 (as a date)"
     d = lo("Orders")[f"A{r}"]
-    exp = M["orders"][-1]
     ok = (isinstance(d, dt.datetime) and [lo("Orders")[f"{a}{r}"] for a in "BCD"] == ["North", "Gizmo Pro", 12]
           and all(isformula("Orders", f"{a}{r}") for a in "EFGH") and cells_ok("Orders", [f"{a}{r}" for a in "EFGH"])[0])
     t = table_ref("Orders", "Orders")
@@ -268,7 +267,6 @@ def e7():
 
 
 def e8():
-    s = lo("Summary")
     ok, d = cells_ok("Summary", ["G3", "G4", "G5", "G6", "G7", "G8"])
     return ok and all(isformula("Summary", f"G{r}") for r in range(4, 9)), d or "G4:G8 must be formulas"
 

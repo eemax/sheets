@@ -226,13 +226,16 @@ def f_chart():
         return False, f"{len(charts)} chart parts"
     x = z.read(charts[0]).decode()
     refs = [f.replace("'", "").replace("$", "") for f in re.findall(r"<(?:c:)?f>([^<]*)</(?:c:)?f>", x)]
-    first = int(re.search(r"<xdr:from>.*?<xdr:row>(\d+)</xdr:row>", DRAW.split("graphicFrame")[0], re.S).group(1)) if "graphicFrame" in DRAW else -1
+    anchors = [m.group(0) for m in re.finditer(r"<(?:\w+:)?(twoCellAnchor|oneCellAnchor)\b.*?</(?:\w+:)?\1>", DRAW, re.S)]
+    mine = next((a for a in anchors if "graphicFrame" in a), "")
+    row = re.search(r"<(?:\w+:)?from>.*?<(?:\w+:)?row>(\d+)<", mine, re.S)
+    first = int(row.group(1)) if row else -1
     ok = "Budget by department" in x and "barChart" in x and f"Budget!A4:A{LASTD}" in refs and f"Budget!G4:G{LASTD}" in refs and first >= AVG
     return ok, f"series {refs}, anchored at row {first + 1}"
 
 
 def f_shape():
-    sp = re.findall(r"<xdr:sp\b.*?</xdr:sp>", DRAW, re.S)
+    sp = [m.group(0) for m in re.finditer(r"<(?:\w+:)?sp\b.*?</(?:\w+:)?sp>", DRAW, re.S)]
     ok = any('prst="roundRect"' in s and truth["shape"] in s and 'txBox="1"' not in s for s in sp)
     kinds = [re.findall(r'prst="(\w+)"', s) for s in sp]
     return ok, f"{len(sp)} shapes: {kinds}"
