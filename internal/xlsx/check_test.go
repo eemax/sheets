@@ -365,6 +365,52 @@ func TestCheck1904(t *testing.T) {
 	})
 }
 
+// Each class WP-01 found computed unlike Excel (unlike_excel.xlsx, sheet
+// Cases: the class in A, the formula in B, what Excel shows in C, a
+// formula reading B in D) gets Excel's result or none, with the reason, in
+// either editor; a formula reading an unknown one is unknown too.
+func TestCheckUnlikeExcel(t *testing.T) {
+	data := openFixture(t, "unlike_excel.xlsx")
+	why := map[int]string{
+		1:  `its format "mmmm" writes month names`,
+		2:  `its format "dddd" writes day names`,
+		3:  `its format "h:mm AM/PM" writes AM/PM`,
+		4:  `the locale tag [$-41D]`,
+		6:  `holds ÅÅÅÅ, not a format code of English (US) Excel`,
+		7:  `an array formula in one cell whose result is 6×2`,
+		11: `its criterion "<1/2/2020" holds a date written as text`,
+	}
+	bothEditors(t, func(t *testing.T) {
+		res := checkData(t, "u.xlsx", data)
+		got := valuesAt(t, res.Data, "Cases", grid.Range{R1: 1, C1: 2, R2: 12, C2: 4})
+		for r := 1; r <= 12; r++ {
+			b, excel, d := got[(r-1)*3], strings.Trim(got[(r-1)*3+1], `"`), got[(r-1)*3+2]
+			want := excel
+			if excel == "unknown" {
+				want = "?" // no result stored
+			}
+			if strings.Trim(b, `"`) != want || d != b {
+				t.Errorf("row %d: B %s, D %s; Excel shows %s", r, b, d, excel)
+			}
+		}
+		found := map[int]string{}
+		for _, u := range res.Unknown {
+			if u.Sheet == "Cases" && u.Col == 2 {
+				found[u.Row] = u.Why
+			}
+		}
+		for r, w := range why {
+			if !strings.Contains(found[r], w) {
+				t.Errorf("B%d: unknown because %q, want %q", r, found[r], w)
+			}
+		}
+		if len(found) != len(why) {
+			t.Errorf("unknown in B: %v", found)
+		}
+		fixedTwice(t, data, res)
+	})
+}
+
 // The editors agree on volatile formulas (TODAY), INDIRECT, and a ROWS
 // over a range holding the formula itself, which is not circular.
 func TestCheckRefsBothEditors(t *testing.T) {

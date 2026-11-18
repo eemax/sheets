@@ -388,3 +388,37 @@ ws["C3"] = ArrayFormula("C3:C4", "=B1:B2*3")
 for r in range(1, 4):
     ws.cell(r, 4).value = ArrayFormula(f"D{r}", f"=SUM(B{r}:B{r}*2)")
 wb.save(f"{out}/arrays_rows.xlsx")
+
+# unlike_excel.xlsx: one formula of each class WP-01 found computed unlike
+# Excel (sheet Cases, A1:D12: the class, the formula, what Excel shows, and
+# a formula reading it), over sheet Data.
+wb = Workbook()
+d = wb.active
+d.title = "Data"
+for r, (day, n, k) in enumerate([(1, 1, "A"), (2, 2, "B"), (3, 4, "A")], 1):
+    d.cell(r, 1, datetime.date(2020, 1, day))
+    d.cell(r, 2, n)
+    d.cell(r, 3, k)
+d["E1"], d["F1"], d["G1"] = "#N/A", "found", "#N/A"
+d["H5"], d["H6"] = "A", "B"
+c = wb.create_sheet("Cases")
+cases = [
+    ("TEXT, month names", '=TEXT(Data!A1,"mmmm")', "unknown"),
+    ("TEXT, day names", '=TEXT(Data!A1,"dddd")', "unknown"),
+    ("TEXT, AM/PM", '=TEXT(0.75,"h:mm AM/PM")', "unknown"),
+    ("TEXT, a locale tag", '=TEXT(Data!A1,"[$-41D]mmmm")', "unknown"),
+    ("TEXT, the en-US tag", '=TEXT(Data!A1,"[$-409]mmmm")', "January"),
+    ("TEXT, Swedish codes", '=TEXT(Data!A1,"ÅÅÅÅ-MM-DD")', "unknown"),
+    ("SUMPRODUCT over whole columns", ArrayFormula("B7", "=SUMPRODUCT(Data!A:A=Data!A1)*Data!B:C"), "unknown"),
+    ("ERROR.TYPE inside IF", ArrayFormula("B8", '=_xlfn.IFNA(INDEX(Data!E1:G1,MATCH(3,ERROR.TYPE(COLUMN(IF(Data!E1:G1<>"~N/A",Data!E1:G1))),0)),"")'), "found"),
+    ("SUMIFS with DATE, criteria range", '=SUMIFS(Data!B1:B3,Data!A1:A3,">="&DATE(2020,1,2),Data!C1:C3,Data!H5:H6)', 0),
+    ("SUMIFS with DATE", '=SUMIFS(Data!B1:B3,Data!A1:A3,">="&DATE(2020,1,2))', 6),
+    ("text date in a criterion", '=SUMIF(Data!A1:A3,"<1/2/2020",Data!B1:B3)', "unknown"),
+    ("ISO date in a criterion", '=SUMIF(Data!A1:A3,"<2020-01-02",Data!B1:B3)', 1),
+]
+for r, (label, f, excel) in enumerate(cases, 1):
+    c.cell(r, 1, label)
+    c.cell(r, 2).value = f
+    c.cell(r, 3, excel)
+    c.cell(r, 4, f"=B{r}")
+wb.save(f"{out}/unlike_excel.xlsx")
