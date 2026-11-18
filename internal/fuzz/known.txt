@@ -174,3 +174,15 @@ bug replace-loses-kind: replace kinds; repro long 6300201846; detail =IF\(N\("d"
 # (The editors' difference ends with the arrays one editor has alone, which
 # this face reads: one more array in the full editor's file, none fewer.)
 bug full-keeps-array-metadata: write,set,do editors; repro long 70255300604; detail ![^!]*dynamic arrays: stream has [^(]*, full has [^(]* \(the full editor's alone: [A-Z]+[0-9]+(:[A-Z]+[0-9]+)?\)$; edit N\("p"\)
+
+# New (long mode, seed 915488): a plain formula whose range gives it one value,
+# by its row (implicit intersection: R&D!C2 =IF(N("p")=0,'Data'!C2:C3*2) reads
+# Data!C2), keeps the result it had when an insert moves it to another row,
+# where it reads another (C3: Data!C3*2, 0.58, not 6). A set that computes it
+# and a rows insert after it leave 6 in both editors' files, so only a script
+# shows it: the full editor's computes the sheet again at its end, and the
+# streaming editor's does not (a script sets 'R&D!H7' and inserts row 1:
+# R&D!C3 is 6 in the streaming editor's file, 0.58 in the full one's). The
+# editors' difference in a value names the formula, which this face reads: no
+# function call around the range.
+bug intersection-kept: script editors; repro long 91548805029; detail ![A-Z]+[0-9]+ \(=IF\(N\("p"\)=0,[^()]*:[^()]*\)\): stream holds number [^,]*, full holds number [^,]*$; edit \.(insert|delete)\(

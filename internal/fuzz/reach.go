@@ -53,9 +53,11 @@ type reach struct {
 	// rects is the reach, where it stands now, by sheet.
 	rects map[string][]grid.Range
 	// regions are the arrays of the workbook before (dynamic, legacy), where
-	// they stand now; member the region each of their other cells belonged to.
+	// they stand now; member the regions each of their other cells belonged
+	// to (two arrays whose results meet share a cell: Excel shows #SPILL! at
+	// one, and sheets lays them out in map order, so the cell is either's).
 	regions []*region
-	member  map[origin]*region
+	member  map[origin][]*region
 	// xforms are what the edit does to references, in order: blocks moved,
 	// lines inserted or deleted, sheets renamed (none: it rewrites none).
 	xforms []xform
@@ -102,7 +104,7 @@ type region struct {
 }
 
 func newReach(wb *grid.Workbook) *reach {
-	rc := &reach{before: wb, sheets: map[string]*grid.Sheet{}, at: map[string]map[[2]int]origin{}, rects: map[string][]grid.Range{}, member: map[origin]*region{}, copies: map[string]bool{}}
+	rc := &reach{before: wb, sheets: map[string]*grid.Sheet{}, at: map[string]map[[2]int]origin{}, rects: map[string][]grid.Range{}, member: map[origin][]*region{}, copies: map[string]bool{}}
 	for _, s := range wb.Sheets {
 		k := strings.ToLower(s.Name)
 		rc.sheets[k] = s
@@ -122,7 +124,7 @@ func newReach(wb *grid.Workbook) *reach {
 			for r := a.R1; r <= a.R2; r++ {
 				for c := a.C1; c <= a.C2; c++ {
 					if r != a.R1 || c != a.C1 {
-						rc.member[origin{k, r, c}] = g
+						rc.member[origin{k, r, c}] = append(rc.member[origin{k, r, c}], g)
 					}
 				}
 			}
@@ -1003,9 +1005,12 @@ func (rc *reach) check(after *grid.Workbook, sheets map[string]bool, order []str
 	// 46022 is a change a value does not show).
 	for _, t := range cells {
 		b, a := rc.cell(t.o), get(t.k, t.p)
-		// Part of an array whose formula may give another result.
-		g := rc.member[t.o]
-		recomputed := may[t.k][t.p] || g != nil && (g.disturbed || g.gone || may[g.sheet][[2]int{g.rg.R1, g.rg.C1}])
+		// Part of an array whose formula may give another result (of any
+		// array it is in, when the results of two met).
+		recomputed := may[t.k][t.p]
+		for _, g := range rc.member[t.o] {
+			recomputed = recomputed || g.disturbed || g.gone || may[g.sheet][[2]int{g.rg.R1, g.rg.C1}]
+		}
 		if !recomputed && (b.Formula == "" && a.Formula != "" || !sameValue(a, b)) {
 			why := ""
 			if b.Formula != "" {

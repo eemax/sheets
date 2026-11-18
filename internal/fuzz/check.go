@@ -498,7 +498,14 @@ func compareSheets(a, b *grid.Sheet) string {
 		for c := 1; c <= c2; c++ {
 			ca, cb := a.Get(r, c), b.Get(r, c)
 			if d := compareCells(ca, cb); d != "" {
-				return grid.CellName(r, c) + ": " + d
+				// A value the editors differ on names the formula both hold
+				// ("C3 (=IF(N("p")=0,'Data'!C2:C3*2)): stream holds …"), so a
+				// known bug's face can ask what the formula reads.
+				at := grid.CellName(r, c)
+				if ca.Formula != "" && ca.Formula == cb.Formula {
+					at += " (=" + ca.Formula + ")"
+				}
+				return at + ": " + d
 			}
 		}
 	}

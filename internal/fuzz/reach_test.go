@@ -192,6 +192,14 @@ func TestReach(t *testing.T) {
 			after: m{"Data!A1": "1", "Data!A2": "2", "Data!M2": "=A1:A2*2|2", "Data!M3": "7", "Data!Z1": "5"}, wantErr: "Data!M3: outside the edit's reach, it held number 4, and holds number 7 now"},
 		{name: "a set in a dynamic array's results", before: m{"Data!M2": "=SEQUENCE(2)|1", "Data!M3": "2"}, extra: []string{"Data!M2:M3"}, edit: edit("set", "Data!M3", "'x"),
 			afterExtra: []string{}, after: m{"Data!M2": "=SEQUENCE(2)|0", "Data!M3": "'x"}},
+		// Two arrays whose results meet share a cell, either's (seed 915488:
+		// D6's B2:B4*2 over D6:D8 and C8's SEQUENCE(1,2) over C8:D8; the rows
+		// delete takes D6's array, and D8, now D5, goes with it).
+		{name: "rows delete takes one of two arrays that meet", before: m{"Data!D6": "=B2:B4*2|2", "Data!D7": "4", "Data!C8": "=SEQUENCE(1,2)|1", "Data!D8": "2"}, extra: []string{"Data!D6:D8", "Data!C8:D8"},
+			afterExtra: []string{"Data!C5:D5"}, edit: edit("rows", "delete", "Data!5:7"), after: m{"Data!C5": "=SEQUENCE(1,2)|1"}},
+		{name: "rows delete, and an array's results lost", before: m{"Data!C8": "=SEQUENCE(1,2)|1", "Data!D8": "2"}, extra: []string{"Data!C8:D8"},
+			afterExtra: []string{"Data!C5:D5"}, edit: edit("rows", "delete", "Data!5:7"), after: m{"Data!C5": "=SEQUENCE(1,2)|1"},
+			wantErr: "Data!D5: outside the edit's reach, it held number 2, and holds nothing now"},
 		{name: "rows inserted through a dynamic array", before: m{"Data!M2": "=SEQUENCE(2)|1", "Data!M3": "2"}, extra: []string{"Data!M2:M3"}, edit: edit("rows", "insert", "Data!3"),
 			after: m{"Data!M2": "=SEQUENCE(2)|1", "Data!M3": "2"}},
 		{name: "replace", before: m{"Data!A1": "'Apple pie", "Data!A2": "'Pear", "Data!A3": "5"}, edit: edit("replace", "apple", "Fig"),

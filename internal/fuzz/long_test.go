@@ -575,7 +575,12 @@ func TestKnownFaces(t *testing.T) {
 		// typed where one stood (seed 702553).
 		{"write", "editors", `Bob's Plan!dynamic arrays: stream has F5, full has F4 F5 (the full editor's alone: F4)`, Edit{Class: "write", Args: []string{"write", FileArg, "Bob's Plan!F4", "--from", "tsv"}, Stdin: "=IF(N(\"p\")=0,SUM(B2:B6))\n"}, "full-keeps-array-metadata"},
 		{"set", "editors", `Data!dynamic arrays: stream has none, full has F7 (the full editor's alone: F7)`, Edit{Class: "set", Args: []string{"set", FileArg, "Data!F7", `=IF(N("p")=0,NOT(F7))`}}, "full-keeps-array-metadata"},
+		// A formula read by its row, moved by a script's insert (seed 915488).
+		{"script", "editors", `R&D!C3 (=IF(N("p")=0,'Data'!C2:C3*2)): stream holds number 6, full holds number 0.58`, script(`ws.getRange("H7").setFormula("=IF(N(\"p\")=0,NOT(F7))");`+"\n"+`ws.getRange("1:1").insert("Down");`), "intersection-kept"},
 		// New: not a known bug's.
+		{"script", "editors", `R&D!C3 (=IF(N("p")=0,SUM('Data'!C2:C3))): stream holds number 6, full holds number 0.58`, script(`ws.getRange("1:1").insert("Down");`), ""},
+		{"script", "editors", `R&D!C3 (=IF(N("p")=0,'Data'!C2:C3*2)): stream holds number 6, full holds number 0.58`, script(`ws.getRange("H7").setFormula("=IF(N(\"p\")=0,NOT(F7))");`), ""},
+		{"script", "editors", `R&D!C3 (=IF(N("p")=0,'Data'!C2:C3*2)): stream holds number 6, full holds nothing (pending)`, script(`ws.getRange("1:1").insert("Down");`), ""},
 		{"write", "editors", `Bob's Plan!dynamic arrays: stream has F4 F5, full has F5 (the streaming editor's alone: F4)`, Edit{Class: "write", Args: []string{"write", FileArg, "Bob's Plan!F4", "--from", "tsv"}, Stdin: "=IF(N(\"p\")=0,SUM(B2:B6))\n"}, ""},
 		{"write", "editors", `Bob's Plan!dynamic arrays: stream has F5, full has F4 (the streaming editor's alone: F5, the full editor's alone: F4)`, Edit{Class: "write", Args: []string{"write", FileArg, "Bob's Plan!F4", "--from", "tsv"}, Stdin: "=IF(N(\"p\")=0,SUM(B2:B6))\n"}, ""},
 		{"write", "editors", `Bob's Plan!dynamic arrays: stream has F5, full has F4 F5 (the full editor's alone: F4)`, Edit{Class: "write", Args: []string{"write", FileArg, "Bob's Plan!F4", "--from", "tsv"}, Stdin: "=IF(N(\"d\")=0,SEQUENCE(2))\n"}, ""},
