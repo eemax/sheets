@@ -140,6 +140,10 @@ func TestDate1904(t *testing.T) {
 		{"YEAR(\"2020-01-01\")", "2020", false},
 		{"TIMEVALUE(\"12:00\")", "0.5", false},
 		{"YEAR(\"1903-12-31\")", "#VALUE!", false},
+		{"DATEVALUE(\"1903-06-01\")", "#VALUE!", false},
+		{"TEXT(1.5,\"[h]:mm\")", `"36:00"`, false}, // elapsed time has no epoch
+		{"TEXT(1.5,\"[mm]\")", `"2160"`, false},
+		{"TEXT(A1,\"[h]:mm\")", `"1016856:00"`, false},
 		{"YEAR(\"-1\")", "#NUM!", false},
 		{"YEAR(\"366\")", "1905", false},
 		{"TEXT(A1,\"yyyy-mm-dd\")", `"2020-01-01"`, false},

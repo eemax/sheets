@@ -630,8 +630,12 @@ func formatDate(v float64, sec string, date1904 bool) string {
 	if v < 0 {
 		return strings.Repeat("#", 8)
 	}
+	// The 1904 system moves the calendar, not elapsed time: [h], [mm] and
+	// [ss] count from the serial as it is.
+	shift := 0.0
 	if date1904 {
-		v += 1462
+		shift = 1462
+		v += shift
 	}
 	// Round to the shown precision: whole seconds unless the code shows
 	// fractions.
@@ -812,6 +816,7 @@ func formatDate(v float64, sec string, date1904 bool) string {
 			b.WriteString(f[strings.IndexByte(f, '.'):])
 		case 'e':
 			var x int
+			v := v - shift
 			switch t.lit {
 			case "h":
 				x = int(math.Floor(v*24 + 1e-9))

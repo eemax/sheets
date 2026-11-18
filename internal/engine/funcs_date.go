@@ -90,7 +90,10 @@ func init() {
 		case dependent:
 			return languageDependent(s)
 		case ok && isISODateText(s):
-			return c.dateOut(num(math.Floor(n)))
+			if r := c.dateOut(num(math.Floor(n))); r.Kind == Number {
+				return r
+			}
+			return errv(ErrValue) // date text outside the system's range
 		case ok:
 			return num(math.Floor(n)) // a time alone: day 0
 		}

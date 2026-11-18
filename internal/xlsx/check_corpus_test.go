@@ -147,7 +147,7 @@ func TestCheckCorpus(t *testing.T) {
 						switch {
 						case e.Formula == "" || e.Pending:
 							notInExcel++
-						case formula.DepsOf(e.Formula).Volatile:
+						case timeDependent(e.Formula):
 							volatileExcel++
 						case agreesCell(c.After, valueOnly(e)):
 							asExcel++
@@ -269,4 +269,16 @@ func libreOfficeOpens(soffice, profile, path, dir string) error {
 		return fmt.Errorf("no output: %s", strings.TrimSpace(buf.String()))
 	}
 	return nil
+}
+
+// timeDependent tells whether a formula calls TODAY, NOW or a RAND
+// function: Excel stored its result on the day it saved, so it is not
+// compared. Other volatile functions (OFFSET, INDIRECT, CELL, INFO) are.
+func timeDependent(f string) bool {
+	for _, fn := range formula.CalledFunctions(f) {
+		if fn == "TODAY" || fn == "NOW" || strings.HasPrefix(fn, "RAND") {
+			return true
+		}
+	}
+	return false
 }

@@ -90,6 +90,14 @@ func (c *calc) analyse() {
 	c.j = newJudge(eng, g, rs, ty, pending, plan, func(f *formulaAt) (grid.Cell, bool) {
 		return f.stored, f.stored.Kind != grid.Empty && !f.pending
 	}, time.Now().Add(24*time.Hour))
+	c.j.oneCell = func(sheet string, row, col int) bool {
+		s := c.wb.Sheet(sheet)
+		if s == nil {
+			return false
+		}
+		rg, ok := legacyArray(s, row, col)
+		return ok && rg.Rows()*rg.Cols() == 1
+	}
 }
 
 // errUnsupported marks formulas the engine cannot compute although Excel

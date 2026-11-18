@@ -411,6 +411,21 @@ func TestCheckUnlikeExcel(t *testing.T) {
 	})
 }
 
+// Reading gives the unknown the check leaves unknown: an array formula in
+// one cell whose result is larger (B7, and D7 reading it) has no value in
+// the read-side resolver either.
+func TestReadUnlikeExcelOneCellArray(t *testing.T) {
+	wb, err := ReadBytes(openFixture(t, "unlike_excel.xlsx"))
+	must(t, err)
+	s := wb.Sheet("Cases")
+	wb.ResolveRange(s, grid.Range{R1: 1, C1: 2, R2: 12, C2: 4})
+	for _, at := range [][2]int{{7, 2}, {7, 4}} {
+		if c := s.At(at[0], at[1]); c == nil || !c.Pending {
+			t.Errorf("%s reads a value, want unknown: %+v", grid.CellName(at[0], at[1]), c)
+		}
+	}
+}
+
 // The editors agree on volatile formulas (TODAY), INDIRECT, and a ROWS
 // over a range holding the formula itself, which is not circular.
 func TestCheckRefsBothEditors(t *testing.T) {
