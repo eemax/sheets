@@ -20,8 +20,9 @@ import (
 )
 
 // The kinds a formula is stored as, and the markers that name them in its
-// text: N("p"), N("l"), N("d"). N of a text is 0, so a marker changes no
-// result.
+// text, as the condition of an IF that is always true: IF(N("p")=0,...),
+// N("l"), N("d"). N of a text is 0, so a marker changes no result, and keeps
+// the type of the result (it is not added to it).
 const (
 	Plain   = "p" // <f>, or a shared formula
 	Legacy  = "l" // <f t="array">, entered with Ctrl+Shift+Enter
@@ -222,7 +223,6 @@ type formulaCell struct {
 	cm          int
 	shared      bool   // stored as a shared formula (the master or a follower)
 	typ, value  string // the cell's t attribute, and its stored result (<v>)
-	hasValue    bool   // the cell has a <v>, empty or not
 }
 
 // The stored forms of a formula's result.
@@ -379,7 +379,7 @@ func sheetFormulas(zf *zip.File) ([]formulaCell, error) {
 				return nil, err
 			}
 			if last >= 0 {
-				out[last].value, out[last].hasValue = text, true
+				out[last].value = text
 			}
 		case "f":
 			t, ref, si := attr(se, "t"), attr(se, "ref"), attr(se, "si")
