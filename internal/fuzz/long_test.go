@@ -100,7 +100,7 @@ func fuzzLong(t *testing.T, committed []Workbook, known map[Signature]bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newFindings := judgeFindings(t, "long", res, known, ps.Files, dir, "SHEETS_FUZZ=long ")
+	newFindings := judgeFindings(t, res, known, ps.Files, dir, "SHEETS_FUZZ=long ")
 	t.Logf("fuzz long: %d edits (%d applied) in %d sequences, %.0fs, seed %d; %d pools generated (seeds %s); %d findings, %d new",
 		res.Edits, res.Applied, res.Sequences, res.Elapsed.Seconds(), seed, len(res.Pools), seedList(res.Pools), len(res.Findings), newFindings)
 	if ps.Failed != "" {

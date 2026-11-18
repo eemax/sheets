@@ -216,7 +216,8 @@ func TestReach(t *testing.T) {
 }
 
 // TestRefToken: a formula's references are read as one token each, so a
-// formula rewritten in its references only reads the same.
+// formula rewritten in its references only reads the same; and what it reads
+// is found past its strings, in a sheet named with quotes too.
 func TestRefToken(t *testing.T) {
 	for _, tc := range []struct{ a, b string }{
 		{`IF(N("p")=0,B3*2)`, `IF(N("p")=0,B5*2)`},
@@ -227,6 +228,19 @@ func TestRefToken(t *testing.T) {
 		if masked(tc.a) != masked(tc.b) {
 			t.Errorf("%s and %s read %s and %s", tc.a, tc.b, masked(tc.a), masked(tc.b))
 		}
+	}
+	for _, tc := range []struct{ in, want string }{
+		{`IF(N("p")=0,A2&"-x")`, `IF(N()=0,A2&)`},
+		{`IF(N("p")=0,'Q1 "draft"'!B9*2)`, `IF(N()=0,'Q1 "draft"'!B9*2)`},
+		{`'Bob''s Plan'!A1&"it's"`, `'Bob''s Plan'!A1&`},
+		{`"say ""hi"""&B2`, `&B2`},
+	} {
+		if got := stringsOut(tc.in); got != tc.want {
+			t.Errorf("stringsOut(%s) = %s, want %s", tc.in, got, tc.want)
+		}
+	}
+	if ins, ok := inputs(`IF(N("p")=0,'Q1 "draft"'!B9*2)`, "summary", nil); !ok || len(ins) != 1 || ins[0].sheet != `q1 "draft"` || ins[0].rg.String() != "B9" {
+		t.Errorf("the reference to a sheet with quotes in its name: %v %v", ins, ok)
 	}
 	if masked("B3*2") == masked("B3*3") || masked("SUM(B2:B4)") == masked("MAX(B2:B4)") {
 		t.Error("a formula rewritten other than in its references reads the same")

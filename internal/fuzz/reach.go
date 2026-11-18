@@ -360,18 +360,26 @@ func usedNames(names, before []grid.DefinedName) []usedName {
 }
 
 // stringsOut is a formula's text without its string literals ("Fig" is no
-// reference, nor is N("p") a name).
+// reference, nor is N("p") a name). A sheet's name in single quotes is kept
+// whole, double quotes and all ('Q1 "draft"'!B9 reads B9 of that sheet: its
+// quotes once read as a string, which hid the reference).
 func stringsOut(f string) string {
 	var b strings.Builder
-	in := false
+	str, name := false, false
 	for _, r := range f {
-		if r == '"' {
-			in = !in
+		switch {
+		case str:
+			str = r != '"' // "" inside a string closes and opens it again: the same
 			continue
+		case name:
+			name = r != '\'' // '' inside a name closes and opens it again: the same
+		case r == '"':
+			str = true
+			continue
+		case r == '\'':
+			name = true
 		}
-		if !in {
-			b.WriteRune(r)
-		}
+		b.WriteRune(r)
 	}
 	return b.String()
 }

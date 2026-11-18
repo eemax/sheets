@@ -476,7 +476,7 @@ func TestFuzz(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newFindings := judgeFindings(t, mode, res, known, func(uint64) []Workbook { return pool }, o.Dir, "")
+	newFindings := judgeFindings(t, res, known, func(uint64) []Workbook { return pool }, o.Dir, "")
 	t.Logf("fuzz %s: %d edits (%d applied) in %d sequences, %.1fs, seed %d; %d findings, %d new",
 		mode, res.Edits, res.Applied, res.Sequences, res.Elapsed.Seconds(), o.Seed, len(res.Findings), newFindings)
 	if res.Capped {
@@ -516,7 +516,7 @@ const repoRoot = "../.."
 // shrinking the first maxShrunk (pool gives the files of a pool, by seed),
 // and returns how many there are. env goes before the line that replays one
 // (long mode's SHEETS_FUZZ=long).
-func judgeFindings(t *testing.T, mode string, res *Result, known map[Signature]bool, pool func(uint64) []Workbook, dir, env string) int {
+func judgeFindings(t *testing.T, res *Result, known map[Signature]bool, pool func(uint64) []Workbook, dir, env string) int {
 	t.Helper()
 	newFindings := 0
 	for _, f := range res.Findings {
