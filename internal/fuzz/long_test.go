@@ -557,6 +557,9 @@ func TestKnownFaces(t *testing.T) {
 		{"set", "kinds", `Summary!E3: the edit should leave a plain formula there, and it holds no formula (it was lost), in the results of the dynamic array at E2:E3`, Edit{Class: "set", Args: []string{"set", FileArg, "Summary!E3", `=IF(N("p")=0,COUNTIF(B2:B9,">3"))`, "Summary!E2", `=IF(N("p")=0,'A<B'!B2+1)`}}, "spill-overwrites"},
 		{"rows-insert", "kinds", `stream editor: sheet2.xml C5: =IF(N("p")=0,Data!A2&"!") is stored as a dynamic array, not a plain formula`, plain("rows-insert"), "insert-turns-dynamic"},
 		{"rows-delete", "kinds", `stream editor: sheet3.xml D2: =IF(N("p")=0,IF(A2="","none",A2)) is stored as a dynamic array, not a plain formula`, plain("rows-delete"), "insert-turns-dynamic"},
+		// A range an aggregate reads (seed 548657).
+		{"rows-insert", "kinds", `stream editor: sheet2.xml C2: =IF(N("p")=0,MIN(C2:E2)) is stored as a dynamic array, not a plain formula`, plain("rows-insert"), "insert-turns-dynamic"},
+		{"cols-delete", "kinds", `stream editor: sheet1.xml I2: =IF(N("p")=0,COUNTIF(B2:B9,">3")) is stored as a dynamic array, not a plain formula`, plain("cols-delete"), "insert-turns-dynamic"},
 		{"set", "text", `Data!U3: typed the text "N/A", and the cell holds text "R&D!", in the results of the dynamic array at U2:U4`, plain("set"), "spill-overwrites"},
 		{"replace", "reach", `Data!E1: outside the edit's reach, it held text "1200", and holds text "Column5" now`, plain("replace"), "table-header-renamed"},
 		{"script", "editors", `Q 2026!F4: stream holds number 2, full holds text "!"`, Edit{Class: "script", Args: []string{"script", FileArg, "-e", "const ws = workbook.getWorksheet(\"Q 2026\");\nws.getRange(\"E4\").setFormula(\"=IF(N(\\\"d\\\")=0,SEQUENCE(1,2))\");\nws.getRange(\"F2\").setFormula(\"=IF(N(\\\"d\\\")=0,A2:A4&\\\"!\\\")\");\n"}}, "map-order"},
@@ -578,6 +581,8 @@ func TestKnownFaces(t *testing.T) {
 		{"set", "kinds", `Summary!E3: the edit should leave a plain formula there, and it holds no formula (it was lost)`, Edit{Class: "set", Args: []string{"set", FileArg, "Summary!E2", "1", "Summary!E3", `=IF(N("p")=0,B3)`}}, ""},
 		// The mutant rows-insert-arrays: a plain formula reading a range turned dynamic.
 		{"cols-insert", "kinds", `stream editor: sheet1.xml I2: =IF(N("p")=0,B3:B4*2) is stored as a dynamic array, not a plain formula`, plain("cols-insert"), ""},
+		{"rows-insert", "kinds", `stream editor: sheet2.xml C3: =IF(N("p")=0,'R&D'!C2:C3*10) is stored as a dynamic array, not a plain formula`, plain("rows-insert"), ""},
+		{"rows-insert", "kinds", `stream editor: sheet2.xml C3: =IF(N("p")=0,SUM(B2:B6)*B3:B4) is stored as a dynamic array, not a plain formula`, plain("rows-insert"), ""},
 		{"do", "kinds", `Data!E4: the edit should leave a dynamic array there, and it holds no formula (it was lost)`, batch("set 'Data!E4' '=IF(N(\"d\")=0,SEQUENCE(2))'\n"), ""},
 		{"move", "kinds", `Data!E4: the edit should leave a dynamic array there, and it holds no formula (it was lost)`, plain("move"), ""},
 		{"set", "text", `Data!I2: typed the text "Apple", and the cell holds text "APPLE"`, plain("set"), ""},

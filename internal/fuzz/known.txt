@@ -130,20 +130,24 @@ bug spill-overwrites: set,write text; repro long 711157; detail typed the text "
 bug spill-overwrites: set,write,do kinds; repro long 4001600827; detail : the edit should leave a [a-z ]+ there, and it holds no formula \(it was lost\), in the results of the dynamic array at [A-Z]+[0-9]+:[A-Z]+[0-9]+$
 
 # New (long mode, seeds 61002 and 341566): an edit of rows or columns turns a
-# plain formula that reads no range into a dynamic array, where a dynamic
-# array's cell was written over before: set 'Model!C2' to a dynamic array and
+# plain formula that reads no range (or one only through an aggregate) into a
+# dynamic array, where a dynamic array's cell was written over before: set 'Model!C2' to a dynamic array and
 # then a date in one command, write a plain formula there (=Data!A2&"!"), and
 # rows insert 'Q 2027!2' -n 3 stores it in C5 as a dynamic array (or a script
 # that deletes and inserts column C over a copied array, then a rows delete
 # elsewhere). Likely script-legacy-dynamic's cause: the array's cell metadata
-# left on the cell. (A formula reading a range where one value goes, turned
-# dynamic, is another bug: the mutant rows-insert-arrays.) A batch or a script
-# holding an insert or a delete of rows or columns shows it too (seed 664355,
-# the audit's: a script sets 'Bob''s Plan'!E2 to a plain formula and deletes
-# column A, and a batch's cols insert 'Data 2!A' -n 2 stores D2 as a dynamic
-# array).
-bug insert-turns-dynamic: rows-insert,rows-delete,cols-insert,cols-delete kinds; repro long 6100201614; detail =IF\(N\("p"\)=0,[^:]*\) is stored as a dynamic array, not a plain formula$
-bug insert-turns-dynamic: do,script kinds; repro long 66435500849; detail =IF\(N\("p"\)=0,[^:]*\) is stored as a dynamic array, not a plain formula$; edit (?m)^(rows|cols) (insert|delete) |\.(insert|delete)\(
+# left on the cell. A batch or a script holding an insert or a delete of rows
+# or columns shows it too (seed 664355, the audit's: a script sets
+# 'Bob''s Plan'!E2 to a plain formula and deletes column A, and a batch's cols
+# insert 'Data 2!A' -n 2 stores D2 as a dynamic array), and so does a formula
+# whose ranges are all an aggregate's to read (seed 548657: a write lays a
+# dynamic array at Calc!B2, a script sets B2 to =MIN(B2:D2) and inserts column
+# A, and rows insert 'Data!7' -n 3 stores C2, =MIN(C2:E2), as a dynamic
+# array). A formula reading a range where one value goes (=B3:B4*2), turned
+# dynamic, is another bug, the mutant rows-insert-arrays: the face takes no
+# range outside a SUM, MIN, MAX, COUNTIF or AVERAGE.
+bug insert-turns-dynamic: rows-insert,rows-delete,cols-insert,cols-delete kinds; repro long 6100201614; detail =IF\(N\("p"\)=0,([^:(]|\([^():]*\)|(SUM|MIN|MAX|COUNTIF|AVERAGE)\([^()]*\))*\) is stored as a dynamic array, not a plain formula$
+bug insert-turns-dynamic: do,script kinds; repro long 66435500849; detail =IF\(N\("p"\)=0,([^:(]|\([^():]*\)|(SUM|MIN|MAX|COUNTIF|AVERAGE)\([^()]*\))*\) is stored as a dynamic array, not a plain formula$; edit (?m)^(rows|cols) (insert|delete) |\.(insert|delete)\(
 
 # New (long mode, seed 341566): a replace that gives an Excel table's header
 # the name of another column renames that other column: replace Date 1,200,
