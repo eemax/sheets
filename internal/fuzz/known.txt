@@ -5,58 +5,39 @@
 # A fix removes its lines (the run lists those it no longer makes).
 
 # WP-18: moving or copying a plain formula that reads a range where one
-# value goes (='Data'!C2:C3*10, kept plain: Excel shows it with @) stores it
-# as a dynamic array that spills. By move and copy, and by do and script
-# batches that move or copy.
-script kinds 100005
-copy kinds 100006
-move kinds 100011
-move kinds 100039
-move kinds 100049
-move kinds 100051
-move kinds 100061
-move kinds 100063
-move kinds 100078
-move kinds 100087
-do kinds 100115
-do kinds 100117
-move kinds 100122
-copy kinds 100128
-copy kinds 100179
-script kinds 100205
-move kinds 100220
-move kinds 100231
-copy kinds 100237
-copy kinds 100244
-script kinds 100245
-move kinds 100246
-copy kinds 100254
-move kinds 100257
-move kinds 100258
-move kinds 100273
-copy kinds 100289
-do kinds 100294
-do kinds 100301
-move kinds 100309
-do kinds 100314
-do kinds 100315
+# value goes (='Data'!C2:C3*10, kept plain: Excel shows it with @), or the
+# cells it reads, stores it as a dynamic array that spills. By move and
+# copy, and by do and script batches that move or copy.
+copy kinds 100090
+copy kinds 100240
+copy kinds 100270
+copy kinds 100308
+do kinds 100233
+move kinds 100084
+move kinds 100095
+move kinds 100152
+move kinds 100182
+move kinds 100203
+move kinds 100221
+move kinds 100261
+move kinds 100280
 
 # New: a sort that finds its rows already in order leaves the full editor's
 # formulas on that sheet as they were, while the streaming editor computes
 # and stores them all: the full editor's results are missing (pending) or
 # stale (the 0 XlsxWriter stores), the streaming editor's are right. A
-# formula whose result is a text (Data!L2: "LIME" against pending) is among
+# formula whose result is a text (Data!L2: "FIG" against pending) is among
 # them.
 sort editors 100034
 sort editors 100045
-sort editors 100108
 sort editors 100310
 
 # New: sheets saves a different workbook from one run to the next when a
-# paste lands on several dynamic arrays at once (copy Data!P4:R6 onto M2,
-# over the arrays in M2:M4, N2 and O2:O4): formulas it pasted are missing
-# at random (Data!M3, or M3 and M4), by either editor. It lays the results
-# of dynamic arrays out in map order (xlsx/spill.go, spillResults). The
-# fuzzer makes an edit that removes two or more arrays again on the same
-# bytes, to see it every run.
-copy repeat 100139
+# paste lands on dynamic arrays (copy Data!B10:B13 onto U10, over the array
+# in U10:U12): values it pasted are missing at random (Data!U11), by either
+# editor. It lays the results of dynamic arrays out in map order
+# (xlsx/spill.go, spillResults). The fuzzer makes an edit that removes a
+# dynamic array again, 20 times by each editor, on the same bytes, to see it
+# every run.
+copy repeat 100164
+copy repeat 100271

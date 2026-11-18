@@ -145,10 +145,14 @@ type Result struct {
 	// hold a formula result of each stored form, and a shared formula (see
 	// Results): the forms the invariants were put to.
 	Saved map[string]int
-	// Repeated counts the edits that removed several dynamic arrays and were
-	// made again, by each editor, on the bytes they first found (see
-	// repeats).
+	// Repeated counts the edits that removed a dynamic array and were made
+	// again, by each editor, on the bytes they first found (see repeatFrom).
 	Repeated int
+	// Taken counts, by edit class, the edits both editors took; Streamed
+	// those of them the streaming editor could do itself (see streamed). The
+	// other edits are full-editor code in both copies, so the editors
+	// invariant compares that code with itself.
+	Taken, Streamed map[string]int
 }
 
 // SequenceSeed is the seed of sequence i of a run.
@@ -157,7 +161,7 @@ func SequenceSeed(run uint64, i int) uint64 { return run*100000 + uint64(i) }
 // Run runs sequences until the edit count or the time cap is reached.
 func Run(pool []Workbook, o Options) (*Result, error) {
 	start := time.Now()
-	r := &Result{Saved: map[string]int{}}
+	r := &Result{Saved: map[string]int{}, Taken: map[string]int{}, Streamed: map[string]int{}}
 	for i := 0; r.Edits < o.Edits; i++ {
 		if o.Time > 0 && r.Edits >= o.Min && time.Since(start) > o.Time {
 			r.Capped = true
@@ -465,7 +469,13 @@ func (s *session) step(e Edit, i int) (outcome, error) {
 	if err != nil {
 		return o, err
 	}
-	// An edit that removes several dynamic arrays is made again (see repeats).
+	if s.res != nil {
+		s.res.Taken[e.Class]++
+		if streamed(e, prev) {
+			s.res.Streamed[e.Class]++
+		}
+	}
+	// An edit that removes a dynamic array is made again (see repeatFrom).
 	if wb != nil && arraysGone(prev, wb) >= repeatFrom {
 		v, err := s.repeat(e, before, after)
 		if err != nil {
@@ -508,6 +518,30 @@ func (s *session) step(e Edit, i int) (outcome, error) {
 	return o, nil
 }
 
+// streamed tells whether the streaming editor could take an edit itself, on
+// the workbook it was made on: a set or a write that adds no dynamic array,
+// or the insert or delete of rows, on a workbook that holds no dynamic array
+// and no legacy array over several cells (see streamable). It is the
+// fuzzer's estimate from the edit and the workbook, not what the editor
+// reported: a set or rows edit inside a do batch or a script is not counted.
+func streamed(e Edit, wb *grid.Workbook) bool {
+	switch e.Class {
+	case "set", "write":
+		for _, a := range e.Args {
+			if marker(a) == Dynamic {
+				return false
+			}
+		}
+		if marker(e.Stdin) == Dynamic || strings.Contains(e.Stdin, `N("d")`) {
+			return false
+		}
+	case "rows-insert", "rows-delete":
+	default:
+		return false
+	}
+	return streamable(wb)
+}
+
 // before is the streaming copy's workbook as the next edit finds it, given
 // its bytes.
 func (s *session) before(data []byte) (*grid.Workbook, error) {
@@ -532,17 +566,22 @@ func arraysGone(a, b *grid.Workbook) int {
 	return gone
 }
 
-// An edit that removes this many dynamic arrays or more is made again on the
-// bytes it first found, repeats more times by each editor. Sheets lays the
-// results of dynamic arrays out in map order (spillResults), so a paste over
-// several of them can give a different workbook from one run to the next
-// (see known.txt); a finding that came and went would make two runs of one
-// seed differ. Fewer arrays are not made again: it would cost a third of the
-// run, and one array has no order.
-const (
-	repeatFrom = 2
-	repeats    = 8
-)
+// An edit that removes a dynamic array (one or more: net of those it adds on
+// the sheet) is made again on the bytes it first found, repeats times by each
+// editor. Sheets lays the results of dynamic arrays out in map order
+// (spillResults), so a paste over arrays can give a different workbook from
+// one run to the next (see known.txt), by chance: the shrunk paste of
+// copy repeat 100139 gives one workbook 73% of the time and two others about
+// 14% each. A finding that came and went would make two runs of one seed
+// differ, so the repeats are enough to see such an edit nearly every time:
+// the chance that all (1+repeats)*2 runs give the common workbook is below
+// 0.0002% (0.73 to the 42nd power).
+const repeatFrom = 1
+
+// repeats is the repeats by each editor: 20, and 3 under -race, where each
+// takes ten times as long and a miss only drops a finding the run lists as
+// stale.
+var repeats = 20
 
 // repeatWords name the two workbooks a repeat compares, which compareEditors
 // calls the stream's and the full editor's.

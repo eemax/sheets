@@ -30,6 +30,10 @@ const (
 	raceMinEdits = 200
 	// New findings past this many are printed unshrunk.
 	maxShrunk = 5
+	// A plain run must put this many edits to the streaming editor's own code
+	// (see streamed), or the editors invariant compares the full editor with
+	// itself.
+	minStreamed = 300
 )
 
 func TestMain(m *testing.M) {
@@ -43,6 +47,9 @@ func TestMain(m *testing.M) {
 	os.Setenv("SHEETS_CACHE_DIR", dir)
 	os.Setenv("SHEETS_CACHE", "off")
 	os.Unsetenv("SHEETS_UNDO")
+	if raceOn {
+		repeats = 3
+	}
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
@@ -468,7 +475,7 @@ func TestFuzz(t *testing.T) {
 	for _, f := range Results {
 		forms = append(forms, fmt.Sprintf("%s %d", f, res.Saved[f]))
 	}
-	t.Logf("fuzz %s: saved files holding a formula result of each form: %s; %d edits removed several dynamic arrays and were made again", mode, strings.Join(forms, ", "), res.Repeated)
+	t.Logf("fuzz %s: saved files holding a formula result of each form: %s; %d edits removed a dynamic array and were made again", mode, strings.Join(forms, ", "), res.Repeated)
 	if !custom {
 		// The invariants must have been put to every type of result and to
 		// shared formulas, or the pool and the edits have lost them.
@@ -477,6 +484,19 @@ func TestFuzz(t *testing.T) {
 				t.Errorf("no file the editors saved held a %s: the pool and the edits no longer put the invariants to it", f)
 			}
 		}
+	}
+	streamTotal, takenTotal := 0, 0
+	var by []string
+	for _, c := range Classes {
+		streamTotal += res.Streamed[c.Name]
+		takenTotal += res.Taken[c.Name]
+		if res.Streamed[c.Name] > 0 {
+			by = append(by, fmt.Sprintf("%s %d of %d", c.Name, res.Streamed[c.Name], res.Taken[c.Name]))
+		}
+	}
+	t.Logf("fuzz %s: the streaming editor could take %d of %d edits itself (%s); the others are full-editor code in both copies", mode, streamTotal, takenTotal, strings.Join(by, ", "))
+	if !custom && !raceOn && streamTotal < minStreamed {
+		t.Errorf("only %d edits could be taken by the streaming editor, want %d: the pool or the edits hand too much to the full editor (see README, The streaming editor)", streamTotal, minStreamed)
 	}
 	var stale []string
 	for s := range known {

@@ -290,6 +290,10 @@ func (m *model) command(w []string, stdin string) {
 			fail("%s %s", w[0], w[1])
 		}
 	case "sheet":
+		if len(w) == 3 && w[1] == "add" {
+			m.ensure(w[2])
+			return
+		}
 		if len(w) < 4 {
 			fail("sheet: %v", w)
 			return

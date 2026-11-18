@@ -3,6 +3,8 @@ package fuzz
 import (
 	"fmt"
 	"math/rand/v2"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -17,8 +19,13 @@ var Classes = []struct {
 }{
 	{"set", 12}, {"write", 6}, {"clear", 7}, {"copy", 12}, {"move", 12}, {"sort", 8}, {"replace", 6},
 	{"rows-insert", 6}, {"rows-delete", 6}, {"cols-insert", 4}, {"cols-delete", 4},
-	{"sheet-rename", 3}, {"sheet-copy", 3}, {"do", 5}, {"script", 6},
+	{"sheet-rename", 3}, {"sheet-copy", 3}, {"sheet-add", 2}, {"do", 6}, {"script", 6},
 }
+
+// streamBoost multiplies the weight of the classes the streaming editor does
+// itself (see streamable) while the workbook is one it can take them on: the
+// other classes are full-editor code in both copies.
+var streamBoost = map[string]int{"set": 3, "write": 2, "rows-insert": 3, "rows-delete": 3, "script": 2}
 
 // The formulas edits add, by the kind Excel 365 stores each typed in: {r}
 // is the row of its cell, {s} a sheet of the workbook. Each carries its kind
@@ -60,29 +67,65 @@ func marked(kind string, formulas ...string) []string {
 }
 
 type gen struct {
-	rng *rand.Rand
-	wb  *grid.Workbook
+	rng    *rand.Rand
+	wb     *grid.Workbook // the workbook, and the sheets this edit makes (a copy: the session's is not changed)
+	stream bool           // the workbook is one the streaming editor takes edits on (see streamable)
+	fresh  bool           // the edit makes a new sheet (set, copy)
+	made   *grid.Sheet    // the sheet the last edit made, until a batch picks it up
+	focus  *grid.Sheet    // the sheet a batch edits: the one it made
 }
 
 // generate makes a random edit for a workbook.
 func generate(rng *rand.Rand, wb *grid.Workbook) Edit {
-	g := &gen{rng: rng, wb: wb}
+	cp := *wb
+	cp.Sheets = slices.Clone(wb.Sheets)
+	g := &gen{rng: rng, wb: &cp, stream: streamable(wb)}
 	return g.edit(g.class(true))
 }
 
+// streamable tells whether the streaming editor can take a workbook's edits
+// itself. It does only set and the insert and delete of rows, and hands
+// over to the full editor for those as soon as the workbook holds a dynamic
+// array, and for rows when it holds a legacy array over several cells
+// (xlsx/stream.go: anySpills, anyLegacy). Every other edit is full-editor
+// code in both copies.
+func streamable(wb *grid.Workbook) bool {
+	for _, s := range wb.Sheets {
+		if len(s.Spills) > 0 {
+			return false
+		}
+		for _, a := range s.Arrays {
+			if a.Rows()*a.Cols() > 1 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (g *gen) weight(name string, w int) int {
+	if g.stream {
+		if b := streamBoost[name]; b > 0 {
+			return w * b
+		}
+	}
+	return w
+}
+
 func (g *gen) class(all bool) string {
+	skip := func(name string) bool { return !all && (name == "do" || name == "script" || name == "write") }
 	total := 0
 	for _, c := range Classes {
-		if all || c.Name != "do" && c.Name != "script" && c.Name != "write" {
-			total += c.Weight
+		if !skip(c.Name) {
+			total += g.weight(c.Name, c.Weight)
 		}
 	}
 	n := g.rng.IntN(total)
 	for _, c := range Classes {
-		if !all && (c.Name == "do" || c.Name == "script" || c.Name == "write") {
+		if skip(c.Name) {
 			continue
 		}
-		if n -= c.Weight; n < 0 {
+		if n -= g.weight(c.Name, c.Weight); n < 0 {
 			return c.Name
 		}
 	}
@@ -93,13 +136,58 @@ func (g *gen) chance(p float64) bool { return g.rng.Float64() < p }
 
 func pick[T any](g *gen, xs []T) T { return xs[g.rng.IntN(len(xs))] }
 
-func (g *gen) sheet() *grid.Sheet { return pick(g, g.wb.Sheets) }
+// sheet picks a sheet: in a batch, mostly the one it made.
+func (g *gen) sheet() *grid.Sheet {
+	if g.focus != nil && g.chance(0.7) {
+		return g.focus
+	}
+	return pick(g, g.wb.Sheets)
+}
 
-// used is a sheet's used range, at least A1.
+// addSheet makes a sheet of the workbook the edit is made for: a copy of
+// from, or an empty one.
+func (g *gen) addSheet(name string, from *grid.Sheet) *grid.Sheet {
+	s := grid.NewSheet(name)
+	if from != nil {
+		cp := *from
+		cp.Name = name
+		s = &cp
+	}
+	g.wb.Sheets = append(g.wb.Sheets, s)
+	g.made = s
+	return s
+}
+
+// renamed makes the rename visible to the edits after it in a batch.
+func (g *gen) renamed(s *grid.Sheet, name string) {
+	cp := *s
+	cp.Name = name
+	for i, o := range g.wb.Sheets {
+		if o == s {
+			g.wb.Sheets[i] = &cp
+		}
+	}
+	if g.focus == s {
+		g.focus = &cp
+	}
+}
+
+// target picks the sheet of a set, write or copy: now and then one the edit
+// makes (these commands make the sheet they name when it is new).
+func (g *gen) target(s *grid.Sheet) *grid.Sheet {
+	if g.fresh || g.chance(0.06) {
+		return g.addSheet(g.newName(), nil)
+	}
+	return s
+}
+
+// used is a sheet's used range, at least A1; a sheet with nothing in it is
+// taken as a few rows and columns, so edits on a new sheet land in several
+// rows.
 func used(s *grid.Sheet) grid.Range {
 	u := s.Used()
 	if u.R2 < 1 {
-		return grid.Range{R1: 1, C1: 1, R2: 1, C2: 1}
+		return grid.Range{R1: 1, C1: 1, R2: 8, C2: 5}
 	}
 	return u
 }
@@ -156,6 +244,74 @@ func (g *gen) area(s *grid.Sheet) grid.Range {
 	return grid.Range{R1: r, C1: c, R2: r + h - 1, C2: c + w - 1}
 }
 
+// The references in a formula's text: an optional sheet, a cell or a range.
+var refRE = regexp.MustCompile(`(?:(?:'((?:[^']|'')+)'|([A-Za-z0-9_]+))!)?\$?([A-Z]{1,3})\$?([0-9]+)(?::\$?([A-Z]{1,3})\$?([0-9]+))?`)
+
+// aggregate functions give one value from a range: a formula that has none
+// of them and reads a range is one that gives an array where one value goes.
+var aggregate = regexp.MustCompile(`\b(SUM|MAX|MIN|COUNTIF|PRODUCT)\(`)
+
+// readArea picks cells some formula reads: the range the formula names, or
+// part of it. Moving or copying the cells a formula reads rewrites the
+// formula (its references follow), which is where a formula can change its
+// kind; random cells rarely are those. Formulas that read a range where one
+// value goes are picked first, then any. It returns false when no formula
+// reads a cell.
+func (g *gen) readArea() (*grid.Sheet, grid.Range, bool) {
+	type read struct {
+		s  *grid.Sheet
+		rg grid.Range
+	}
+	var arrayish, all []read
+	for _, s := range g.wb.Sheets {
+		if u := s.Used(); u.R2 < 1 {
+			continue
+		}
+		s.Each(s.Used(), func(_, _ int, c *grid.Cell) {
+			if c.Formula == "" {
+				return
+			}
+			for _, m := range refRE.FindAllStringSubmatch(c.Formula, -1) {
+				at := s
+				if name := m[1] + m[2]; name != "" {
+					if at = g.wb.Sheet(strings.ReplaceAll(m[1], "''", "'") + m[2]); at == nil {
+						continue
+					}
+				}
+				ref := m[3] + m[4]
+				if m[5] != "" {
+					ref += ":" + m[5] + m[6]
+				}
+				rg, err := grid.ParseRange(ref)
+				if err != nil {
+					continue
+				}
+				all = append(all, read{at, rg})
+				if m[5] != "" && !aggregate.MatchString(c.Formula) {
+					arrayish = append(arrayish, read{at, rg})
+				}
+			}
+		})
+	}
+	from := all
+	if len(arrayish) > 0 && g.chance(0.6) {
+		from = arrayish
+	}
+	if len(from) == 0 {
+		return nil, grid.Range{}, false
+	}
+	r := pick(g, from)
+	rg := r.rg
+	if g.chance(0.4) && (rg.Rows() > 1 || rg.Cols() > 1) {
+		// Part of it.
+		rg.R1 += g.rng.IntN(rg.Rows())
+		rg.R2 = min(rg.R2, rg.R1+g.rng.IntN(3))
+		rg.C1 += g.rng.IntN(rg.Cols())
+		rg.C2 = min(rg.C2, rg.C1+g.rng.IntN(2))
+	}
+	return r.s, rg, true
+}
+
 func ref(s *grid.Sheet, rg grid.Range) string { return s.Name + "!" + rg.String() }
 
 func cell(s *grid.Sheet, r, c int) string { return s.Name + "!" + grid.CellName(r, c) }
@@ -177,7 +333,9 @@ func (g *gen) value(row int) string {
 	switch n := g.rng.IntN(10); {
 	case n < 4:
 		v = pick(g, values)
-	case n < 8:
+	case n < 8 || g.stream && g.chance(0.85):
+		// A dynamic array makes the workbook one the streaming editor hands
+		// over: in one it does not, they are rarer.
 		v = pick(g, plainFormulas)
 	default:
 		v = pick(g, dynamicFormulas)
@@ -205,6 +363,8 @@ func (g *gen) edit(class string) Edit {
 	switch class {
 	case "set":
 		e.Args = []string{"set", FileArg}
+		s = g.target(s)
+		u = used(s)
 		if g.chance(0.3) {
 			rg := g.area(s)
 			rg.R2 = rg.R1 + g.rng.IntN(4)
@@ -216,6 +376,7 @@ func (g *gen) edit(class string) Edit {
 			e.Args = append(e.Args, cell(s, r, c), g.value(r))
 		}
 	case "write":
+		s = g.target(s)
 		r, c := g.spot(s)
 		var b strings.Builder
 		for i := range 1 + g.rng.IntN(3) {
@@ -232,11 +393,23 @@ func (g *gen) edit(class string) Edit {
 			e.Args = append(e.Args, "--all")
 		}
 	case "copy", "move":
-		from := g.area(s)
+		var from grid.Range
+		read := false
+		if g.chance(0.3) {
+			// The cells a formula reads, as a whole or in part.
+			var rs *grid.Sheet
+			if rs, from, read = g.readArea(); read {
+				s = rs
+			}
+		}
+		if !read {
+			from = g.area(s)
+		}
 		t := s
 		if g.chance(0.2) {
 			t = g.sheet()
 		}
+		t = g.target(t)
 		r, c := g.spot(t)
 		if g.chance(0.5) {
 			tu := used(t)
@@ -301,13 +474,38 @@ func (g *gen) edit(class string) Edit {
 		c := 1 + g.rng.IntN(u.C2+1)
 		e.Args = []string{"cols", "delete", FileArg, s.Name + "!" + grid.ColName(c) + ":" + grid.ColName(c+g.rng.IntN(2))}
 	case "sheet-rename":
-		e.Args = []string{"sheet", "rename", FileArg, s.Name, g.newName()}
+		name := g.newName()
+		e.Args = []string{"sheet", "rename", FileArg, s.Name, name}
+		g.renamed(s, name)
 	case "sheet-copy":
-		e.Args = []string{"sheet", "copy", FileArg, s.Name, g.newName()}
+		name := g.newName()
+		e.Args = []string{"sheet", "copy", FileArg, s.Name, name}
+		g.addSheet(name, s)
+	case "sheet-add":
+		name := g.newName()
+		e.Args = []string{"sheet", "add", FileArg, name}
+		g.addSheet(name, nil)
 	case "do":
+		// The lines are made from the workbook as it is before the batch and
+		// the sheets its own lines make: a batch that starts by making a
+		// sheet (sheet add or copy, or a set or copy to a new name) goes on
+		// to edit it, in one session.
 		var b strings.Builder
-		for range 2 + g.rng.IntN(3) {
-			sub := g.edit(g.class(false))
+		cp := *g.wb
+		cp.Sheets = slices.Clone(g.wb.Sheets)
+		bg := &gen{rng: g.rng, wb: &cp, stream: g.stream}
+		for i := range 2 + g.rng.IntN(3) {
+			var sub Edit
+			if i == 0 && bg.chance(0.5) {
+				bg.fresh = true
+				sub = bg.edit(pick(bg, []string{"sheet-add", "sheet-copy", "set", "copy"}))
+				bg.fresh = false
+			} else {
+				sub = bg.edit(bg.class(false))
+			}
+			if bg.made != nil {
+				bg.focus, bg.made = bg.made, nil
+			}
 			var line []string
 			for _, a := range sub.Args {
 				if a != FileArg {

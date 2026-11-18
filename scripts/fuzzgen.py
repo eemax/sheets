@@ -29,7 +29,12 @@ neither producer writes them.
 It also writes the checkers' must-refuse cases (testdata/refuse/): pool
 files with one defect each, which the fuzzer's invariants must catch.
 
-    uv run --with openpyxl --with xlsxwriter python scripts/fuzzgen.py internal/fuzz/testdata
+    uv run --with openpyxl==3.1.5 --with xlsxwriter==3.3.1 python scripts/fuzzgen.py internal/fuzz/testdata
+
+The versions are pinned: another release may write other bytes, which would
+change every edit each seed makes and need known.txt made again (the script
+refuses a release but these). The files are the same each time: the dates in
+them are fixed.
 
 --seed changes the pool; --count the number of files (default 40).
 """
@@ -52,6 +57,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.formula import ArrayFormula
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
+PINNED = {"openpyxl": "3.1.5", "xlsxwriter": "3.3.1"}
 FIXED_TIME = datetime.datetime(2026, 11, 18, 12, 0, 0)
 HEADERS = ["Item", "Units", "Price", "Cost", "Date", "Flag"]
 ITEMS = ["Apple", "Pear", "Fig", "Kiwi", "Plum", "Lime", "Date", "Sloe", "N/A", "apple", "Acme Inc.", ""]
@@ -119,7 +125,7 @@ class Plan:
         self.cells = {}  # (sheet, r, c) -> value
         self.legacy = []  # (sheet, ref, text): Ctrl+Shift+Enter arrays
         self.dynamic = []  # (sheet, ref, text): dynamic arrays
-        self.tables = []  # (sheet, name, ref)
+        self.tables = []  # (sheet, name, ref, headers)
         self.names = []  # (name, ref)
         self.charts = []  # (sheet, data rows, anchor)
         self.validations = []  # (sheet, kind, ref)
@@ -127,6 +133,11 @@ class Plan:
         self.results = {}  # (sheet, "A1") -> the result of a formula that is no number
         self.shared = []  # (column letter, first row, last row): shared formula groups on Data
         self.typed_empty = False  # XlsxWriter: an empty text result stored as Excel does (t="str")
+        # Half the files hold arrays over several cells (legacy or dynamic).
+        # The others hold none, so the streaming editor, which hands every
+        # edit of rows, and every set, to the full editor once a workbook has
+        # them (xlsx/stream.go), takes edits on them itself.
+        self.arrays = rng.random() < 0.5
         self.n = rng.randint(4, 14)  # data rows on Data
         self.build(dynamic)
 
@@ -164,11 +175,11 @@ class Plan:
         if rng.random() < 0.7:
             self.legacy.append(("Data", f"J{row}", "=" + mark(f"SUM(B2:B{last}*C2:C{last})", "l")))
             row += 1
-        if rng.random() < 0.6:
+        if self.arrays and rng.random() < 0.6:
             h = rng.randint(2, 3)
             self.legacy.append(("Data", f"K2:K{1 + h}", "=" + mark(f"B2:B{1 + h}*{rng.choice([2, 3])}", "l")))
         # Dynamic arrays (XlsxWriter only: openpyxl cannot write them).
-        if dynamic:
+        if dynamic and self.arrays:
             if rng.random() < 0.7:
                 h = rng.randint(2, 4)
                 self.dynamic.append(("Data", f"M2:M{1 + h}", "=" + mark(f"_xlfn.SEQUENCE({h})", "d")))
@@ -196,7 +207,7 @@ class Plan:
                 self.legacy.append((s, "D2", "=" + mark(f"MAX({ref}!B2:B{last}-{ref}!D2:D{last})", "l")))
             if rng.random() < 0.5:
                 self.cells[(s, 2, 3)] = "=" + mark(f"{ref}!C2:C3*{rng.choice([2, 10])}", "p")
-            if dynamic and rng.random() < 0.4:
+            if dynamic and self.arrays and rng.random() < 0.4:
                 self.dynamic.append((s, "E2:E3", "=" + mark(f"{ref}!B2:B3*10", "d")))
         # A defined name, used by a formula.
         if rng.random() < 0.6:
@@ -205,10 +216,20 @@ class Plan:
         if rng.random() < 0.4:
             self.names.append(("Units", f"Data!$B$2:$B${last}"))
             self.cells[("Data", 3, 8)] = "=" + mark("SUM(Units)", "p")
-        # An Excel table over the data, or a chart, validation, conditional
-        # format.
-        if rng.random() < 0.5:
-            self.tables.append(("Data", f"Sales{rng.randint(1, 99)}", f"A1:G{last}"))
+        # An Excel table, over the data (sheets does not move cells into,
+        # out of or within one) or in a block of its own, away from what the
+        # formulas read; or a chart, validation, conditional format.
+        t = rng.random()
+        if t < 0.25:
+            self.tables.append(("Data", f"Sales{rng.randint(1, 99)}", f"A1:G{last}", HEADERS + ["Total"]))
+        elif t < 0.5:
+            headers = ["Aux1", "Aux2", "Aux3"]
+            for c, h in enumerate(headers, 23):
+                self.cells[("Data", 1, c)] = h
+            for r in range(2, 6):
+                for c in range(23, 26):
+                    self.cells[("Data", r, c)] = rng.randint(0, 99)
+            self.tables.append(("Data", f"Aux{rng.randint(1, 99)}", "W1:Y5", headers))
         if rng.random() < 0.6:
             self.charts.append(("Data", last, f"Q{rng.randint(2, 6)}"))
         if rng.random() < 0.6:
@@ -255,10 +276,10 @@ class Plan:
             put("Data", r, 16, template, fn, "p")
         # A text in a legacy array (several cells), and in a dynamic one.
         h = rng.randint(2, 3)
-        if rng.random() < 0.6:
+        if self.arrays and rng.random() < 0.6:
             self.legacy.append(("Data", f"T2:T{1 + h}", "=" + mark(f"UPPER(A2:A{1 + h})", "l")))
             self.results[("Data", "T2")] = _a(v, 2).upper()
-        if rng.random() < 0.6:
+        if self.arrays and rng.random() < 0.6:
             self.dynamic.append(("Data", f"U2:U{1 + h}", "=" + mark(f'A2:A{1 + h}&"!"', "d")))
             self.results[("Data", "U2")] = _a(v, 2) + "!"
         # On each second sheet: a text or empty text, and a boolean, reading
@@ -289,7 +310,7 @@ def write_openpyxl(plan, path):
         sheets[s][ref.split(":")[0]] = ArrayFormula(ref, text)
     for name, ref in plan.names:
         wb.defined_names[name] = DefinedName(name, attr_text=ref)
-    for s, name, ref in plan.tables:
+    for s, name, ref, _ in plan.tables:
         t = Table(displayName=name, ref=ref)
         t.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
         sheets[s].add_table(t)
@@ -308,6 +329,10 @@ def write_openpyxl(plan, path):
         rule = CellIsRule(operator="greaterThan", formula=["5"], fill=fill) if kind == "cell" else FormulaRule(formula=[f"${top[0]}{top[1:]}>10"], fill=fill)
         sheets[s].conditional_formatting.add(ref, rule)
     wb.save(path)
+    # openpyxl stamps the time of saving over the property set above.
+    tmp = path + ".tmp"
+    rewrite(path, tmp, "docProps/core.xml", lambda x: re.sub(r"(<dcterms:modified[^>]*>)[^<]*", r"\g<1>" + FIXED_TIME.isoformat() + "Z", x), strict=False)
+    os.replace(tmp, path)
 
 
 def write_xlsxwriter(plan, path):
@@ -334,10 +359,10 @@ def write_xlsxwriter(plan, path):
         sheets[s].write_dynamic_array_formula(f"{a[0]}:{a[-1]}", text, None, plan.results.get((s, a[0]), 0))
     for name, ref in plan.names:
         wb.define_name(name, "=" + ref)
-    for s, name, ref in plan.tables:
+    for s, name, ref, headers in plan.tables:
         # The table's cells are the plan's, written above; add_table writes
         # the same headers again.
-        cols = [{"header": h} for h in HEADERS + ["Total"]]
+        cols = [{"header": h} for h in headers]
         sheets[s].add_table(ref, {"name": name, "columns": cols, "autofilter": True, "style": "Table Style Medium 2"})
     for s, last, anchor in plan.charts:
         ch = wb.add_chart({"type": plan.rng.choice(["column", "bar", "line"])})
@@ -519,6 +544,10 @@ def refuse_cases(pool, out):
 
 
 def main():
+    for mod in (openpyxl, xlsxwriter):
+        have, want = mod.__version__, PINNED[mod.__name__]
+        if have != want:
+            raise SystemExit(f"{mod.__name__} {have}, not {want}: another release may write other bytes and change every edit the fuzzer makes (run with uv run --with openpyxl=={PINNED['openpyxl']} --with xlsxwriter=={PINNED['xlsxwriter']})")
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("--seed", type=int, default=20261118)
