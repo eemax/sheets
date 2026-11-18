@@ -20,10 +20,24 @@ too.
   200 edits are made. Those edits are a prefix of the plain run's, so they
   make the same findings as far as they go. Only a race run's edit count
   depends on the machine, and the test fails below 200.
+- **A hang is a finding.** Each edit, with both editors and the checks made
+  after it, must finish in 30 seconds (it takes milliseconds: 180 ms under
+  `-race`). One that does not is a finding of the invariant `hang`: the test
+  prints the seed, the workbook and the edits that led to it, like any other
+  finding, and the run stops there (the command's goroutine cannot be
+  stopped, and goes on running in the process). A hang is not shrunk, since
+  every replay would wait out the 30 seconds, and `known.txt` cannot list
+  one. Before this, a command that hung ran until `go test`'s own timeout (10
+  minutes, 30 in `check.sh`'s race step), which printed a dump of goroutines
+  and no workbook, no edits, and the seed only in hex in a stack frame.
+  `TestHangIsAFinding` holds the case. (The watchdog covers the edit: a hang
+  in the fuzzer's own reading of a file, between edits, has none.)
 - **The log** (`go test -v ./internal/fuzz/`) prints the edit count, the
   edits applied, each finding's signature, how many saved files held a
-  formula result of each stored form (see the invariants), and how many
-  edits the streaming editor could take itself (see The streaming editor).
+  formula result of each stored form (see the invariants), how many
+  edits the streaming editor could take itself (see The streaming editor),
+  how many texts it could write itself, by what they hold, and how many sorts
+  were made and taken by both editors.
   With one seed, two runs print the same.
 
 A run is a list of sequences, each with its own seed (seed 1 gives
@@ -40,6 +54,34 @@ sequences 100000, 100001, …).
   `sheet-rename`, `sheet-copy`, `sheet-add`, `do` (a batch of 2 to 4 of the
   others) and `script` (Office Scripts range operations: values, formulas,
   clear, `copyFrom`, `moveTo`, insert and delete of rows and columns, sort).
+- **Texts that need escaping.** What `set`, `write` and scripts type holds,
+  in about half of the texts, what a writer must escape or quote: `&`, `<`,
+  `>`, double quotes, an apostrophe, spaces at the ends (`xml:space="preserve"`),
+  `_x0041_` and the like (what Excel reads as an escape), and non-ASCII
+  (`Åäö 日本語 😀`). A `set` and a script also type a line break, a tab and
+  control characters, which XML cannot hold (Excel stores them as `_x0001_`);
+  a batch and a `write` do not, since one is a line to a command and the other
+  a row of a tab-separated table. `replace` finds and puts in such texts too,
+  and new sheets are named `R&D 2`, `Bob's`, `A<B` and `Q1 "draft"`.
+  Without them the streaming editor's own text writer
+  (`xlsx/stream_sheet.go`, `newCell`: `escapeOOXML` and `xml:space`) was never
+  reached: with its escaping taken out, the default run still passed
+  (wave 2's audit, f2.1). The log counts what the streaming editor could write
+  itself, by what the text holds, and the test fails when a plain run puts it
+  fewer than 5 of each.
+- **Sorts that sheets does.** Of the 137 sorts the first version made, at
+  random, 97 were refused by both editors (the sheet holds several tables, the
+  range takes in a dynamic array or a legacy array, a formula in it reads
+  another sheet by its row), so the sort class was barely judged: 40 reached
+  the invariants. Now 85 in 100 are picked from what a model of sheets'
+  refusals (`sortOK` in `edits.go`) passes: the data rows of an Excel table
+  (by its name, with its column names, or as a range), or the rows under the
+  header of the block at the sheet's top left, over some of its leftmost
+  columns, by a column with no formula first. The other 15 in 100 are random,
+  as before, so the refusals are still exercised. 320 of 320 sorts the model
+  picked were done by sheets (`TestSortsAreDone`). The log counts the sorts made
+  and taken by both editors, and the test fails when a plain run has fewer
+  than 60 taken, or fewer taken than refused.
 - **Targets:** a cell is often a formula's cell. The formula is picked by
   its group first (plain, plain reading a range, legacy array, dynamic
   array), so the few arrays get as many edits as the many filled-down
@@ -66,7 +108,10 @@ They judge files, never a command's output text.
    Excel calls the file corrupt, so `strictXML` reads raw tokens and checks
    those itself, with tags, one root and no text outside it. (A streaming
    editor that rewrites a cell's attributes with a regular expression, and
-   misses one the cell has, writes the first.) Every worksheet lists its
+   misses one the cell has, writes the first.) A text (`<t>`) with white space
+   at its ends must say `xml:space="preserve"`, or Excel drops the spaces:
+   sheets' own reader keeps them, so a writer that forgot the attribute was
+   never noticed. Every worksheet lists its
    rows in order, each once, and the cells of each row in order, each once
    (`internal/xlsxtest`).
 2. **kinds:** every formula keeps its kind: plain, legacy array (entered
@@ -88,10 +133,23 @@ They judge files, never a command's output text.
      so each journal holds just the change undo takes back.
 
 A command that panics is reported as `panic`, since nothing after it can be
-judged.
+judged. One that does not finish is a `hang` (see the default mode).
 
-Besides these, **repeat** is the fuzzer's own check: an edit that removes a
-dynamic array (net of those it adds on the sheet) is made again, 20 times
+Besides these, two checks are the fuzzer's own: **text** and **repeat**.
+
+**text:** a text a `set` or `write` typed is stored as typed: a text that is
+no number, date, boolean, error or formula must read back from the saved file
+exactly, with `_x0041_` read as Excel reads it. The editors invariant compares
+one editor with the other, and both write text through the code that escapes
+it (`ooxmlText`), so a slip in it (`_x0041_` stored unescaped, which Excel
+reads as `A`) gave the same file twice; the xml invariant sees only a file
+that is not well-formed. Only the top-level `set` and `write` are judged (in a
+batch or a script a later command may move what an earlier one typed), and a
+table's header is not (the table names its columns after it). It found a bug
+on today's code (see Findings).
+
+**repeat:** an edit that removes a dynamic array (net of those it adds on
+the sheet) is made again, 20 times
 with each editor, on the bytes it first found, and a workbook that holds
 other cells, formulas or values than the first is a finding. Sheets lays out
 the results of dynamic arrays in map order, so a paste over arrays gives a
@@ -207,7 +265,7 @@ failed on each).
 
 So the pool and the edits aim at it:
 
-- **The pool:** 16 of the 40 files hold no dynamic array and no legacy array
+- **The pool:** 17 of the 40 files hold no dynamic array and no legacy array
   over several cells (a coin in each file's plan, half the files, and the
   arrays of the others are not certain either), so the streaming editor
   takes `set` and rows edits on them. They keep single-cell legacy arrays,
@@ -226,20 +284,24 @@ So the pool and the edits aim at it:
   out `set` and rows lines inside `do` batches and scripts. The test fails
   below 300 in a plain run.
 - **Checked against the editor:** with a counter put into `Auto.Save` of a
-  scratch copy (not committed), the streaming editor saved 503 of the run's
-  1,786 applied edits itself: set 195, write 61, rows insert 99, rows delete
-  81, do 34, script 33. The estimate is 406 of them.
+  scratch copy (not committed), the streaming editor saved 461 of the run's
+  1,884 applied edits itself: set 175, write 56, rows insert 77, rows delete
+  89, do 29, script 35. The estimate is 366 of them (the 77 and 89 of rows
+  are exact; it counts no `do` or script, and falls short on `set` (153 of 175)
+  and `write` (47 of 56)).
 
 The two bugs above, and one in the other classes, are among the mutations in
 How the fuzzer was checked: each is caught.
 
 ## The pool
 
-There are 40 small workbooks, about 330 KB in all, in `testdata/pool/`:
+There are 40 small workbooks, about 338 KB in all, in `testdata/pool/`:
 20 written by openpyxl and 20 by XlsxWriter. They come from
 `scripts/fuzzgen.py`, each from its own seed. Each holds:
 
-- values of every type;
+- values of every type, among them texts that need escaping (`R&D`,
+  `<b>x</b>`, `Smith & Sons`, `say "hi"`, `it's`, ` padded `, `Åäö 日本語`),
+  in column A of `Data` and in the keys of the second sheets;
 - a filled-down formula column, and total rows. In about two files in three
   the column is rewritten as shared formulas (one group or two: the first
   cell holds the text and the range, the others point to it), as Excel and
@@ -252,15 +314,19 @@ There are 40 small workbooks, about 330 KB in all, in `testdata/pool/`:
 - legacy arrays over one cell, and, in some of the files, over several;
 - dynamic arrays, in some of the XlsxWriter files (openpyxl cannot write
   them);
-- second sheets reading the first, some with spaces in their names;
+- second sheets reading the first, some with spaces in their names and some
+  with `&` or an apostrophe (`R&D`, `Bob's Plan`), which the workbook's parts
+  and the formulas that quote them must escape;
 - defined names, charts, validations and conditional formats;
-- an Excel table in 22 of the files: over the data (A1:G, 10 files; sheets
+- an Excel table in 19 of the files: over the data (A1:G, 9 files; sheets
   does not move cells into, out of or within a table, so the cells the
   formulas read cannot be moved there), or in a block of its own (W1:Y5,
-  12 files).
+  10 files). The block's tables are named `Block<n>`: the first version's
+  `Aux<n>` read as a cell (column AUX), which Excel does not allow in a
+  table's name, and a command given it took it for the cell.
 
-**Arrays are in 24 of the 40 files** (12 of them with a dynamic array): the
-other 16 hold none over several cells, so the streaming editor does its own
+**Arrays are in 23 of the 40 files** (13 of them with a dynamic array): the
+other 17 hold none over several cells, so the streaming editor does its own
 work on them (see The streaming editor).
 
 XlsxWriter stores each formula's result as it does for one given a result: a
@@ -323,15 +389,15 @@ sequence's seed (`move kinds 100037`).
 - **A fix removes its lines.** A run that is not capped lists the entries
   it no longer makes.
 
-Findings on the code this was built on (99ba275), 16 in all:
+Findings on the code this was built on (99ba275), 34 in all:
 
 - **14 × WP-18:** moving or copying a plain formula that reads a range where
   one value goes, or the cells it reads, stores it as a dynamic array that
-  spills. This comes through `move`, `copy`, and `do` and `script` batches
-  that move or copy. Moving the cells such a formula reads is now a third of
-  the sources of copy and move, so a bug there (the one fixed in 65873b1, put
-  back, is caught) shows in the first minutes of a run.
-- **2 × new, `copy repeat`:** a paste over dynamic arrays gives a different
+  spills. This comes through `move` (8), `copy` (5), and `do` and `script`
+  batches that move or copy. Moving the cells such a formula reads is now a
+  third of the sources of copy and move, so a bug there (the one fixed in
+  65873b1, put back, is caught) shows in the first minutes of a run.
+- **3 × new, `copy repeat`:** a paste over dynamic arrays gives a different
   workbook from one run to the next. The shrunk `copy repeat 100139` sets
   a dynamic array in `Q 2026!H6:H8` (`UPPER(A2:A4)`), then copies
   `Q 2026!A2:A4` onto `H6`: the pasted values are missing at random
@@ -339,18 +405,33 @@ Findings on the code this was built on (99ba275), 16 in all:
   lays the arrays out in map order. Replay it to see:
   `SHEETS_FUZZ_REPRO=100139 go test ./internal/fuzz -run 'TestFuzz$' -v`.
   Its sequence is the one picked for the audit's replays (see `seedMix` in
-  `fuzz.go`).
+  `fuzz.go`; regenerating the pool for f2.1, with texts that need escaping,
+  left it a paste over dynamic arrays).
+- **7 × new, `sort editors`:** after a sort, the streaming editor stores the
+  results of the formulas on the sheet it sorted (it computes them), and the
+  full editor leaves them as they were: pending, or the 0 XlsxWriter stores.
+  The two save different cells, whether the sort moved rows or found them in
+  order. The shrunk `sort editors 100047` is
+  `sheets sort book.xlsx 'Q 2026!A2:A4' A A` on `openpyxl-12.xlsx`:
+  `Q 2026!B2` (`=SUM(Data!D2:D10)`) is 2088 in the streaming editor's file
+  and has no result in the full editor's. The default run did not reach it
+  before: of its 137 sorts, 97 were refused (see Sorts that sheets does).
+  (The first version described it as a sort that finds its rows in order;
+  six of these seven moved rows.)
+- **10 × new, `set text` (3) and `write text` (7):** a text typed with two
+  escape-like sequences that share an underscore, `_x005F_x0041_`, is stored
+  as another text. `ooxmlText` (`xlsx/stream_sheet.go`) escapes each
+  `_xHHHH_` with a regular expression, and the match for the first
+  (`_x005F_`) uses the underscore the second starts with, so the second is
+  left as it is: the file holds `_x005F_x005F_x0041_`, which Excel reads as
+  `_x005FA`. Both editors store it so, since the code is shared; only the
+  text invariant sees it. (Found by the text invariant, which was added
+  because the editors invariant could not see a slip in that shared code.)
+  Replay: `SHEETS_FUZZ_REPRO=100046 go test ./internal/fuzz -run 'TestFuzz$' -v`.
 
 Other seeds find more (`SHEETS_FUZZ_SEED=<n>`, not the default mode), so they
-are for filing as follow-ups too:
+are for filing as follow-ups too (both replay on the pool as it is now):
 
-- **`sort editors` (4 seeds in 5, e.g. 300026, 400051, 500171):** a sort that
-  finds its rows already in order leaves the full editor's formulas on that
-  sheet as they were, while the streaming editor computes and stores them
-  all: the full editor's results are missing (pending) or stale (the 0
-  XlsxWriter stores), the streaming editor's are right. A formula whose result
-  is a text (`Data!L2`: "FIG" against pending) is among them. (Four of the
-  default run's 37 findings in the first version.)
 - **`script kinds`: rows, then a column, turn a legacy array dynamic.** On
   `xlsxwriter-11.xlsx`, a script that does
   `ws.getRange("2:2").insert("Down"); ws.getRange("O:O").insert("Right");`
@@ -369,35 +450,42 @@ findings. The long mode is fuzzer-long's.
 
 ## Timings
 
-On Max's MacBook (M4), 2026-11-18, `scripts/check.sh full`, wall time. The
-bar is 135 s. Other sessions were running tests on the Mac too (load
-average 3 to 5), so the rounds alternate, the branch (a clean copy of the
-commit) then main's base commit (99ba275, without the fuzzer).
+On Max's MacBook (M4), 2026-11-18, `scripts/check.sh full`, wall time, from a
+clean copy of each commit. The bar is 135 s. Other sessions were running
+tests on the Mac too (load average about 3), so the rounds alternate, main's
+base commit (99ba275, without the fuzzer) then the branch.
 
 | round | main (99ba275), without the fuzzer | with the fuzzer |
 |---|---|---|
-| 1 | 79 s (980 tests) | 110 s (1,106 tests) |
-| 2 | 66 s | 94 s |
+| 1 | 88 s (980 tests) | 104 s (1,139 tests) |
+| 2 | 71 s | 104 s |
 
-- **Edit counts:** the plain run always makes 2,000 edits (1,786 applied)
-  in 312 sequences, with 16 findings, all known, in 33 s alone. Two runs
-  print the same: two in turn and six at once, under load, did.
+- **Edit counts:** the plain run always makes 2,000 edits (1,884 applied)
+  in 324 sequences, with 34 findings, all known, in 34 s alone. Two runs
+  print the same (compared again for the audit's fixes: the log, minus the
+  seconds, is identical).
 - **The race count** is from the race step run with `-v`
-  (`go test -race -count=1 -v ./...`), at a load of about 3: 215 edits in
-  40 s. Alone, `go test -race -v ./internal/fuzz/` makes 228. It never makes
-  fewer than 200: past the cap, the run goes on until 200 are made.
-- **What the fuzzer adds** is its plain run, about 33 s, and the race step's
-  longer run beside `cmd/sheets` and `internal/xlsx`, whose race runs take
-  about 48 s each, so the race step takes about as long as on main.
+  (`go test -race -count=1 -v ./...`, 67 s), at a load of about 3: 203 edits
+  in 44 s. Alone, `go test -race -v ./internal/fuzz/` makes 203 too. It never
+  makes fewer than 200: past the 40 s cap, the run goes on until 200 are made.
+  Under -race an edit takes about 200 ms, so the cap and the minimum are near:
+  a slower machine makes 200 and takes longer, not fewer.
+- **What the fuzzer adds** is its plain run, about 34 s, and the tests that
+  go with it (the sorts test takes 3 s, and skips under `-race`, where it
+  would take 39 s), and the race step's longer run beside `cmd/sheets` and
+  `internal/xlsx`, whose race runs take about 48 s each, so the race step takes
+  about as long as on main. The package takes 42 s in the plain step and 55 s
+  in the race step.
 - **Plain:** an edit takes about 12 ms, most of it sheets' own file writes.
-  24 of the 2,000 edits remove a dynamic array and are made again by the
-  repeat check, 20 times by each editor: that is 9 s of the 33. (With 8
+  34 of the 2,000 edits remove a dynamic array and are made again by the
+  repeat check, 20 times by each editor: that is 9 s of the 34. (With 8
   repeats, and only for edits that removed two arrays, it was 1 s; the
-  check missed the known paste in one replay of 300.)
-- **Under `-race`:** an edit takes about 180 ms, and the repeat check makes 3
+  check missed the known paste in one replay of 300.) The watchdog costs
+  nothing a run can see: a goroutine and a channel for each edit.
+- **Under `-race`:** an edit takes about 200 ms, and the repeat check makes 3
   repeats, not 20.
 - **Under heavy load the bar can be missed.** At a load average of about 7
-  the earlier version (153 s, with half the repeats) took longer than 135 s:
+  an earlier version (153 s, with half the repeats) took longer than 135 s:
   the plain fuzz 60 s, and the race fuzz 79 s, held up by its 200-edit
   minimum at about 390 ms an edit. The fuzz runs are one thread each, so a
   busy Mac slows them more than the packages that run in parallel.
@@ -412,20 +500,32 @@ Besides the must-refuse cases, mutations of sheets were put into a clean
 copy of the committed tree (never into the repo), each to see the default run
 fail on findings that are not in `known.txt`:
 
-| mutation | findings it adds to the 16 |
+| mutation | findings it adds to the 34 |
 |---|---|
-| `copy` drops the formula of the second pasted row (`xlsx/ranges.go`: `h.formula != "" && !o.Values && k[0] != 1`) | 10 `kinds`, e.g. `Old!E6: the edit should leave a plain formula there, and it holds no formula (it was lost)` |
-| the streaming editor deletes rows as if only one were deleted (`xlsx/stream.go`: `DeleteLines(…, op.from, op.from)`) | 26 findings: 20 `rows-delete editors`, 2 `rows-delete kinds` |
-| the streaming editor shifts the rows after a multi-row delete by one (`rowNow`: `r -= op.to - op.from`) | 47 findings: 35 `rows-delete editors`, 3 `rows-delete kinds` |
-| a sheet's rows saved out of order after an in-session write (`xlsx/package.go`: the loop in `writeWorkbook` that drops excelize's cached sheets removed; wave 1's WP-12) | 4: `sheet-copy xml` (`cell T3 after U3 in row 3`) and `sheet-copy kinds` |
-| a rewritten formula loses its kind (`xlsx/edit.go`: `rewriteFormula` calls `setFormula`, not `putBack`; the bug fixed in 65873b1) | 17: 14 `move kinds`, 2 `do kinds`, and a sort |
-| `keepEmptyText` (`xlsx/recalc.go`, the fix of wave 1's empty-text regression, e7a9d5b) returns at once | 60, mostly `set` (39) and `write` (10) `editors`, such as `Data!L2: stream holds text "", full holds nothing (pending)` |
+| `copy` drops the formula of the second pasted row (`xlsx/ranges.go`: `h.formula != "" && !o.Values && k[0] != 1`) | 17: 12 `copy kinds`, 3 `script kinds`, such as `Data!O11: the edit should leave a plain formula there, and it holds no formula (it was lost)` |
+| the streaming editor deletes rows as if only one were deleted (`xlsx/stream.go`: `DeleteLines(…, op.from, op.from)`) | 21: 15 `rows-delete editors`, 1 `rows-delete kinds`, such as `Data!I3: stream has =IF(N("p")=0,B4:B5*10), full has =IF(N("p")=0,#REF!*10)` |
+| the streaming editor shifts the rows after a multi-row delete by one (`rowNow`: `r -= op.to - op.from`) | 66: 49 `rows-delete editors`, 5 `rows-delete kinds` |
+| a sheet's rows saved out of order after an in-session write (`xlsx/package.go`: the loop in `writeWorkbook` that drops excelize's cached sheets removed; wave 1's WP-12) | 6: 3 `sheet-copy xml` (`cell T3 after U3 in row 3`), a `sheet-copy kinds`, a `do xml` |
+| a rewritten formula loses its kind (`xlsx/edit.go`: `rewriteFormula` calls `setFormula`, not `putBack`; the bug fixed in 65873b1) | 20: 17 `move kinds`, 3 `do kinds` |
+| `keepEmptyText` (`xlsx/recalc.go`, the fix of wave 1's empty-text regression, e7a9d5b) returns at once | 73, mostly `set` (40) and `write` (13) `editors`, such as `Data!L2: stream holds nothing (pending), full holds text ""` |
+| the streaming editor writes a text unescaped (`xlsx/stream_sheet.go`, `newCell`: `b.WriteString(v.Text)` for `b.Write(escapeOOXML(v.Text))`; wave 2's audit, f2.1) | 70: 21 `set xml` and 16 `write xml` (`invalid character entity & (no semicolon)`), 12 `write editors`, 7 `set editors`, 7 `script editors` |
+| the streaming editor leaves out `xml:space="preserve"` (`newCell`: the test of spaces at the ends) | 24: 9 `write xml`, 8 `set xml`, 3 `script xml`: `the text " lead" has spaces at its ends and no xml:space="preserve": Excel drops them` |
+| the `_x005F` of an escape-like text left out (`ooxmlText`, the code both editors share) | 17: 12 `write text`, 4 `set text`: `typed the text "A_x0020_B", and the cell holds text "A B"` |
+| control characters written raw (`ooxmlText`, shared) | 26: 24 `set text`: `typed the text "ctl\x01x", and the cell holds text "ctl�x"` |
+| `relines` (`xlsx/structure.go`) never returns for the columns of a sheet named `Summary` (f2.3's mutation: `select {}`) | 1 `cols-insert hang` after 30 s, with the seed, the workbook (`openpyxl-30.xlsx`) and the edits that led to it (`sheets cols insert book.xlsx 'Summary!A' -n 1`); the run stops there, in 3 sequences |
 
 (The counts are from the scratch run of the default seed, which ends a
-sequence at its first finding; they depend on the pool.) The first version
-could not see the first four: its model looked at the formulas a file held,
-not at those it lost; its edits never put a `set` or a delete of rows to the
-streaming editor on a workbook it takes; no batch edited a sheet it made; and
-moving the cells a formula reads was rare. With the formulas' results all
-numbers (the first version's `+N("p")` marker), it could not see the last
-one either.
+sequence at its first finding; they depend on the pool. A mutation that ends
+sequences early lets the run reach later seeds, so a count holds a finding or
+two of a seed past the default run's last: `move kinds`, `set text`.) The first
+version could not see the first four: its model looked at the formulas a file
+held, not at those it lost; its edits never put a `set` or a delete of rows to
+the streaming editor on a workbook it takes; no batch edited a sheet it made;
+and moving the cells a formula reads was rare. With the formulas' results all
+numbers (the first version's `+N("p")` marker), it could not see the sixth
+either. And the next four it could not see because its edits typed no text that
+needs escaping: the streaming editor's text writer was never reached (the
+seventh), and once it was, the editors invariant, which compares one editor
+with the other, could not see a slip both make (the ninth and tenth), nor
+sheets' own reader a missing `xml:space` (the eighth): that took a check of
+the file (xml) and a check of the text typed (text).

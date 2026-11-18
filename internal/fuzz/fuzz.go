@@ -4,17 +4,22 @@
 // files after each one:
 //
 //   - xml: every part is well-formed XML, and every worksheet lists its
-//     rows and the cells of each row in order, each once (xlsxtest);
+//     rows and the cells of each row in order, each once (xlsxtest); a text
+//     with spaces at its ends says xml:space="preserve";
 //   - kinds: every formula keeps its kind (plain, legacy array, dynamic
 //     array) and goes where the edit puts it, by a model of what each edit
 //     does to formulas (check.go, model.go);
 //   - editors: the streaming and the full editor give the same cells,
 //     formulas, kinds and values (and both take the edit, or both refuse);
 //   - undo: undo restores the bytes from before the edit, and an edit
-//     refused leaves them as they were.
+//     refused leaves them as they were;
+//   - text: a text a set or write typed is stored as typed (a slip in the
+//     code both editors share, that escapes it, gives the same file twice).
 //
 // Invariants judge files, never a command's output text. A panic in a
-// command is reported too: nothing after it can be judged.
+// command is reported too: nothing after it can be judged. So is a command
+// that hangs: an edit has editTimeout, and one that does not finish is a
+// finding with the seed, the workbook and the edits, and ends the run.
 //
 // A run is a list of sequences, each with its own seed: the seed picks a
 // workbook from the pool and the edits, each made from the state the
