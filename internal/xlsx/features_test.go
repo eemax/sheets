@@ -1,0 +1,146 @@
+package xlsx
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"testing"
+
+	"github.com/eemax/sheets/internal/grid"
+)
+
+func featuresOf(t *testing.T, name string) []Feature {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs, err := Features(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fs
+}
+
+func TestFeatures(t *testing.T) {
+	// XlsxWriter's file, as Excel saves it: a chart grouped with a text
+	// box, a list validation in the 2010 extension list.
+	want := []Feature{
+		{Kind: FeatureValidation, Sheet: "Data", Where: "B2:B6", What: "whole validation"},
+		{Kind: FeatureValidation, Sheet: "Data", Where: "C2:C6", What: "decimal validation"},
+		{Kind: FeatureValidation, Sheet: "Data", Where: "A2:A6", What: "list validation"},
+		{Kind: FeatureCond, Sheet: "Data", Where: "D2:D6", What: "cell value rule"},
+		{Kind: FeatureChart, Sheet: "Data", Where: "F2", What: "column chart"},
+		{Kind: FeatureShape, Sheet: "Data", Where: "F2", What: "TextBox 2"},
+		{Kind: FeatureName, Where: "TaxRate", What: "Summary!$B$1"},
+	}
+	if got := featuresOf(t, "against_before.xlsx"); !reflect.DeepEqual(got, want) {
+		t.Errorf("against_before.xlsx:\n got %+v\nwant %+v", got, want)
+	}
+	// openpyxl's round trip keeps neither the group nor the extension list.
+	want = []Feature{want[0], want[1], want[3], want[6]}
+	if got := featuresOf(t, "against_openpyxl.xlsx"); !reflect.DeepEqual(got, want) {
+		t.Errorf("against_openpyxl.xlsx:\n got %+v\nwant %+v", got, want)
+	}
+	// A data bar with its Excel 2010 part is one rule; a rule only in the
+	// extension list counts.
+	var conds []string
+	for _, f := range featuresOf(t, "rules.xlsx") {
+		if f.Kind == FeatureCond {
+			conds = append(conds, f.Sheet+"!"+f.Where+" "+f.What)
+		}
+	}
+	sort.Strings(conds)
+	wantConds := []string{"Data!A3:D7 formula rule", "Data!B3:B7 data bar", "Data!C3:C7 cell value rule", "Data!C3:C7 icon set", "Other!A1:A3 formula rule"}
+	if !reflect.DeepEqual(conds, wantConds) {
+		t.Errorf("rules.xlsx: %v", conds)
+	}
+	// openpyxl's pictures-free chart and its Excel table.
+	got := featuresOf(t, "rich.xlsx")
+	kinds := map[string]int{}
+	for _, f := range got {
+		kinds[f.Kind]++
+	}
+	if kinds[FeatureChart] != 1 || kinds[FeatureTable] != 1 || kinds[FeatureValidation] != 1 {
+		t.Errorf("rich.xlsx: %+v", got)
+	}
+	if _, err := Features([]byte("not a zip")); err == nil {
+		t.Error("not a zip: no error")
+	}
+}
+
+func TestTracer(t *testing.T) {
+	wb, err := Read(filepath.Join("testdata", "against_before.xlsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := NewTracer(wb)
+	got := tr.Spread([]Source{
+		{Sheet: "Data", Range: grid.Range{R1: 2, C1: 2, R2: 2, C2: 2}},    // B2
+		{Sheet: "Summary", Range: grid.Range{R1: 1, C1: 2, R2: 1, C2: 2}}, // the tax rate
+	})
+	want := map[At]int{
+		{"Data", 2, 4}: 0, {"Data", 7, 2}: 0, {"Data", 7, 4}: 0,
+		{"Summary", 2, 2}: 0, {"Summary", 3, 2}: 0, {"Summary", 6, 2}: 0, {"Summary", 7, 2}: 0,
+		// The nearest cause: the tax reads the rate.
+		{"Summary", 4, 2}: 1, {"Summary", 5, 2}: 1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("from Data!B2:\n got %v\nwant %v", got, want)
+	}
+	// Through the name only: the tax, then the net.
+	got = tr.Spread([]Source{{Sheet: "Summary", Range: grid.Range{R1: 1, C1: 2, R2: 1, C2: 2}}})
+	want = map[At]int{{"Summary", 4, 2}: 0, {"Summary", 5, 2}: 0}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("from the tax rate: %v", got)
+	}
+	if u := tr.Using("taxrate"); len(u) != 1 || u[0] != (At{"Summary", 4, 2}) {
+		t.Errorf("using TaxRate: %v", u)
+	}
+	// A formula given as a source is reached itself.
+	got = tr.Spread([]Source{{Sheet: "Data", Range: grid.Range{R1: 2, C1: 4, R2: 2, C2: 4}}})
+	want = map[At]int{{"Data", 2, 4}: 0, {"Data", 7, 4}: 0, {"Summary", 3, 2}: 0, {"Summary", 4, 2}: 0, {"Summary", 5, 2}: 0}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("from Data!D2: %v", got)
+	}
+	if tr.Opaque("Summary", 4, 2) != "" || !tr.Formula("Data", 2, 4) || tr.Formula("Data", 2, 2) {
+		t.Error("formulas")
+	}
+}
+
+func TestTracerOpaqueAndArrays(t *testing.T) {
+	s := grid.NewSheet("S")
+	s.Set(1, 1, grid.Cell{Kind: grid.Number, Num: 1})
+	s.Set(1, 2, grid.Cell{Formula: "A1+NOW()"})
+	s.Set(1, 3, grid.Cell{Formula: "'[other.xlsx]Data'!A1"})
+	s.Set(1, 4, grid.Cell{Formula: "SEQUENCE(A1+1)", Kind: grid.Number, Num: 1})
+	s.Set(2, 4, grid.Cell{Kind: grid.Number, Num: 2})
+	s.Set(1, 5, grid.Cell{Formula: "D2*10"})
+	s.Spills = []grid.Range{{R1: 1, C1: 4, R2: 2, C2: 4}}
+	wb := &grid.Workbook{Sheets: []*grid.Sheet{s}}
+	tr := NewTracer(wb)
+	if w := tr.Opaque("S", 1, 2); w == "" || !contains(w, "NOW") {
+		t.Errorf("volatile: %q", w)
+	}
+	if w := tr.Opaque("S", 1, 3); w != linkNote {
+		t.Errorf("link: %q", w)
+	}
+	if a, ok := tr.Anchor("S", 2, 4); !ok || a != (At{"S", 1, 4}) {
+		t.Errorf("anchor of D2: %v %v", a, ok)
+	}
+	got := tr.Spread([]Source{{Sheet: "S", Range: grid.Range{R1: 1, C1: 1, R2: 1, C2: 1}}})
+	want := map[At]int{{"S", 1, 4}: 0, {"S", 2, 4}: 0, {"S", 1, 5}: 0}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("spread through a spill: %v", got)
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

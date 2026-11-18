@@ -470,3 +470,108 @@ for r, (label, f, excel) in enumerate(cases, 1):
     c.cell(r, 3, excel)
     c.cell(r, 4, f"=B{r}")
 wb.save(f"{out}/unlike_excel.xlsx")
+
+# against_before.xlsx: a workbook as Excel saves it, results stored, for
+# sheets check --against. Data!B2:B6 are inputs Summary's formulas read
+# (through a name, TaxRate, too); a column chart grouped with a text box
+# (a shape), as Excel saves a group; validations, one of them a list read
+# from another sheet, which Excel keeps in its 2010 extension list; and a
+# conditional format.
+xw = xlsxwriter.Workbook(f"{out}/against_before.xlsx")
+data = xw.add_worksheet("Data")
+summary = xw.add_worksheet("Summary")
+data.write_row(0, 0, ["Region", "Units", "Price", "Revenue"])
+rows = [("North", 5, 30), ("South", 7, 20), ("East", 3, 50), ("West", 9, 10), ("Mid", 4, 25)]
+for i, (region, units, price) in enumerate(rows, 1):
+    data.write_row(i, 0, [region, units, price])
+    data.write_formula(i, 3, f"=B{i + 1}*C{i + 1}", None, units * price)
+units, revenue = sum(r[1] for r in rows), sum(r[1] * r[2] for r in rows)
+data.write("A7", "Total")
+data.write_formula("B7", "=SUM(B2:B6)", None, units)
+data.write_formula("D7", "=SUM(D2:D6)", None, revenue)
+red = xw.add_format({"bg_color": "#FFC7CE"})
+data.conditional_format("D2:D6", {"type": "cell", "criteria": ">", "value": 140, "format": red})
+data.data_validation("B2:B6", {"validate": "integer", "criteria": "between", "minimum": 0, "maximum": 1000})
+data.data_validation("C2:C6", {"validate": "decimal", "criteria": ">=", "value": 0})
+chart = xw.add_chart({"type": "column"})
+chart.add_series({"name": "Revenue", "categories": "=Data!$A$2:$A$6", "values": "=Data!$D$2:$D$6"})
+data.insert_chart("F2", chart)
+data.insert_textbox("F18", "Revenue by region")
+xw.define_name("TaxRate", "=Summary!$B$1")
+summary.write_row(0, 0, ["Tax rate", 0.25])
+tax = revenue * 0.25
+for r, (label, f, v) in enumerate([
+    ("Units", "=SUM(Data!B2:B6)", units),
+    ("Revenue", "=SUM(Data!D2:D6)", revenue),
+    ("Tax", "=B3*TaxRate", tax),
+    ("Net", "=B3-B4", revenue - tax),
+    ("Most units", "=MAX(Data!B2:B6)", max(r[1] for r in rows)),
+    ("North units", "=Data!B2", rows[0][1]),
+], 2):
+    summary.write(f"A{r}", label)
+    summary.write_formula(f"B{r}", f, None, v)
+summary.write("D1", "Regions")
+summary.write_column("D2", [r[0] for r in rows])
+xw.close()
+
+# As Excel saves them: no recalculation flag; the list validation read
+# from Summary in the extension list; the chart and the text box grouped.
+import re
+
+x14_list = (
+    b'<extLst><ext uri="{CCE6A557-97BC-4b89-ADB5-D3C9D4A6E9D0}" '
+    b'xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main">'
+    b'<x14:dataValidations count="1" xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">'
+    b'<x14:dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1">'
+    b"<x14:formula1><xm:f>Summary!$D$2:$D$6</xm:f></x14:formula1><xm:sqref>A2:A6</xm:sqref>"
+    b"</x14:dataValidation></x14:dataValidations></ext></extLst>"
+)
+
+
+def group(drawing):
+    """Groups a drawing's two anchors (a chart, then a shape) into one."""
+    anchors = re.findall(rb"<xdr:twoCellAnchor\b.*?</xdr:twoCellAnchor>", drawing, re.S)
+    assert len(anchors) == 2, len(anchors)
+    chart, shape = anchors
+    frame = re.search(rb"<xdr:graphicFrame\b.*?</xdr:graphicFrame>", chart, re.S).group(0)
+    sp = re.search(rb"<xdr:sp\b.*?</xdr:sp>", shape, re.S).group(0)
+    # The chart's place in EMUs (column F, row 2; 480 by 288 pixels), as
+    # a group's members carry it; the text box has its own already.
+    x, y, cx, cy = 5 * 609600, 190500, 480 * 9525, 288 * 9525
+    frame = frame.replace(b'<a:off x="0" y="0"/><a:ext cx="0" cy="0"/>', b'<a:off x="%d" y="%d"/><a:ext cx="%d" cy="%d"/>' % (x, y, cx, cy))
+    off = re.search(rb'<a:off x="(\d+)" y="(\d+)"/><a:ext cx="(\d+)" cy="(\d+)"/>', sp)
+    sx, sy, scx, scy = map(int, off.groups())
+    gx, gy = min(x, sx), min(y, sy)
+    gcx, gcy = max(x + cx, sx + scx) - gx, max(y + cy, sy + scy) - gy
+    xfrm = b'<a:off x="%d" y="%d"/><a:ext cx="%d" cy="%d"/><a:chOff x="%d" y="%d"/><a:chExt cx="%d" cy="%d"/>' % (gx, gy, gcx, gcy, gx, gy, gcx, gcy)
+    start = re.search(rb"<xdr:from>.*?</xdr:from>", chart, re.S).group(0)
+    end = re.search(rb"<xdr:to>.*?</xdr:to>", shape, re.S).group(0)
+    grouped = (
+        b"<xdr:twoCellAnchor>" + start + end + b"<xdr:grpSp><xdr:nvGrpSpPr>"
+        b'<xdr:cNvPr id="4" name="Group 3"/><xdr:cNvGrpSpPr/></xdr:nvGrpSpPr>'
+        b"<xdr:grpSpPr><a:xfrm>" + xfrm + b"</a:xfrm></xdr:grpSpPr>" + frame + sp + b"</xdr:grpSp><xdr:clientData/></xdr:twoCellAnchor>"
+    )
+    return drawing.replace(chart, b"").replace(shape, grouped)
+
+
+path = f"{out}/against_before.xlsx"
+with zipfile.ZipFile(path) as z:
+    items = [(i, z.read(i.filename)) for i in z.infolist()]
+with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+    for info, data in items:
+        if info.filename == "xl/workbook.xml":
+            data = data.replace(b' fullCalcOnLoad="1"', b"")
+        elif info.filename == "xl/worksheets/sheet1.xml":
+            data = data.replace(b"</worksheet>", x14_list + b"</worksheet>")
+        elif info.filename == "xl/drawings/drawing1.xml":
+            data = group(data)
+        z.writestr(info, data)
+
+# against_openpyxl.xlsx: the same workbook loaded by openpyxl, Data!B2
+# changed, and saved. openpyxl stores no results, keeps no shape, no chart
+# in a group and no extension list.
+import openpyxl
+
+wb = openpyxl.load_workbook(path)
+wb["Data"]["B2"] = 6
+wb.save(f"{out}/against_openpyxl.xlsx")
