@@ -15,15 +15,22 @@ import (
 // workbook, no edits and no seed.)
 func TestHangIsAFinding(t *testing.T) {
 	oldTimeout, oldMain := editTimeout, cliMain
-	release := make(chan struct{})
+	release, entered := make(chan struct{}), make(chan struct{}, 1)
 	t.Cleanup(func() {
-		close(release) // the goroutines of the hung edits end
+		select {
+		case <-entered: // the hung command has read cliMain: it is not read again
+		default: // no command hung
+		}
+		close(release) // and ends
 		editTimeout, cliMain = oldTimeout, oldMain
 	})
-	editTimeout = 300 * time.Millisecond
+	// Longer than an edit takes under -race and a busy machine, short enough
+	// for a test.
+	editTimeout = 1500 * time.Millisecond
 	// A clear never returns, as a command that loops would not.
 	cliMain = func(args []string, stdin io.Reader, out, errw io.Writer) int {
 		if len(args) > 0 && args[0] == "clear" {
+			entered <- struct{}{}
 			<-release
 			return 0
 		}
@@ -38,7 +45,7 @@ func TestHangIsAFinding(t *testing.T) {
 	if !res.Hung || len(res.Findings) == 0 {
 		t.Fatalf("the run did not stop at a hang: %d edits, %d findings", res.Edits, len(res.Findings))
 	}
-	if res.Edits >= 2000 || time.Since(start) > 20*time.Second {
+	if res.Edits >= 2000 || time.Since(start) > 30*time.Second {
 		t.Errorf("the run went on after the hang: %d edits in %s", res.Edits, time.Since(start))
 	}
 	f := res.Findings[len(res.Findings)-1]
@@ -49,7 +56,7 @@ func TestHangIsAFinding(t *testing.T) {
 		t.Errorf("the sequence should end at the edit that hung, a clear: %s", last)
 	}
 	report := f.Report()
-	for _, want := range []string{"finding clear hang " + strings.Fields(f.Signature.String())[2], "workbook: testdata/pool/" + f.Workbook, "sheets clear book.xlsx", "did not finish in 300ms"} {
+	for _, want := range []string{"finding clear hang " + strings.Fields(f.Signature.String())[2], "workbook: testdata/pool/" + f.Workbook, "sheets clear book.xlsx", "did not finish in 1.5s"} {
 		if !strings.Contains(report, want) {
 			t.Errorf("the report has no %q:\n%s", want, report)
 		}

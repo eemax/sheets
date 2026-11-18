@@ -246,6 +246,9 @@ func TestSortOK(t *testing.T) {
 // editors, are refused rarely. (Of the first version's random sorts 97 in 137
 // were refused, so the sort class was barely judged.)
 func TestSortsAreDone(t *testing.T) {
+	if raceOn {
+		t.Skip("whether sheets does a sort is no matter of data races, and 320 sorts take 39 s under -race")
+	}
 	pool := loadPool(t)
 	rng := rand.New(rand.NewPCG(9, 10))
 	done, refused, none := 0, 0, 0
