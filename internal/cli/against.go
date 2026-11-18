@@ -422,9 +422,9 @@ func wasRows(sheet string, m diff.Moved) string {
 	return " (were " + lineRange(sheet, m.From, m.From+m.Rows-1, false) + ")"
 }
 
-// sameNumber notes rows that moved yet kept their numbers: the rows around
+// heldNumber notes rows that moved yet kept their numbers: the rows around
 // them moved, or rows were added or removed above them.
-func sameNumber(m movedRows) string {
+func heldNumber(m movedRows) string {
 	if m.From == m.To {
 		return " (its number held; the rows around it moved)"
 	}
@@ -797,7 +797,7 @@ func (r *report) compare() {
 			r.structural(sb.Name, grid.Range{R1: lo, C1: 1, R2: hi, C2: grid.MaxCols}, "rows moved: "+lineRange(sb.Name, lo, hi, false))
 		}
 		jobs = append(jobs, job{sa, sb, p.Rows, cols, p.Moved})
-		spanOld, spanNew = reach(spanOld, rowsRemoved), reach(spanNew, rowsAdded)
+		spanOld, spanNew = spanWith(spanOld, rowsRemoved), spanWith(spanNew, rowsAdded)
 		r.edits = append(r.edits, lineEdit{sheet: sb.Name, rowsRemoved: runs(rowsRemoved), rowsAdded: runs(rowsAdded), colsRemoved: runs(colsRemoved), colsAdded: runs(colsAdded), movedOld: spanOld, movedNew: spanNew})
 	}
 	for from, to := range r.renamed {
@@ -891,9 +891,9 @@ func (r *report) compare() {
 	r.trace(tr)
 }
 
-// reach takes in the rows added or removed (lines) that join a span of
+// spanWith takes in the rows added or removed (lines) that join a span of
 // moved rows without a row kept between: the sort may have taken them too.
-func reach(span [2]int, lines []int) [2]int {
+func spanWith(span [2]int, lines []int) [2]int {
 	if span[0] == 0 {
 		return span
 	}
@@ -1089,17 +1089,17 @@ func (r *report) replay(old, home string, sure bool) (string, bool) {
 	}
 	// How far the formula reads on each sheet: lines past that touch nothing
 	// of it.
-	reach := map[string][2]int{}
+	reads := map[string][2]int{}
 	for _, ref := range formula.Refs(f) {
 		sheet := strings.ToLower(ref.Sheet)
 		if ref.Sheet == "" {
 			sheet = strings.ToLower(home)
 		}
-		x := reach[sheet]
-		reach[sheet] = [2]int{max(x[0], ref.Range.R2), max(x[1], ref.Range.C2)}
+		x := reads[sheet]
+		reads[sheet] = [2]int{max(x[0], ref.Range.R2), max(x[1], ref.Range.C2)}
 	}
 	for _, e := range r.edits {
-		x := reach[strings.ToLower(e.sheet)]
+		x := reads[strings.ToLower(e.sheet)]
 		for _, dim := range []struct {
 			cols           bool
 			removed, added [][2]int
@@ -1431,7 +1431,7 @@ func (a *app) printAgainst(r *againstResult) {
 	}
 	if section("rows moved (as by a sort; not changes)", len(r.MovedRows)) {
 		for _, m := range r.MovedRows[:min(len(r.MovedRows), againstListed)] {
-			a.printf("  %s, were %s%s\n", lineRange(m.Sheet, m.To, m.To+m.Rows-1, false), strings.TrimPrefix(lineRange(m.Sheet, m.From, m.From+m.Rows-1, false), grid.QuoteSheet(m.Sheet)+"!"), sameNumber(m))
+			a.printf("  %s, were %s%s\n", lineRange(m.Sheet, m.To, m.To+m.Rows-1, false), strings.TrimPrefix(lineRange(m.Sheet, m.From, m.From+m.Rows-1, false), grid.QuoteSheet(m.Sheet)+"!"), heldNumber(m))
 		}
 		more(len(r.MovedRows))
 	}

@@ -1,7 +1,9 @@
 package diff
 
 import (
+	"math/rand"
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -248,4 +250,95 @@ func TestMovesKeptRank(t *testing.T) {
 			t.Errorf("West kept its rank: %+v", al.Sheets[0].Moved)
 		}
 	}
+}
+
+// A table sorted over some of its rows, with rows inserted and deleted
+// anywhere: the rows moved are those whose rank among the rows kept changed,
+// and every other kept row is in its place, whatever number each has now.
+func TestMovesRandom(t *testing.T) {
+	rng := rand.New(rand.NewSource(7))
+	for iter := 0; iter < 300; iter++ {
+		n := 6 + rng.Intn(20)
+		var old []int
+		for i := 0; i < n; i++ {
+			old = append(old, i)
+		}
+		// Delete a few, shuffle a span of the rest, insert a few new rows.
+		kept := append([]int{}, old...)
+		for d := rng.Intn(3); d > 0 && len(kept) > 4; d-- {
+			k := rng.Intn(len(kept))
+			kept = append(kept[:k], kept[k+1:]...)
+		}
+		order := append([]int{}, kept...)
+		if len(order) > 3 {
+			a := rng.Intn(len(order) - 2)
+			b := a + 2 + rng.Intn(len(order)-a-2)
+			sub := order[a : b+1]
+			rng.Shuffle(len(sub), func(i, j int) { sub[i], sub[j] = sub[j], sub[i] })
+		}
+		next := n
+		for ins := rng.Intn(4); ins > 0; ins-- {
+			k := rng.Intn(len(order) + 1)
+			order = append(order[:k], append([]int{next}, order[k:]...)...)
+			next++
+		}
+		mk := func(ids []int) [][]any {
+			rows := [][]any{{"id", "a", "b"}}
+			for _, id := range ids {
+				rows = append(rows, []any{"r" + strconv.Itoa(id), id * 3, "x" + strconv.Itoa(id*7)})
+			}
+			return rows
+		}
+		al := Align(book("S", mk(old)), book("S", mk(order)), Options{Moves: true})
+		p := al.Sheets[0]
+		// Where each kept row was and is, and its rank among the kept rows.
+		rankOld := map[int]int{}
+		for r, id := range kept {
+			rankOld[id] = r
+		}
+		var keptNow []int
+		for _, id := range order {
+			if _, ok := rankOld[id]; ok {
+				keptNow = append(keptNow, id)
+			}
+		}
+		want := map[int]int{} // old row → new row, for the rows moved
+		for r, id := range keptNow {
+			if rankOld[id] != r {
+				want[indexOf1(old, id)] = indexOf1(order, id)
+			}
+		}
+		got := map[int]int{}
+		for _, m := range p.Moved {
+			for k := 0; k < m.Rows; k++ {
+				got[m.From+k] = m.To + k
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("iteration %d: old %v new %v\nmoved %v\nwant  %v", iter, old, order, got, want)
+		}
+		// Every kept row is paired with its own, moved or not.
+		pair := map[int]int{}
+		for _, q := range p.Rows {
+			if q.Old > 0 && q.New > 0 {
+				pair[q.Old] = q.New
+			}
+		}
+		for _, id := range kept {
+			if pair[indexOf1(old, id)] != indexOf1(order, id) {
+				t.Fatalf("iteration %d: row r%d paired with %d, is row %d now\nold %v new %v", iter, id, pair[indexOf1(old, id)], indexOf1(order, id), old, order)
+			}
+		}
+	}
+}
+
+// indexOf1 is the sheet row (the header is row 1) of an id in a table's
+// order.
+func indexOf1(ids []int, id int) int {
+	for i, x := range ids {
+		if x == id {
+			return i + 2
+		}
+	}
+	return 0
 }
