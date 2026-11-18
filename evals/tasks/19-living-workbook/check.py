@@ -388,13 +388,18 @@ def sheet_xml(name):
     return z.read(target if target.startswith("xl/") else "xl/" + target).decode()
 
 
-def covers(sqref, rows, col):
-    """Whether a range list covers column COL's rows (first, last)."""
-    for part in sqref.split():
-        c1, r1, c2, r2 = range_boundaries(part)
-        if c1 <= openpyxl.utils.column_index_from_string(col) <= c2 and r1 <= rows[0] and r2 >= rows[1]:
-            return True
-    return False
+def covers(sqrefs, rows, col):
+    """Whether the range lists together cover column COL's rows (first, last).
+    A tool may split a range around a new row; what counts is that every row
+    stays covered, by the rule or by several entries of the same rule."""
+    ci = openpyxl.utils.column_index_from_string(col)
+    have = set()
+    for sq in sqrefs:
+        for part in sq.split():
+            c1, r1, c2, r2 = range_boundaries(part)
+            if c1 <= ci <= c2:
+                have |= set(range(r1, r2 + 1))
+    return all(r in have for r in range(rows[0], rows[1] + 1))
 
 
 def cf_rules(sheet):
@@ -450,44 +455,44 @@ def f_chart():
 def f_cf_orders():
     need("Orders")
     r = cf_rules("Orders")
-    ok = (any(t == "cellIs" and op == "greaterThanOrEqual" and covers(s, (2, LAST), "D") and f == "BulkUnits" for t, op, s, f, _ in r)
-          and any(t == "top10" and rank == "3" and covers(s, (2, LAST), "G") for t, _, s, _, rank in r))
+    ok = (covers([s for t, op, s, f, _ in r if t == "cellIs" and op == "greaterThanOrEqual" and f == "BulkUnits"], (2, LAST), "D")
+          and covers([s for t, _, s, _, rank in r if t == "top10" and rank == "3"], (2, LAST), "G"))
     return ok, str(r)
 
 
 def f_cf_summary():
     need("Summary")
     r = cf_rules("Summary")
-    ok = (any(t == "cellIs" and op == "lessThan" and covers(s, (4, 7), "F") and f == "TargetMargin" for t, op, s, f, _ in r)
-          and any(t == "dataBar" and covers(s, (4, 7), "E") for t, _, s, _, _ in r))
+    ok = (covers([s for t, op, s, f, _ in r if t == "cellIs" and op == "lessThan" and f == "TargetMargin"], (4, 7), "F")
+          and covers([s for t, _, s, _, _ in r if t == "dataBar"], (4, 7), "E"))
     return ok, str(r)
 
 
 def f_cf_products():
     need("Products")
     r = cf_rules("Products")
-    return any(t == "colorScale" and covers(s, (2, NPROD + 1), "E") for t, _, s, _, _ in r), str(r)
+    return covers([s for t, _, s, _, _ in r if t == "colorScale"], (2, NPROD + 1), "E"), str(r)
 
 
 def f_dv_orders():
     need("Orders")
     d = dvs("Orders")
-    ok = (any(t == "list" and covers(s, (2, LAST), "B") and f1 == "RegionList" for t, _, s, f1, _, _ in d)
-          and any(t == "whole" and op == "greaterThanOrEqual" and covers(s, (2, LAST), "D") and f1 == "1" for t, op, s, f1, _, _ in d))
+    ok = (covers([s for t, _, s, f1, _, _ in d if t == "list" and f1 == "RegionList"], (2, LAST), "B")
+          and covers([s for t, op, s, f1, _, _ in d if t == "whole" and op == "greaterThanOrEqual" and f1 == "1"], (2, LAST), "D"))
     return ok, str([x[:5] for x in d])
 
 
 def f_dv_products():
     need("Products")
     d = dvs("Products")
-    return any(t == "list" and covers(s, (2, NPROD + 1), "B") and f1 == "CategoryList" for t, _, s, f1, _, _ in d), str([x[:5] for x in d])
+    return covers([s for t, _, s, f1, _, _ in d if t == "list" and f1 == "CategoryList"], (2, NPROD + 1), "B"), str([x[:5] for x in d])
 
 
 def f_dv_inputs():
     need("Inputs")
     d = dvs("Inputs")
-    ok = any(t == "decimal" and covers(s, (2, 2), "B") and f1 == "0" and f2 == "1" and v.get("promptTitle") == "Tax rate"
-             and v.get("errorTitle") == "Not a rate" and "0% and 100%" in (v.get("error") or "") for t, _, s, f1, f2, v in d)
+    ok = covers([s for t, _, s, f1, f2, v in d if t == "decimal" and f1 == "0" and f2 == "1" and v.get("promptTitle") == "Tax rate"
+             and v.get("errorTitle") == "Not a rate" and "0% and 100%" in (v.get("error") or "")], (2, 2), "B")
     return ok, str([x[:5] for x in d])
 
 

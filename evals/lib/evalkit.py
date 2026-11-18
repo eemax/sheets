@@ -65,8 +65,11 @@ def _lo_recalculated(path):
         os.makedirs(os.path.dirname(xcu))
         with open(xcu, "w") as f:
             f.write(_RECALC_ALWAYS)
-    src = os.path.join(_LO["dir"], f"in{len(_LO['cache'])}")
-    dst = os.path.join(_LO["dir"], f"out{len(_LO['cache'])}")
+    # Folders named by a counter that every attempt advances, so a conversion
+    # that failed leaves nothing a later call collides with.
+    _LO["n"] = _LO.get("n", 0) + 1
+    src = os.path.join(_LO["dir"], f"in{_LO['n']}")
+    dst = os.path.join(_LO["dir"], f"out{_LO['n']}")
     os.makedirs(src)
     shutil.copyfile(path, os.path.join(src, "book.xlsx"))
     soffice = os.environ.get("EVAL_SOFFICE") or shutil.which("soffice") or "/opt/homebrew/bin/soffice"

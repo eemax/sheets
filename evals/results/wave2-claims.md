@@ -93,5 +93,7 @@ read and judged real is reported.
   Excel would show as `#SPILL!`; `solutions/right.py` repairs that by
   hand. If piece A has not fixed it by the runs, that item fails for
   sheets, and the results say so.
-- Three runs per cell is a small sample: no significance test is run, and
-  a difference smaller than one run's worth of items is not called a win.
+- Three runs per cell is a small sample and no significance test is run.
+  The verdict is still the bar's, applied as written to the counts: there
+  is no second threshold on the size of a difference. The raw counts are
+  reported beside the rates so the reader can weigh them.
