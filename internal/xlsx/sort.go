@@ -3,6 +3,7 @@ package xlsx
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -233,14 +234,43 @@ func (e *Editor) checkSort(s *grid.Sheet, r grid.Range) error {
 	// first one in the sheet's order is named, so the message is the same
 	// from one run to the next.
 	var spilled [][2]int
-	for a, sp := range e.spillsOn(sheet) {
+	fills := maps.Clone(e.spillsOn(sheet))
+	// A dynamic array the file stores with no result yet (XlsxWriter's
+	// write_formula, with the range of its own cell) spills over cells the
+	// file does not say: work out how far, as Excel does on open.
+	var pending [][2]int
+	for a, sp := range fills {
+		if sp.Rows()*sp.Cols() == 1 {
+			if c := s.At(a[0], a[1]); c != nil && c.Pending {
+				pending = append(pending, a)
+			}
+		}
+	}
+	if len(pending) > 0 {
+		res, err := e.results()
+		if err != nil {
+			return err
+		}
+		for _, a := range pending {
+			sp, ok := res.arrays[keyOf(sheet, a[0], a[1])]
+			if !ok || sp.arr == nil {
+				if r.Contains(a[0], a[1]) {
+					return fmt.Errorf("%s holds the dynamic array formula in %s, whose result sheets cannot work out, so it is unknown whether it spills over several cells (which Excel does not sort); sort its source instead, or wrap it in SORT()",
+						grid.FormatRef(sheet, r), grid.CellName(a[0], a[1]))
+				}
+				continue
+			}
+			fills[a] = grid.Range{R1: a[0], C1: a[1], R2: a[0] + sp.arr.Rows - 1, C2: a[1] + sp.arr.Cols - 1}
+		}
+	}
+	for a, sp := range fills {
 		if sp.Rows()*sp.Cols() > 1 && !sp.Intersect(r).Empty() {
 			spilled = append(spilled, a)
 		}
 	}
 	if len(spilled) > 0 {
 		a := slices.MinFunc(spilled, func(x, y [2]int) int { return cmp.Or(cmp.Compare(x[0], y[0]), cmp.Compare(x[1], y[1])) })
-		sp := e.spillsOn(sheet)[a]
+		sp := fills[a]
 		return fmt.Errorf("%s holds the dynamic array formula in %s or its result (%s), which cannot be sorted; sort its source instead, or wrap it in SORT()", grid.FormatRef(sheet, r), grid.CellName(a[0], a[1]), sp)
 	}
 	for _, t := range e.tablesOn(sheet) {

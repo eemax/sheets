@@ -1,0 +1,20 @@
+# A dynamic function XlsxWriter stores with cm="1", the range of its own
+# cell and no result yet (=SEQUENCE(3) in D1) is a dynamic array over
+# D1:D3 once Excel opens the file, so sort refuses it as it refuses one
+# whose result is laid out; the refusal does not wait for check --fix.
+fixture kinds_pending.xlsx
+cp kinds_pending.xlsx before.xlsx
+! exec sheets sort kinds_pending.xlsx S!A1:D6 A:desc
+stderr 'S!A1:D6 holds the dynamic array formula in D1 or its result \(D1:D3\), which cannot be sorted; sort its source instead, or wrap it in SORT\(\)'
+! exec sheets sort kinds_pending.xlsx S!C2:D3 C
+stderr 'holds the dynamic array formula in D1 or its result \(D1:D3\)'
+cmp kinds_pending.xlsx before.xlsx
+# Rows clear of its result sort, and the file keeps its mark.
+exec sheets sort kinds_pending.xlsx S!A4:D6 A:desc
+stdout 'sorted S!A4:D6 by A descending'
+part kinds_pending.xlsx xl/worksheets/sheet1.xml
+stdout '<c r="D1"[^>]*cm="1"'
+# The same once the results are laid out.
+exec sheets check --fix kinds_pending.xlsx
+! exec sheets sort kinds_pending.xlsx S!A1:D6 A:desc
+stderr 'holds the dynamic array formula in D1 or its result \(D1:D3\)'

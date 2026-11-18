@@ -412,6 +412,16 @@ s.write_dynamic_array_formula("G1:G2", "=SEQUENCE(2)")
 s.write_array_formula("H1:H2", "{=A1:A2*10}")
 xw.close()
 
+# kinds_pending.xlsx: dynamic functions as XlsxWriter's write_formula stores
+# them, cm="1" with the range of their own cell and no result yet (Excel
+# spills =SEQUENCE(3) in D1 over D1:D3 when it opens the file).
+xw = xlsxwriter.Workbook(f"{out}/kinds_pending.xlsx")
+s = xw.add_worksheet("S")
+for i, (a, b) in enumerate([(3, 1), (1, 2), (2, 3), (5, 4), (4, 5), (6, 6)]):
+    s.write_row(i, 0, [a, b])
+s.write_formula("D1", "=SEQUENCE(3)")
+xw.close()
+
 # unlike_excel.xlsx: one formula of each class WP-01 found computed unlike
 # Excel (sheet Cases, A1:D12: the class, the formula, what Excel shows, and
 # a formula reading it), over sheet Data.
