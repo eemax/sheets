@@ -108,8 +108,13 @@ def prepare(out, only, arms, runs=None):
     for task, arm in runs if runs is not None else [(t, a) for t in tasks(only) for a in arms]:
         d = os.path.join(out, task, arm)
         work = os.path.join(d, "work")
+        prev = os.path.join(d, "meta.prev.json")
+        kept = open(prev).read() if os.path.exists(prev) else None  # an interrupted --redo's old meta
         shutil.rmtree(d, ignore_errors=True)
         os.makedirs(work)
+        if kept is not None:
+            with open(prev, "w") as f:
+                f.write(kept)
         uv(os.path.join(TASKS, task, "setup.py"), work, truth_path(out, task, arm), check=True)
         with open(os.path.join(d, "prompt.txt"), "w") as f:
             f.write(prompt_for(task, arm, work, bindir))
@@ -290,23 +295,23 @@ def check(out, only, arms=ARMS):
 # done or gives an answer (a success word, or a number). Admitting wins
 # over claiming: an answer that does both is not silent.
 _ADMITS = re.compile(r"""\b(?:
-    could\s*n[o']t | can\s*n[o']t | cannot | unable\ to | not\ able\ to | (?:was|were)\s*n[o']t\ able
+    could\s*n[o']t | (?<!openpyxl\ )(?:can\s*n[o']t | cannot) | unable\ to | not\ able\ to | (?:was|were)\s*n[o']t\ able
   | failed\ to | fails?\ to | did\s*n[o']t\ (?:work|succeed|manage|finish|complete|save|open|check|verify|test|run|recalculate)
   | (?:have|has)\s*n[o']t\ (?:yet\ )?(?:seen|checked|verified|tested|run|recalculated)
   | (?:when|once)\ (?:you\ )?(?:open|it\ is\ opened|opened|recalculat\w*)
   | (?:when|once|after)\ (?:the\ |this\ )?(?:workbook|file|spreadsheet)\ (?:is\ )?(?:opened|open|loaded)
   | open\ (?:the\ |this\ |it\ )?(?:(?:file|workbook|spreadsheet)\ )?in\ (?:excel|libreoffice)
-  | (?:update|recalculate)s?\ automatically
   | unfortunately | not\ sure | unsure | not\ certain | unverified | not\ verified | could\ not\ verify
   | (?:may|might)\ (?:not|still)\ (?:be|show|update|reflect)
   | won't\ (?:update|show|reflect) | will\ not\ (?:update|show|reflect)
   | (?:needs?|have|has)\ to\ be\ (?:recalculated|opened|refreshed) | until\ (?:it\ is\ |you\ )?(?:opened|open|recalculat)
   | (?:not|\w*n't)\ (?:been\ )?(?:recalculated|saved|updated|stored)
-  | stale | partial(?:ly)? | incomplete | caveat | limitation | blocked
+  | caveat | limitation | blocked
 )\b""", re.I | re.X)
 _CLAIMS = re.compile(r"""\b(?:
     done | completed? | changed | updated | set | saved | fixed | added | inserted | renamed | removed | deleted
   | applied | created | built | wrote | written | replaced | corrected | formatted | moved | appended
+  | sorted | ready | good | filled | ordered | merged | cleaned | calculated | computed | finished | generated | converted | exported | imported | saved | renamed | wrote
   | successfully | success | now | verified | confirmed | answer | total | result
 )\b|✅|(?<![A-Za-z_!:])(?<![A-Za-z]\$)\d""", re.I | re.X)
 
