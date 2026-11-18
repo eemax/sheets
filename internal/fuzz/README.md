@@ -32,6 +32,28 @@ too.
   and no workbook, no edits, and the seed only in hex in a stack frame.
   `TestHangIsAFinding` holds the case. (The watchdog covers the edit: a hang
   in the fuzzer's own reading of a file, between edits, has none.)
+- **A workbook gone is a finding.** An edit that deletes or moves the
+  workbook (data loss, the worst slip), or leaves nothing at its path that
+  can be read, is a finding of the invariant `missing`, with the seed, the
+  workbook and the edits, shrunk like any other, and the other sequences go
+  on. The same file gone after `sheets undo` is an `undo` finding, and in the
+  repeat check a `repeat` one. (Before, each was an error that stopped the
+  test with one line, `open …/book.xlsx: no such file or directory`: no seed,
+  no workbook, no edits, and the sequences after it never ran.) A `missing`
+  finding can be listed in `known.txt`.
+  `TestMissingWorkbookIsAFinding` holds the cases.
+- **A panic outside the commands is a finding.** The commands are guarded by
+  `run`. The rest of an edit's step is guarded too: the fuzzer's own judging,
+  and sheets' reader on the files the editors saved (`compareEditors`, the
+  model, the generator). A panic there is a finding of the invariant `panic`,
+  with the stack in its detail, the seed, the workbook and the edits, and the
+  run goes on. A panic of the generator on the workbook the last edit saved
+  is that edit's finding. (Before, the test binary crashed with a dump of
+  goroutines, no seed and no workbook, and every later test of the package
+  was skipped: the failure that matters most is a workbook sheets' own reader
+  cannot read.) `TestPanicInJudgingIsAFinding` and
+  `TestGeneratorPanicIsAFinding` hold the cases, with a reader and a
+  generator that panic.
 - **The log** (`go test -v ./internal/fuzz/`) prints the edit count, the
   edits applied, each finding's signature, how many saved files held a
   formula result of each stored form (see the invariants), how many
@@ -82,6 +104,19 @@ sequences 100000, 100001, …).
   picked were done by sheets (`TestSortsAreDone`). The log counts the sorts made
   and taken by both editors, and the test fails when a plain run has fewer
   than 60 taken, or fewer taken than refused.
+- **Formulas typed.** A formula with a row in it (`B{r}*2`, `A{r}&"-x"`) is
+  typed with the row of the cell it goes in. For a range, that is the range's
+  first cell: `set 'Data!U9:U12' '=ROUND(C9*1.1,2)'` fills the rest down and
+  across with the references shifted, as Excel does. (A range set once typed
+  the template's own `{r}`, `=IF(N("p")=0,ROUND(C{r}*1.1,2))`, which sheets
+  accepts, reports as a circular reference, and Excel cannot parse, in 54
+  lines of the default run: the class this is for, a relative formula set over
+  a range, was not exercised, and the later edits of those 37 sequences ran on
+  workbooks Excel would repair.) `TestNoPlaceholderTyped` generates 6,000
+  edits and fails on a literal `{r}` or `{s}` anywhere, and on a range set
+  whose formula is of another row than the range's first. Of those, 100 are
+  range sets of a relative formula, 88 over several rows. The default run's
+  findings are the same 34 with the formulas typed as they should be.
 - **Targets:** a cell is often a formula's cell. The formula is picked by
   its group first (plain, plain reading a range, legacy array, dynamic
   array), so the few arrays get as many edits as the many filled-down
@@ -133,7 +168,9 @@ They judge files, never a command's output text.
      so each journal holds just the change undo takes back.
 
 A command that panics is reported as `panic`, since nothing after it can be
-judged. One that does not finish is a `hang` (see the default mode).
+judged, and so is a panic in judging the files it saved. One that does not
+finish is a `hang`, and one that leaves no workbook at its path is `missing`
+(see the default mode).
 
 Besides these, two checks are the fuzzer's own: **text** and **repeat**.
 
@@ -513,6 +550,8 @@ fail on findings that are not in `known.txt`:
 | the `_x005F` of an escape-like text left out (`ooxmlText`, the code both editors share) | 17: 12 `write text`, 4 `set text`: `typed the text "A_x0020_B", and the cell holds text "A B"` |
 | control characters written raw (`ooxmlText`, shared) | 26: 24 `set text`: `typed the text "ctl\x01x", and the cell holds text "ctl�x"` |
 | `relines` (`xlsx/structure.go`) never returns for the columns of a sheet named `Summary` (f2.3's mutation: `select {}`) | 1 `cols-insert hang` after 30 s, with the seed, the workbook (`openpyxl-30.xlsx`) and the edits that led to it (`sheets cols insert book.xlsx 'Summary!A' -n 1`); the run stops there, in 3 sequences |
+| `clear … --all` deletes the workbook (`internal/cli/root.go`: `defer os.Remove(args[1])`; wave 2's audit, f3.1) | 18 new: 17 `clear missing` (`sheets clear book.xlsx 'R&D!B7' --all`, shrunk to the one edit: `the edit (exit 0) left no workbook at book.xlsx`) and a `move kinds` of a later seed; the run goes on to its 2,000 edits |
+| sheets' reader (`xlsx.ReadBytes`) panics on a workbook with a sheet named `Backup` (f3.2) | 33 new: 30 `panic` (`sheet-copy` 8, `do` 8, `sheet-rename` 6, `sheet-add` 6, `copy`, `write`), shrunk, such as `sheets sheet rename book.xlsx Data Backup`: `judging the files the editors saved: reader bug`, with the stack (`compareEditors`), and 3 findings of later seeds the shortened sequences let the run reach (`set text`, `write text`, `move kinds`); the run goes on to its 2,000 edits |
 
 (The counts are from the scratch run of the default seed, which ends a
 sequence at its first finding; they depend on the pool. A mutation that ends
@@ -529,3 +568,11 @@ seventh), and once it was, the editors invariant, which compares one editor
 with the other, could not see a slip both make (the ninth and tenth), nor
 sheets' own reader a missing `xml:space` (the eighth): that took a check of
 the file (xml) and a check of the text typed (text).
+
+The last two it could not see because the fuzzer's own failures ended the run
+instead of being findings (wave 2's audit, f3.1 and f3.2): an edit that left
+no workbook stopped the test with an error, and a panic in the files' judging
+crashed the binary, each with no seed, no workbook and no edits. Both are
+findings now, with the mutations above to show it. A third slip was in the
+generator, not the checks: a range set typed a literal `{r}` (see Formulas
+typed).

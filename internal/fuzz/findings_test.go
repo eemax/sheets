@@ -143,13 +143,13 @@ func TestMissingWorkbookIsAFinding(t *testing.T) {
 	})
 
 	t.Run("in a run", func(t *testing.T) {
+		if raceOn {
+			t.Skip("takes 5 s under -race; the steps above judge the same code, and the plain run makes this one")
+		}
 		// Commands that delete the workbook, and others that move it away.
 		removes := []string{"clear", "copy", "move", "sort"}
 		afterCommand(t, is(removes...), func(path string) { os.Remove(path) })
-		edits := 60
-		if raceOn {
-			edits = 30
-		}
+		const edits = 60
 		res, err := Run(pool, Options{Seed: 1, Edits: edits, Dir: t.TempDir()})
 		if err != nil {
 			t.Fatalf("the run stopped with an error, not a finding: %v", err)
@@ -254,10 +254,10 @@ func TestPanicInJudgingIsAFinding(t *testing.T) {
 	})
 
 	t.Run("in a run", func(t *testing.T) {
-		edits := 80
 		if raceOn {
-			edits = 30
+			t.Skip("takes 7 s under -race; the step above judges the same code, and the plain run makes this one")
 		}
+		const edits = 80
 		res, err := Run(pool, Options{Seed: 1, Edits: edits, Dir: t.TempDir()})
 		if err != nil {
 			t.Fatalf("the run stopped with an error, not a finding: %v", err)
