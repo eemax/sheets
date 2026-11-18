@@ -503,7 +503,6 @@ bug broken: rows-delete kinds; repro long 700012; detail holds =#REF! # not a co
 		"bug x: sortx editors; repro 7; detail a\n",                                        // no class
 		"bug x: sort typo; repro 7; detail a\n",                                            // no invariant
 		"bug x: sort editors; repro 7; detail a; why b\n",                                  // no field
-		"bug x: sort editors; repro 7; detail a; when typo\n",                              // no check
 		"bug x y: sort editors; repro 7; detail a\n",                                       // a name with a space
 		"bug x: sort editors; repro long x; detail a\n",                                    // no seed
 		"bug x: sort editors; repro 7; detail a\nbug x: sort editors; repro 8; detail b\n", // a face twice
@@ -549,12 +548,15 @@ func TestKnownFaces(t *testing.T) {
 		{"move", "repeat", `full editor: the same edit on the same bytes saved two different workbooks: Data!M3: the first run has =, the repeat has =IF(N("p")=0,IF(B7>1000,1,""))`, plain("move"), "map-order"},
 		{"script", "kinds", `stream editor: sheet1.xml U2: =IF(N("l")=0,UPPER(A2:A4)) is stored as a dynamic array, not a legacy array`, script(`ws.getRange("2:2").insert("Down");`), "script-legacy-dynamic"},
 		{"set", "xml", `stream editor: xl/tables/table1.xml: XML syntax error on line 2: illegal character code U+001F`, plain("set"), "table-header-control"},
-		{"write", "text", `Data!O3: typed the text "_x0041_", and the cell holds number 18`, plain("write"), "spill-overwrites"},
-		{"do", "kinds", `Calc!E3: the edit should leave a dynamic array there, and it holds no formula (it was lost)`, batch("set 'Calc!E3' '=IF(N(\"d\")=0,SUM(IF(B2:B6>3,B2:B6)))' 'Calc!B7' '=IF(N(\"p\")=0,UPPER(A7))' 'Calc!E2' '=IF(N(\"d\")=0,B2:B5>3)'\n"), "spill-overwrites"},
+		{"write", "text", `Data!O3: typed the text "_x0041_", and the cell holds number 18, in the results of the dynamic array at O2:O3`, plain("write"), "spill-overwrites"},
+		{"do", "kinds", `Calc!E3: the edit should leave a dynamic array there, and it holds no formula (it was lost), in the results of the dynamic array at E2:E5`, batch("set 'Calc!E3' '=IF(N(\"d\")=0,SUM(IF(B2:B6>3,B2:B6)))' 'Calc!B7' '=IF(N(\"p\")=0,UPPER(A7))' 'Calc!E2' '=IF(N(\"d\")=0,B2:B5>3)'\n"), "spill-overwrites"},
 		{"script", "editors", `Q 2026!C3: stream holds nothing, full holds text "Apple"`, Edit{Class: "script", Args: []string{"script", FileArg, "-e", "const ws = workbook.getWorksheet(\"Q 2026\");\nws.getRange(\"C2\").setFormula(\"=IF(N(\\\"d\\\")=0,A2:A4&\\\"!\\\")\");\nws.getRange(\"C2\").copyFrom(\"A1:C4\");\n"}}, "map-order"},
-		{"write", "text", `Model!F6: typed the text "5 > 3 & 2 < 4", and the cell holds nothing`, plain("write"), "spill-overwrites"},
-		{"set", "kinds", `Summary!E3: the edit should leave a plain formula there, and it holds no formula (it was lost)`, Edit{Class: "set", Args: []string{"set", FileArg, "Summary!E3", `=IF(N("p")=0,COUNTIF(B2:B9,">3"))`, "Summary!E2", `=IF(N("p")=0,'A<B'!B2+1)`}}, "spill-overwrites"},
+		{"write", "text", `Model!F6: typed the text "5 > 3 & 2 < 4", and the cell holds nothing, in the results of the dynamic array at F4:F7`, plain("write"), "spill-overwrites"},
+		{"set", "kinds", `Summary!E3: the edit should leave a plain formula there, and it holds no formula (it was lost), in the results of the dynamic array at E2:E3`, Edit{Class: "set", Args: []string{"set", FileArg, "Summary!E3", `=IF(N("p")=0,COUNTIF(B2:B9,">3"))`, "Summary!E2", `=IF(N("p")=0,'A<B'!B2+1)`}}, "spill-overwrites"},
 		{"rows-insert", "kinds", `stream editor: sheet2.xml C5: =IF(N("p")=0,Data!A2&"!") is stored as a dynamic array, not a plain formula`, plain("rows-insert"), "insert-turns-dynamic"},
+		{"rows-delete", "kinds", `stream editor: sheet3.xml D2: =IF(N("p")=0,IF(A2="","none",A2)) is stored as a dynamic array, not a plain formula`, plain("rows-delete"), "insert-turns-dynamic"},
+		{"set", "text", `Data!U3: typed the text "N/A", and the cell holds text "R&D!", in the results of the dynamic array at U2:U4`, plain("set"), "spill-overwrites"},
+		{"replace", "reach", `Data!E1: outside the edit's reach, it held text "1200", and holds text "Column5" now`, plain("replace"), "table-header-renamed"},
 		{"script", "editors", `Q 2026!F4: stream holds number 2, full holds text "!"`, Edit{Class: "script", Args: []string{"script", FileArg, "-e", "const ws = workbook.getWorksheet(\"Q 2026\");\nws.getRange(\"E4\").setFormula(\"=IF(N(\\\"d\\\")=0,SEQUENCE(1,2))\");\nws.getRange(\"F2\").setFormula(\"=IF(N(\\\"d\\\")=0,A2:A4&\\\"!\\\")\");\n"}}, "map-order"},
 		{"write", "editors", `R&D 2!E4: stream holds number 2, full holds text ""`, Edit{Class: "write", Args: []string{"write", FileArg, "R&D 2!D2", "--from", "tsv"}, Stdin: "=IF(N(\"p\")=0,OR(F2,D2>250))\t=IF(N(\"d\")=0,A2:A4&\"!\")\n=IF(N(\"d\")=0,SEQUENCE(1,2))\n"}, "map-order"},
 		{"replace", "kinds", `stream editor: sheet1.xml K12: =IF(N("d")=0,PRODUCT(IF(#REF!:#REF!>3,#REF!:#REF!))) is stored as a plain formula, not a dynamic array`, plain("replace"), "replace-loses-kind"},
@@ -563,8 +565,7 @@ func TestKnownFaces(t *testing.T) {
 		{"move", "kinds", `stream editor: sheet1.xml I2: =IF(N("p")=0,Plan!H6:H7*2) is stored as a dynamic array, not a plain formula`, plain("move"), ""},
 		{"replace", "kinds", `stream editor: sheet1.xml K12: =IF(N("d")=0,PRODUCT(IF(B2:B6>3,B2:B6))) is stored as a plain formula, not a dynamic array`, plain("replace"), ""},
 		{"write", "editors", `Data!L2: stream holds text "", full holds nothing (pending)`, Edit{Class: "write", Args: []string{"write", FileArg, "Data!B2", "--from", "tsv"}, Stdin: "=IF(N(\"d\")=0,SEQUENCE(2))\n"}, ""},
-		// WP-12's mutant: a set on a new sheet loses a formula; no cell above
-		// it is typed after it.
+		// WP-12's mutant: a set on a new sheet loses a formula, in no array.
 		{"set", "kinds", `Q1 "draft"!F7: the edit should leave a plain formula there, and it holds no formula (it was lost)`, Edit{Class: "set", Args: []string{"set", FileArg, `Q1 "draft"!F7`, `=IF(N("p")=0,IF(B7>3,"big",""))`, `Q1 "draft"!B9`, "5", `Q1 "draft"!A1`, `=IF(N("d")=0,SEQUENCE(2))`}}, ""},
 		{"set", "kinds", `Summary!E3: the edit should leave a plain formula there, and it holds no formula (it was lost)`, Edit{Class: "set", Args: []string{"set", FileArg, "Summary!E2", "1", "Summary!E3", `=IF(N("p")=0,B3)`}}, ""},
 		// The mutant rows-insert-arrays: a plain formula reading a range turned dynamic.
@@ -572,6 +573,8 @@ func TestKnownFaces(t *testing.T) {
 		{"do", "kinds", `Data!E4: the edit should leave a dynamic array there, and it holds no formula (it was lost)`, batch("set 'Data!E4' '=IF(N(\"d\")=0,SEQUENCE(2))'\n"), ""},
 		{"move", "kinds", `Data!E4: the edit should leave a dynamic array there, and it holds no formula (it was lost)`, plain("move"), ""},
 		{"set", "text", `Data!I2: typed the text "Apple", and the cell holds text "APPLE"`, plain("set"), ""},
+		{"set", "text", `Data!I2: typed the text "R&D", and the cell holds nothing`, plain("set"), ""},
+		{"replace", "reach", `Data!E1: outside the edit's reach, it held text "Date", and holds text "1,200" now`, plain("replace"), ""},
 		{"set", "text", `Data!I2: typed the text "_x0041_", and the cell holds text "A"`, plain("set"), ""},
 		{"move", "editors", `Data!B2: stream holds number 2088, full holds nothing (pending)`, plain("move"), ""},
 		{"copy", "repeat", `stream editor: the same edit on the same bytes worked once and failed once (exit 1: no such sheet)`, plain("copy"), ""},

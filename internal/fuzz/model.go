@@ -49,10 +49,43 @@ type model struct {
 	why string
 	// r is the model of the edit's reach (reach.go), when it is followed.
 	r *reach
+	// spills are the dynamic arrays before the edit, by sheet: a formula
+	// lost in their results says so (spillNote).
+	spills map[string][]grid.Range
+}
+
+// spillNote says that a cell of a sheet (lower case) is in the results of a
+// dynamic array, other than its first cell, of a workbook after an edit or
+// of one before it (by sheet): ", in the results of the dynamic array at
+// E2:E5". A typed text or a formula lost there was taken by the array (the
+// bug spill-overwrites in known.txt, whose face reads this).
+func spillNote(sheet string, r, c int, after *grid.Workbook, before map[string][]grid.Range) string {
+	var rs []grid.Range
+	for _, s := range after.Sheets {
+		if strings.ToLower(s.Name) == sheet {
+			rs = append(rs, s.Spills...)
+		}
+	}
+	rs = append(rs, before[sheet]...)
+	for _, a := range rs {
+		if a.Contains(r, c) && (a.R1 != r || a.C1 != c) {
+			return ", in the results of the dynamic array at " + a.String()
+		}
+	}
+	return ""
+}
+
+// spillsOf are a workbook's dynamic arrays, by sheet (lower case).
+func spillsOf(wb *grid.Workbook) map[string][]grid.Range {
+	out := map[string][]grid.Range{}
+	for _, s := range wb.Sheets {
+		out[strings.ToLower(s.Name)] = append(out[strings.ToLower(s.Name)], s.Spills...)
+	}
+	return out
 }
 
 func newModel(wb *grid.Workbook) *model {
-	m := &model{sheets: map[string]map[[2]int]string{}, names: map[string]string{}, sorted: map[string]bool{}, lost: map[string]bool{}, tables: map[string]string{}}
+	m := &model{sheets: map[string]map[[2]int]string{}, names: map[string]string{}, sorted: map[string]bool{}, lost: map[string]bool{}, tables: map[string]string{}, spills: spillsOf(wb)}
 	for _, s := range wb.Sheets {
 		k := strings.ToLower(s.Name)
 		for _, t := range s.Tables {
@@ -676,7 +709,7 @@ func (m *model) check(got *grid.Workbook) string {
 				// A table's header is text: sheets names the column after a
 				// formula typed there, as Excel does, and keeps no formula.
 			case wok && !gok:
-				return fmt.Sprintf("%s: the edit should leave %s there, and it holds no formula (it was lost)", where, formulaName(wmk))
+				return fmt.Sprintf("%s: the edit should leave %s there, and it holds no formula (it was lost)%s", where, formulaName(wmk), spillNote(k, c[0], c[1], got0, m.spills))
 			case !wok && gok:
 				return fmt.Sprintf("%s: the edit should leave no formula there, and it holds %s", where, formulaName(gmk))
 			case wmk != "" && gmk != "" && wmk != gmk:
@@ -753,7 +786,7 @@ func byColumn(want, got map[[2]int]string) string {
 // found. Only the top-level set and write are judged: in a batch or a script
 // a later command may move or clear what an earlier one typed. It returns
 // "" when the edit is fine.
-func checkTyped(e Edit, wb *grid.Workbook) string {
+func checkTyped(e Edit, wb, before *grid.Workbook) string {
 	type spot struct {
 		sheet string
 		r, c  int
@@ -820,7 +853,7 @@ func checkTyped(e Edit, wb *grid.Workbook) string {
 			continue
 		}
 		if got := s.Get(k.r, k.c); got.Kind != grid.Text || got.Formula != "" || got.Text != text {
-			return fmt.Sprintf("%s!%s: typed the text %q, and the cell holds %s", k.sheet, grid.CellName(k.r, k.c), text, value(got))
+			return fmt.Sprintf("%s!%s: typed the text %q, and the cell holds %s%s", k.sheet, grid.CellName(k.r, k.c), text, value(got), spillNote(strings.ToLower(k.sheet), k.r, k.c, wb, spillsOf(before)))
 		}
 	}
 	return ""

@@ -448,11 +448,14 @@ func TestFuzz(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		how := fmt.Sprint(known[f.Signature])
-		if b := kn.Bug(*f); b != nil {
-			how += ", the bug " + b.Name + " (known.txt:" + strconv.Itoa(b.Line) + ")"
+		how := "not listed by its seed"
+		if known[f.Signature] {
+			how = "listed by its seed"
 		}
-		t.Errorf("%s(known: %s)", g.Report(), how)
+		if b := kn.Bug(*f); b != nil {
+			how += "; it shows the bug " + b.Name + " (known.txt:" + strconv.Itoa(b.Line) + ")"
+		}
+		t.Errorf("%s(known.txt: %s)", g.Report(), how)
 		return
 	}
 	if long {

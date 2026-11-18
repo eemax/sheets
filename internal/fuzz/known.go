@@ -6,9 +6,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-
-	"github.com/eemax/sheets/internal/grid"
-	"github.com/eemax/sheets/internal/words"
 )
 
 // Known is what known.txt lists: findings by their signature (the default
@@ -23,9 +20,8 @@ type Known struct {
 // Bug is a bug known.txt names, by its findings' face: one of its edit
 // classes, its invariant, and a detail (the first line of the finding's)
 // that its pattern matches; with Edit, the last edit, as a shell command,
-// matches that too (a batch holding a sort); with When, the check of that
-// name holds (faceChecks: what a pattern cannot say). Repro is a sequence
-// that shows it, which a run replays to see whether it is fixed.
+// matches that too (a batch holding a sort). Repro is a sequence that shows
+// it, which a run replays to see whether it is fixed.
 type Bug struct {
 	Name      string
 	Classes   []string
@@ -33,70 +29,7 @@ type Bug struct {
 	Repro     Signature
 	Detail    *regexp.Regexp
 	Edit      *regexp.Regexp
-	When      string
 	Line      int // in known.txt
-}
-
-// faceChecks are the checks a bug line names with when.
-var faceChecks = map[string]func(Finding) bool{
-	// set-above-after: the cell the finding names first is typed by a set
-	// (the last edit, or a line of its batch), and a cell the same set types
-	// after it stands above it in its column: a dynamic array laid out from
-	// there, or cleared, reaches it (spill-overwrites). A slip that loses a
-	// formula another way (WP-12's mutant: a set on a new sheet) is not one.
-	"set-above-after": setAboveAfter,
-}
-
-func setAboveAfter(f Finding) bool {
-	if len(f.Edits) == 0 {
-		return false
-	}
-	ref, _, _ := strings.Cut(f.Detail, ": ")
-	sheet, r, c, ok := cellOf(ref)
-	if !ok {
-		return false
-	}
-	e := f.Edits[len(f.Edits)-1]
-	var sets [][]string
-	switch e.Class {
-	case "set":
-		sets = append(sets, e.Args[2:])
-	case "do":
-		for _, line := range strings.Split(e.Stdin, "\n") {
-			if w, err := words.Texts(line); err == nil && len(w) > 1 && w[0] == "set" {
-				sets = append(sets, w[1:])
-			}
-		}
-	}
-	for _, args := range sets {
-		typed := false
-		for i := 0; i+1 < len(args); i += 2 {
-			s, rr, cc, ok := cellOf(args[i])
-			switch {
-			case !ok || s != sheet:
-			case !typed && rr == r && cc == c:
-				typed = true
-			case typed && cc == c && rr < r:
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// cellOf reads Sheet!B2 (the sheet as named, or in quotes), its sheet lower
-// case.
-func cellOf(ref string) (string, int, int, bool) {
-	i := strings.LastIndex(ref, "!")
-	if i < 0 {
-		return "", 0, 0, false
-	}
-	sheet := ref[:i]
-	if len(sheet) > 1 && sheet[0] == '\'' && sheet[len(sheet)-1] == '\'' {
-		sheet = strings.ReplaceAll(sheet[1:len(sheet)-1], "''", "'")
-	}
-	r, c, ok := grid.ParseCell(ref[i+1:])
-	return strings.ToLower(sheet), r, c, ok
 }
 
 // Shows tells whether a finding is one of the bug's.
@@ -108,10 +41,7 @@ func (b Bug) Shows(f Finding) bool {
 	if !b.Detail.MatchString(detail) {
 		return false
 	}
-	if b.Edit != nil && (len(f.Edits) == 0 || !b.Edit.MatchString(f.Edits[len(f.Edits)-1].String())) {
-		return false
-	}
-	return b.When == "" || faceChecks[b.When](f)
+	return b.Edit == nil || len(f.Edits) > 0 && b.Edit.MatchString(f.Edits[len(f.Edits)-1].String())
 }
 
 func (b Bug) String() string { return b.Name }
@@ -141,7 +71,7 @@ func ParseKnown(text string) (map[Signature]bool, error) {
 //     class and invariant; a line that starts with "long" holds findings of
 //     long mode, on the pools it generated (see PoolSeed);
 //   - "bug <name>: <class>[,<class>...] <invariant>; repro [long] <seed>;
-//     detail <pattern>[; edit <pattern>][; when <check>]", a bug by its
+//     detail <pattern>[; edit <pattern>]", a bug by its
 //     findings' face (see Bug): long mode takes any finding that shows it as
 //     known, whatever its seed. The patterns are Go's regular expressions,
 //     and may hold # (no comment on a bug's line).
@@ -235,11 +165,6 @@ func parseBug(s string) (Bug, error) {
 				return b, fmt.Errorf("bug %s: repro %q: want [long] <seed>", name, val)
 			}
 			b.Repro = Signature{b.Classes[0], b.Invariant, seed, long}
-		case "when":
-			if faceChecks[val] == nil {
-				return b, fmt.Errorf("bug %s: no check %q (set-above-after)", name, val)
-			}
-			b.When = val
 		case "detail", "edit":
 			re, err := regexp.Compile(val)
 			if err != nil {
@@ -251,7 +176,7 @@ func parseBug(s string) (Bug, error) {
 				b.Edit = re
 			}
 		default:
-			return b, fmt.Errorf("bug %s: no field %q (repro, detail, edit, when)", name, key)
+			return b, fmt.Errorf("bug %s: no field %q (repro, detail, edit)", name, key)
 		}
 	}
 	if b.Repro.Seed == 0 || b.Detail == nil {
