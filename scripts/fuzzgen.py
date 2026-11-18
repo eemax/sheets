@@ -533,6 +533,10 @@ def refuse_cases(pool, out):
     # declaration binds.
     rewrite(plain, f"{out}/xml-attribute-twice.xlsx", sheet, lambda x: re.sub(r'<c r="([A-Z]+[0-9]+)"', r'<c r="\1" r="\1"', x, count=1))
     rewrite(plain, f"{out}/xml-prefix-unbound.xlsx", sheet, lambda x: x.replace("<sheetData>", "<sheetData><zz:x/>", 1))
+    # xml: a text with spaces at its ends stored without xml:space="preserve"
+    # (Excel drops the spaces): in the shared strings of a file that holds one.
+    spaced = first(lambda n: 'xml:space="preserve"' in zipfile.ZipFile(n).read("xl/sharedStrings.xml").decode() if "xl/sharedStrings.xml" in zipfile.ZipFile(n).namelist() else False)
+    rewrite(spaced, f"{out}/xml-space-lost--{os.path.basename(spaced)}", "xl/sharedStrings.xml", lambda x: x.replace(' xml:space="preserve"', "", 1))
     # kinds: a dynamic array stored without its cell metadata (plain now).
     # (Its file keeps G2 a plain formula: not one of a shared group.)
     dyn = first(lambda n: has('cm="1"')(n) and not has('t="shared"')(n))

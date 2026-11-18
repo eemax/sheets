@@ -166,6 +166,10 @@ func TestModel(t *testing.T) {
 				"ws.getRange(\"E1\").setValue(5);\n" +
 				"ws.getRange(\"2:2\").delete(\"Up\");\n"}},
 			after: m{"Data!B3": P}, wantErr: "Data!B2: the edit should leave a plain formula there, and it holds no formula"},
+		{name: "sort by an Excel table's name", before: m{"Data!B3": P, "Data!B4": L}, tables: []string{"Data!A1:C5"}, edit: edit("sort", "T", "B"),
+			after: m{"Data!B3": P, "Data!B4": L}},
+		{name: "sort by an Excel table's name loses one", before: m{"Data!B3": P, "Data!B4": L}, tables: []string{"Data!A1:C5"}, edit: edit("sort", "T", "B"),
+			after: m{"Data!B3": P}, wantErr: "Data"},
 		{name: "a command with no rule is not judged", before: m{"Data!B3": P}, edit: edit("fmt"), after: m{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

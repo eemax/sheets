@@ -465,7 +465,9 @@ func TestFuzz(t *testing.T) {
 		// Shrinking replays the edits many times: the first few are shrunk,
 		// the rest printed as the run made them.
 		g, how := f, "as made"
-		if newFindings <= maxShrunk {
+		if f.Invariant == "hang" {
+			how = "as made: a hang is not shrunk, and the run stopped there"
+		} else if newFindings <= maxShrunk {
 			if g, err = Shrink(pool, f, o.Dir); err != nil {
 				t.Fatal(err)
 			}
