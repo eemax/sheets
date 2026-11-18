@@ -24,6 +24,17 @@ from here when there is time; the reasons still apply unless noted.
   macOS, Linux and Windows (amd64 and arm64), a Homebrew tap, and `npx` or
   `uvx` shims. A static Linux build already works (about 21 MB, no cgo).
   Until then installing needs a Go toolchain.
+  - **The cost, from the 2026-11-18 review:** "reach for it first" is not
+    possible while installing needs Go. A `uvx` or pip wheel would put
+    sheets beside Python, where the position wants it.
+  - **Still deferred through wave 2.**
+- **Session mode.** Deferred (2026-11-18, the review of sheets):
+  `sheets serve`, a long-lived process holding a workbook over stdio. The parse
+  cache already gives reads in about 0.05 s, and a daemon adds state and
+  failure modes with no measured need. Revisit if a measured workflow
+  needs it. History goes through git, not a session.
+- **WebAssembly.** Cut (2026-11-18, the review): the engine compiled for a
+  browser that computes. Nothing in the reference workflows needs it.
 - **Better-looking charts.** Parked by the user (2026-10-23). The plan when
   it comes up: write the chart XML ourselves rather than use excelize's
   chart API, so the house dataviz style (thin marks, recessive axes, direct

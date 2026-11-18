@@ -7,34 +7,47 @@ Where the last session left off is in [handover.md](handover.md).
 
 ## Board
 
+Wave 2 is revised (2026-11-18, from the review of sheets in
+`~/sheets-evals/fable-review/review.md`). Its pieces are A to E.
+
 | Package | What | Wave | Status |
 |---|---|---|---|
 | WP-01 | `sheets check` | 1 | done |
 | WP-07a | Excel check, round 2: what sheets writes today | 1 | done |
-| WP-08 | Evals that measure the claims | 1 | planned |
-| WP-02 | Experiment: does `check` cut Python's silent defects? | 2 | planned |
-| WP-05 | `explain` and `trace` | 2 | planned |
-| WP-06 | `what-if` | 2 | planned |
-| WP-04 | Expectations the workbook carries | 3 | planned |
-| WP-03 | Values that moved where no edit reached | 3 | planned |
-| WP-09 | Receipts | 4 | planned |
-| WP-10 | Skill and docs for the new position | 4 | planned |
-| WP-07b | Excel check: the new features; then Max opens the pack in Excel | 4 | parked |
-| WP-11 | An Excel oracle: real Excel computing, through Microsoft Graph | — | waiting on Max (Business Basic tenant) |
 | WP-12 | Fix: a dynamic array set on a sheet the same command adds is saved corrupt | 1 | done |
+| WP-16 | Fix: every edit Excel refuses inside an array is refused; hand over to the full editor only when an edit reaches an array | 1 | done |
+| WP-14 | A: engine: what it computes unlike Excel becomes unknown, so check --fix never stores it | 2 (A) | planned |
+| WP-18 | A: fix: moving or copying a plain range formula makes it spill; sort refuses single-cell dynamic arrays | 2 (A) | planned |
+| WP-15 | A: fix: spills lost by a script's sheet copy, and after deleting a row inside a spill | 2 (A) | planned |
+| WP-08 | B: evals that can fail (narrowed): a 20-edit session and a feature-loss task | 2 (B) | planned |
+| WP-02 | C: does `check --fix` beat a one-line prefix hint? (cheap) | 2 (C) | planned |
+| WP-03 + WP-09 | D: the change report (merged): `check --against`, the short form after each edit, a Markdown receipt | 2 (D) | planned |
+| WP-17 | E: the fuzzer | 2 (E) | planned |
+| Gate | After B and C: Max reviews their verdicts | 2 | planned |
+| WP-05 | `explain` and `trace` | after the gate | planned |
+| WP-04 | Expectations the workbook carries | after the gate | planned |
+| WP-06 | `what-if`: folded into `set --dry-run --show`, later | later | folded |
+| WP-10 | Skill and docs for the new position | beyond this run | planned |
 | WP-13 | Fix: render computes what read calls unknown; dates written into narrow columns show ######## | — | planned |
-| WP-14 | Engine: what it computes unlike Excel becomes unknown, so check --fix never stores it | — | planned |
-| WP-15 | Fix: spills lost by a script's sheet copy, and after deleting a row inside a spill | — | planned |
-| WP-16 | Fix: every edit Excel refuses inside an array is refused; hand over to the full editor only when an edit reaches an array | — | done |
-| WP-18 | Fix: moving or copying a plain range formula makes it spill; sort refuses single-cell dynamic arrays | — | planned |
+| WP-07b | Excel check: the new features; then Max opens the pack in Excel | — | parked |
+| WP-11 | An Excel oracle: real Excel computing, through Microsoft Graph | — | waiting on Max (Business Basic tenant) |
+
+**Order of wave 2:** A and E first, in parallel. Then B and C. D builds
+meanwhile. The gate comes after B and C.
 
 **Parked (Max, 2026-11-03):** whatever needs Excel installed. That's
 WP-07b, and Max opening the Excel check pack.
 
-**Gate after wave 2.** WP-02's verdict decides whether the position holds
-(see the kill criterion in the vision). Max reviews it before wave 3.
+**Gate after wave 2.** B's and C's verdicts, the two numbered tests in the
+vision's kill criterion, are reported to Max. They are reported, not used
+to cut pieces. B measures sheets as of piece A, without D's report; a
+rerun with D is for the next wave. WP-05 and WP-04 come after the gate.
 
-Statuses: `planned`, `working`, `auditing`, `fixing`, `done`, `parked`.
+Not in wave 2: `explain`, `what-if`, expectations, session mode, the skill
+rewrite (WP-10), WebAssembly and MCP mode.
+
+Statuses: `planned`, `working`, `auditing`, `fixing`, `done`, `parked`,
+`folded`.
 
 ## Horizon 1: work packages
 
@@ -85,50 +98,62 @@ the definition of done in [orchestration.md](orchestration.md).
 - **Not in scope:** expectations (WP-04), receipts (WP-09), values that
   moved (WP-03).
 
-### WP-02 Experiment: does `check` cut Python's silent defects?
+### WP-02 C: does `check` beat a one-line prefix hint?
 
-- **Goal:** test the position against the kill criterion in the vision.
-- **Sample:** the 90 SpreadsheetBench tasks from 2026-10-25. That is the
-  union of `ssb.py --sample 40` and `--sample 80`, both with seed 2026.
+- **Goal:** test the second numbered test of the vision's kill criterion,
+  cheaply.
+- **Sample:** SpreadsheetBench tasks, as the harness draws them, with the
+  sample and seed written in the results.
 - **Arms:**
-  - **python:** run again.
-  - **python + check afterwards:** `sheets check --fix` applied to each
-    python output before grading.
-  - **python + check in the prompt:** the agent is told to finish with
-    `sheets check --fix`.
-  - **skill + check afterwards.**
-
-  Use the 2026-10-25 sheets arm as the reference, and say so.
-- **Silent defects:** a failed run whose final answer reports success
-  (see WP-08).
+  - **python:** plain, as before.
+  - **python + a one-line prefix hint:** told to write newer functions
+    with their `_xlfn.` prefix.
+  - **python, then `check --fix`:** `sheets check --fix` applied to the
+    output before grading.
+- **Grading, twice, both reported in full:**
+  - **SpreadsheetBench's way,** recalculating in LibreOffice;
+  - **stored values,** read with no recalculation, as pandas, previews and
+    people read them. The hint arm's openpyxl files store no results.
+- **Pass bar (Max, 2026-11-18):** `check` passes only if it beats the hint
+  arm on stored values on a paired test, and is no worse under the
+  SpreadsheetBench grading. The results say whether the win is more than
+  stored results. If it fails, `check` stays a convenience and stops being
+  the pitch.
 - **Acceptance:**
-  - **Results:** a results document in `evals/results`, with paired
-    statistics, failure categories and an explicit answer to the kill
-    criterion.
-  - **Harness:** the harness changes, committed.
-  - **Run outputs:** kept under `~/sheets-evals/runs/`.
-- **Depends on:** WP-01; WP-08's silent-defect column, if it is ready.
+  - **Results:** a document in `evals/results` with paired statistics,
+    failure categories and the verdict.
+  - **Harness:** the changes, committed.
+  - **Run outputs:** kept under `~/sheets-evals/wave2/`.
+- **Depends on:** WP-01, WP-14 (piece A) and the eval arms' interface.
 
-### WP-03 Values that moved where no edit reached
+### WP-03 with WP-09: the change report (piece D)
 
-- **Goal:** `sheets diff old.xlsx new.xlsx` explains value changes:
-  - the inputs that changed;
-  - the formulas that changed;
-  - the computed values that moved because of them;
-  - values that moved with no edit upstream, flagged.
-- **Why:** this is a check that needs no authoring. An unexplained change
-  is how a broken formula, a lost result or a bad round trip shows itself.
+- **Goal:** one report on what a change did, whoever made it.
+  - **`sheets check book.xlsx --against before.xlsx`:** inputs and formulas
+    that changed; computed values that moved, each traced to its cause;
+    values that moved with no cause, flagged; features lost (charts,
+    validations, conditional formats, shapes, names); unknowns.
+  - **After every sheets edit:** the same report, short.
+  - **A Markdown receipt** with rendered before and after, for a pull
+    request or a message.
+- **Why:** an unexplained change is how a broken formula, a lost result or
+  a bad round trip shows itself, and it needs no authoring. This catches
+  what openpyxl silently drops, which no skill line fixes.
 - **Acceptance:** planted cases in tests:
   - **an input change:** every moved value is explained;
   - **one row's formula broken:** flagged;
   - **an openpyxl round trip that lost results:** flagged;
+  - **an openpyxl round trip that drops a chart and a validation:**
+    flagged;
   - **a sort:** reported as moved rows, not changes.
 
-  Output stays bounded on large sheets.
+  Output stays bounded on 150,000 rows.
 - **Depends on:** diff's row and column alignment, and the engine's
-  dependencies.
+  dependencies. Part of wave 2; it builds meanwhile B and C run.
 
 ### WP-04 Expectations the workbook carries
+
+Comes after the gate.
 
 - **Goal:** `sheets expect book.xlsx '<name>' '<condition>'`, for example
   `'Summary!B5=SUM(Data!F:F)'`.
@@ -152,6 +177,8 @@ the definition of done in [orchestration.md](orchestration.md).
 
 ### WP-05 `explain` and `trace`
 
+Comes after the gate.
+
 - **Goal:** `sheets explain book.xlsx Summary!B5` shows the formula and
   each input with its value, recursively to a depth.
   - **Large ranges:** summarized (count, sum, smallest and largest), not
@@ -165,20 +192,15 @@ the definition of done in [orchestration.md](orchestration.md).
   - **Size:** bounded, about 60 lines by default.
   - **Output and checks:** `--json`, tests on fixtures, and docs.
 
-### WP-06 `what-if`
+### WP-06 `what-if` (folded)
 
-- **Goal:** `sheets whatif book.xlsx 'Inputs!B2=1.1' --show 'Summary!B5:B9'`
-  shows values before and after, and saves nothing.
-  - **Scenarios:** several, side by side.
-  - **Unknown values:** what sheets cannot compute shows as unknown.
-  - **Stretch goal:** `--seek` finds the input value that brings a target
-    to a given number.
-- **Acceptance:**
-  - **Nothing saved:** the file's bytes are unchanged and no undo step is
-    recorded.
-  - **Correctness:** the results equal those of a real edit followed by
-    recomputation.
-  - **Tests and docs.**
+Folded into `set --dry-run --show`, later (the review, 2026-11-18). That
+shows values before and after and saves nothing, which is what `what-if`
+was for. Not in wave 2.
+
+- **Still to hold:** the file's bytes unchanged, no undo step recorded, and
+  results equal to a real edit followed by recomputation. Unknown values
+  show as unknown.
 
 ### WP-07a Excel check, round 2
 
@@ -202,40 +224,41 @@ the definition of done in [orchestration.md](orchestration.md).
   become packages.
 - **Depends on:** WP-01, WP-04, WP-09.
 
-### WP-08 Evals that measure the claims
+### WP-08 B: evals that can fail
 
-- **Goal:** the measures in the vision exist and run.
-  - **Silent defects:** a column in the reports of `run.py` and `ssb.py`
-    for failed runs whose final answer reports success. A simple
-    classifier is fine, if its rule is written down and spot-checked.
-  - **A long-horizon task:** a realistic multi-sheet workbook (tables,
-    names, a chart, conditional formats) and 20 edits in one session.
-    It is graded on the end state: every formula's value against an
-    independent computation, and every feature intact.
-  - **A model-review task:** about 10 planted errors in a model of about
-    10 sheets.
-  - **Two reference workflows, on synthetic data:** reading a supplier's
-    sheet into a standard; and a costing template filled for 50 products.
+- **Goal:** test the first numbered test of the vision's kill criterion.
+  Two tasks where the claim lives:
+  - **A 20-edit session** on a feature-rich workbook (tables, names, a
+    chart, conditional formats), graded on the end state: every formula's
+    value against an independent computation, and every feature intact.
+  - **A feature-loss task:** edit a workbook with a chart, validations,
+    conditional formats and a shape.
+- **Silent defects:** a failed run whose final answer reports success,
+  counted with a written, spot-checked rule.
+- **Arms:** sheets; Python; Python with the xlsx skill and LibreOffice
+  available. The skill arm is the committed Apache 2.0 skill. Three runs
+  each.
+- **Pass bar:** sheets has at most half the best Python arm's defect rate,
+  at no more than 1.3 times its cost.
 - **Acceptance:**
   - **Conventions:** the tasks follow `evals/tasks` (`setup.py`,
     `check.py`, `prompt.md`).
-  - **The checks:** validated against one hand-made correct solution and
-    one hand-made wrong one.
-  - **A dry run:** one arm runs once.
+  - **The checks:** validated against one hand-made right solution and one
+    hand-made wrong one.
+  - **Results:** in `evals/results`; raw outputs under
+    `~/sheets-evals/wave2/`.
+- **Measured as of piece A,** without D's report.
+- **Not in this package:** the model-review task and the two reference
+  workflows from the earlier WP-08.
 
-### WP-09 Receipts
+### WP-09 Receipts (merged into WP-03)
 
-- **Goal:** `sheets check --receipt out.md` (or HTML) writes a short page
-  for a person. It shows:
-  - what changed since a version, from the undo history or
-    `--against old.xlsx`;
-  - the values that moved, and why;
-  - the checks and expectations;
-  - previews of the changed sheets;
-  - what is unknown.
-- **Depends on:** WP-01, WP-03, WP-04.
+Merged with WP-03 as the change report, piece D of wave 2. See WP-03.
 
 ### WP-10 Skill and docs for the new position
+
+Beyond this run. Wave 2 changes the skill only as far as a new command
+needs it to stay true.
 
 - **Goal:** the skill, `agent-docs` and the README teach:
   - when to use sheets and when Python;
@@ -356,6 +379,25 @@ the definition of done in [orchestration.md](orchestration.md).
     finds nothing;
   - tests in both editors.
 
+### WP-17 The fuzzer (piece E)
+
+- **Goal:** turn what the auditor found by hand into a machine. Wave 1
+  needed three audit rounds per package and turned up about 15 old bugs.
+- **Shape:** random workbooks from openpyxl and XlsxWriter, random edits,
+  and fixed invariants:
+  - valid XML;
+  - formula kinds kept;
+  - nothing outside the edit changed;
+  - both editors agree;
+  - undo restores the bytes.
+- **LibreOffice** only as a second opinion on plain functions, never the
+  judge. The Graph oracle (WP-11) replaces it when it exists.
+- **Acceptance:**
+  - it finds the wave-1 audit's known bugs when they are put back;
+  - it runs in `portal check full` and keeps it under 135 s on the
+    MacBook (101 s today);
+  - findings go to the portal repo as issues labelled `repo:sheets`.
+
 ### WP-11 An Excel oracle (waiting on Max)
 
 - **Goal:** test sheets against Excel itself, not LibreOffice. Microsoft
@@ -379,13 +421,17 @@ the definition of done in [orchestration.md](orchestration.md).
 
 ## Horizon 2, to be cut into packages after the gate
 
-- **Session mode:** `sheets serve`, a long-lived process holding a workbook,
-  talking over stdio.
-- **A Python client on top of it:** the command set as functions plus live
-  reads, not a second object model.
+- **Session mode:** deferred (see [deferred.md](deferred.md)).
+- **A Python client:** a thin wrapper over the CLI, not a client of a
+  session.
+- **History:** through git: `sheets diff` as a diff driver for `.xlsx`,
+  receipts on pull requests, `check` as a CI step.
+- **`what-if` and `explain`:** `set --dry-run --show`, then `explain`.
 - **Templates:** fill a workbook template once per record.
-- **History and review:** an agent proposes a change, a person sees it
+- **Change review:** an agent proposes a change, a person sees it
   rendered and accepts it.
+- **Later:** an MCP mode of four tools (look, change, check, render).
+  WebAssembly is cut.
 
 ## Done
 
@@ -416,9 +462,7 @@ the definition of done in [orchestration.md](orchestration.md).
 
 - **Evals:**
   - The `claude` CLI is logged in.
-  - The skill arm needs `EVAL_BASELINE_SKILL` set to the xlsx skill's
-    `SKILL.md`, found under `~/Library/Application
-    Support/Claude/local-agent-mode-sessions/skills-plugin/`. That skill
-    is proprietary: use it locally, never commit it.
+  - The skill arm uses the committed Apache 2.0 skill in
+    `evals/arms/xlsx-skill/`, under the eval-arms piece's contract.
   - The MCP arm uses `uvx excel-mcp-server==2.2.2`.
   - LibreOffice, for grading, is `/opt/homebrew/bin/soffice`.
