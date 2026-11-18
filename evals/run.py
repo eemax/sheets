@@ -5,10 +5,16 @@ and the ways agents work without it.
     evals/run.py prepare OUT     # a folder per task and arm: inputs and the prompt
     evals/run.py check OUT       # grade what the agents left, write OUT/report.md
     evals/run.py run OUT         # prepare, run each agent with `claude -p`, check
+    evals/run.py run OUT --more  # only the runs not finished yet
+    evals/run.py run OUT --redo 10/python   # rerun named runs (old meta kept)
+    evals/run.py validate OUT    # check the checks with each task's solutions/
 
-Arms: sheets (the CLI and its guide), python (openpyxl and pandas), skill
-(Python with a spreadsheet skill: EVAL_BASELINE_SKILL names its SKILL.md)
-and mcp (the excel-mcp-server tools, run with uvx).
+Arms: sheets (the CLI and its guide), python (openpyxl and pandas),
+python-hint (python, plus one line on the _xlfn. prefix), skill (Python
+with a spreadsheet skill: Anthropic's xlsx skill in arms/xlsx-skill, or the
+SKILL.md EVAL_BASELINE_SKILL names), skill-lo (the xlsx skill with
+LibreOffice there for its recalc.py) and mcp (the excel-mcp-server tools,
+run with uvx).
 
 Each task in evals/tasks has prompt.md (the request, the same for both arms),
 setup.py (writes the input files, and the true answers to a file the agent
@@ -33,10 +39,13 @@ import time
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(ROOT)
 TASKS = os.path.join(ROOT, "tasks")
-ARMS = ["sheets", "python", "skill", "mcp"]
-# The longest an agent may run, in seconds; the slowest finished run so far
-# took about 8 minutes.
-TIMEOUT = 1200
+ARMS = ["sheets", "python", "skill", "mcp", "skill-lo", "python-hint"]
+# The longest an agent may run, in minutes (run --timeout); the slowest
+# finished run so far took about 8 minutes.
+TIMEOUT_MIN = 20
+# The committed xlsx skill (Apache 2.0, see its NOTICE).
+SKILL = os.path.join(ROOT, "arms", "xlsx-skill", "SKILL.md")
+SOFFICE = "/opt/homebrew/bin/soffice"
 MCP_SERVER = ["uvx", "--from", "excel-mcp-server==2.2.2", "excel-mcp-server", "stdio"]
 
 
@@ -67,10 +76,9 @@ def truth_path(out, task, arm):
 
 def baseline_skill(out):
     """Copy the baseline skill's folder into OUT/skills and return it and
-    its instructions (SKILL.md without its frontmatter)."""
-    src = os.environ.get("EVAL_BASELINE_SKILL")
-    if not src:
-        sys.exit("the skill arm needs EVAL_BASELINE_SKILL: the SKILL.md of a spreadsheet skill")
+    its instructions (SKILL.md without its frontmatter): the committed
+    xlsx skill, or the SKILL.md EVAL_BASELINE_SKILL names."""
+    src = os.environ.get("EVAL_BASELINE_SKILL") or SKILL
     d = os.path.join(out, "skills", os.path.basename(os.path.dirname(os.path.abspath(src))))
     if not os.path.isdir(d):
         shutil.copytree(os.path.dirname(os.path.abspath(src)), d)
@@ -84,7 +92,7 @@ def prompt_for(task, arm, work, bindir):
     if arm == "sheets":
         docs = subprocess.run([os.path.join(bindir, "sheets"), "agent-docs"], capture_output=True, text=True, check=True).stdout
         guide += "\n\n" + docs.strip()
-    elif arm == "skill":
+    elif arm in ("skill", "skill-lo"):
         # As Claude Code loads a skill: its folder, then its instructions.
         d, body = baseline_skill(os.path.dirname(bindir))
         guide += f"\n\nBase directory for this skill: {d}\n\n{body}"
@@ -92,28 +100,65 @@ def prompt_for(task, arm, work, bindir):
             "When you are done, end with your answer (or a short summary of what you changed).")
 
 
-def prepare(out, only, arms):
+def prepare(out, only, arms, runs=None):
+    """Write each run's folder afresh: its inputs and its prompt. RUNS,
+    when given, are the (task, arm) pairs to prepare instead of every task
+    and arm."""
     bindir = sheets_bin(out)
-    for task in tasks(only):
-        for arm in arms:
-            d = os.path.join(out, task, arm)
-            work = os.path.join(d, "work")
-            shutil.rmtree(d, ignore_errors=True)
-            os.makedirs(work)
-            uv(os.path.join(TASKS, task, "setup.py"), work, truth_path(out, task, arm), check=True)
-            with open(os.path.join(d, "prompt.txt"), "w") as f:
-                f.write(prompt_for(task, arm, work, bindir))
+    for task, arm in runs if runs is not None else [(t, a) for t in tasks(only) for a in arms]:
+        d = os.path.join(out, task, arm)
+        work = os.path.join(d, "work")
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(work)
+        uv(os.path.join(TASKS, task, "setup.py"), work, truth_path(out, task, arm), check=True)
+        with open(os.path.join(d, "prompt.txt"), "w") as f:
+            f.write(prompt_for(task, arm, work, bindir))
     return bindir
 
 
-def run_agent(d, arm, bindir, model, budget):
-    """Run one agent with the Claude Code CLI; returns its metrics."""
+def finished(out, task, arm):
+    """Whether a run has ended: its agent wrote meta.json."""
+    return os.path.exists(os.path.join(out, task, arm, "meta.json"))
+
+
+def redo_runs(names):
+    """The (task, arm) pairs of TASK/ARM names; TASK may be a prefix that
+    names one task."""
+    runs = []
+    for name in names:
+        task, _, arm = name.partition("/")
+        found = tasks([task])
+        if len(found) != 1 or arm not in ARMS:
+            sys.exit(f"--redo {name}: give TASK/ARM, with a task prefix naming one task and an arm of {', '.join(ARMS)}")
+        runs.append((found[0], arm))
+    return runs
+
+
+def soffice_dir():
+    """The folder of LibreOffice's soffice, for the skill-lo arm."""
+    found = shutil.which("soffice") or (SOFFICE if os.access(SOFFICE, os.X_OK) else None)
+    if not found:
+        sys.exit(f"the skill-lo arm needs LibreOffice: no soffice on the PATH or at {SOFFICE}")
+    return os.path.dirname(found)
+
+
+def run_agent(d, arm, bindir, model, budget, *, timeout_min=TIMEOUT_MIN):
+    """Run one agent with the Claude Code CLI; returns its metrics. The
+    agent and its tools are stopped after TIMEOUT_MIN minutes."""
+    timeout = timeout_min * 60
     work = os.path.join(d, "work")
     env = dict(os.environ)
-    path = [p for p in env.get("PATH", "").split(os.pathsep) if not os.path.exists(os.path.join(p, "sheets"))]
-    # LibreOffice, though installed here for grading, is not there for the
-    # agents, as on most machines.
-    path.insert(0, no_libreoffice(os.path.dirname(bindir)))
+    path = path_without_sheets(os.path.dirname(bindir), env.get("PATH", ""))
+    if arm == "skill-lo":
+        # The skill's own setting: LibreOffice there for its recalc.py, and
+        # no stand-ins in front of it.
+        path = [p for p in path if os.path.basename(p) != "no-libreoffice"]
+        if soffice_dir() not in path:
+            path.insert(0, soffice_dir())
+    else:
+        # LibreOffice, though installed here for grading, is not there for
+        # the agents, as on most machines.
+        path.insert(0, no_libreoffice(os.path.dirname(bindir)))
     if arm == "sheets":
         path.insert(0, bindir)
     env["PATH"] = os.pathsep.join(path)
@@ -131,16 +176,16 @@ def run_agent(d, arm, bindir, model, budget):
     cmd += ["--allowedTools", *tools, "--disallowedTools", "WebFetch", "WebSearch", "Task", "Agent"]
     start = time.time()
     # No stdin: a command that reads it ends at once instead of waiting.
-    # An agent whose tool hangs is stopped, with the tool, after TIMEOUT
-    # seconds and counts as an error.
+    # An agent whose tool hangs is stopped, with the tool, after timeout_min
+    # minutes and counts as an error.
     p = subprocess.Popen(cmd, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
-        stdout, stderr = p.communicate(timeout=TIMEOUT)
+        stdout, stderr = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         os.killpg(p.pid, signal.SIGKILL)
         stdout, stderr = p.communicate()
-        stderr += f"\nstopped after {TIMEOUT} s"
+        stderr += f"\nstopped after {timeout} s"
     res = subprocess.CompletedProcess(cmd, p.returncode, stdout, stderr)
     # The transcript, kept to see what each agent did; its last event is the
     # result.
@@ -163,6 +208,24 @@ def run_agent(d, arm, bindir, model, budget):
     with open(os.path.join(d, "meta.json"), "w") as f:
         json.dump(meta, f)
     return meta
+
+
+def path_without_sheets(out, path):
+    """PATH's folders, with each one holding a sheets command replaced by
+    a folder of links to its other commands (in OUT/no-sheets), so an arm
+    finds no installed sheets but still finds uv and claude beside it."""
+    dirs = []
+    for p in path.split(os.pathsep):
+        if p and os.path.exists(os.path.join(p, "sheets")):
+            shadow = os.path.join(out, "no-sheets", re.sub(r"[^\w.-]", "_", p.strip("/")))
+            os.makedirs(shadow, exist_ok=True)
+            for name in os.listdir(p):
+                link = os.path.join(shadow, name)
+                if name != "sheets" and not os.path.lexists(link):
+                    os.symlink(os.path.join(p, name), link)
+            p = shadow
+        dirs.append(p)
+    return dirs
 
 
 def no_libreoffice(out):
@@ -198,22 +261,18 @@ def tool_uses(events):
 
 
 def check(out, only, arms=ARMS):
-    bindir = os.path.join(out, "bin")
-    env = dict(os.environ, SHEETS_BIN=os.path.join(bindir, "sheets"), PYTHONPATH=os.path.join(ROOT, "lib"), SHEETS_UNDO="off")
     results = {}
     for task in tasks(only):
         for arm in arms:
             d = os.path.join(out, task, arm)
             if not os.path.isdir(d):
                 continue
-            res = uv(os.path.join(TASKS, task, "check.py"), os.path.join(d, "work"), truth_path(out, task, arm),
-                     os.path.join(d, "answer.txt"), capture_output=True, text=True, env=env)
-            try:
-                r = json.loads(res.stdout.strip().splitlines()[-1])
-            except (json.JSONDecodeError, IndexError):
-                r = {"passed": False, "checks": [{"name": "check ran", "ok": False, "detail": (res.stderr or res.stdout)[-300:], "kind": "task"}]}
+            r = grade(out, task, arm, d)
             meta = os.path.join(d, "meta.json")
             r["meta"] = json.load(open(meta)) if os.path.exists(meta) else {}
+            answer = os.path.join(d, "answer.txt")
+            r["claim"] = "none" if r["meta"].get("error") or not os.path.exists(answer) else claim(open(answer).read())
+            r["silent"] = not r["passed"] and r["claim"] == "success"
             with open(os.path.join(d, "result.json"), "w") as f:
                 json.dump(r, f, indent=1)
             results[(task, arm)] = r
@@ -221,10 +280,67 @@ def check(out, only, arms=ARMS):
     return results
 
 
+# The silent-defect rule (evals/README.md): a failed run is silent when its
+# final answer claims success. An answer admits failure when it says the
+# work, or part of it, could not be done or checked, or carries a caveat
+# about the result; failing that, it claims success when it reports work
+# done or gives an answer (a success word, or a number). Admitting wins
+# over claiming: an answer that does both is not silent.
+_ADMITS = re.compile(r"""\b(?:
+    could\s*n[o']t | can\s*n[o']t | cannot | unable\ to | not\ able\ to | (?:was|were)\s*n[o']t\ able
+  | failed\ to | fails?\ to | did\s*n[o']t\ (?:work|succeed|manage|finish|complete|save)
+  | unfortunately | not\ sure | unsure | not\ certain | unverified | not\ verified | could\ not\ verify
+  | (?:may|might)\ (?:not|still)\ (?:be|show|update|reflect)
+  | won't\ (?:update|show|reflect) | will\ not\ (?:update|show|reflect)
+  | (?:needs?|have|has)\ to\ be\ (?:recalculated|opened|refreshed) | until\ (?:it\ is\ |you\ )?(?:opened|open|recalculat)
+  | (?:not|\w*n't)\ (?:been\ )?(?:recalculated|saved|updated|stored)
+  | stale | partial(?:ly)? | incomplete | caveat | limitation | blocked
+)\b""", re.I | re.X)
+_CLAIMS = re.compile(r"""\b(?:
+    done | completed? | changed | updated | set | saved | fixed | added | inserted | renamed | removed | deleted
+  | applied | created | built | wrote | written | replaced | corrected | formatted | moved | appended
+  | successfully | success | now | verified | confirmed | answer | total | result
+)\b|✅|\d""", re.I | re.X)
+
+
+def claim(answer):
+    """What an agent's final answer says of its work: "failure" (it admits
+    a problem), "success" (it reports the work done, or an answer) or
+    "none" (it says neither).
+
+    >>> claim("Done: Widget now costs 15, and the order total is 285.")
+    'success'
+    >>> claim("Changed Widget's price to 15 in prices.xlsx.")
+    'success'
+    >>> claim("The total revenue is 1,234,567.")
+    'success'
+    >>> claim("I couldn't open prices.xlsx: the file seems corrupt.")
+    'failure'
+    >>> claim("Widget is now 15. The stored totals may not update until the file is opened in Excel.")
+    'failure'
+    >>> claim("Set Widget to 15; the cached totals haven't been recalculated.")
+    'failure'
+    >>> claim("I was unable to find a Widget row.")
+    'failure'
+    >>> claim("Unfortunately the chart was lost when saving.")
+    'failure'
+    >>> claim("Here is what I found in the workbook.")
+    'none'
+    >>> claim("")
+    'none'
+    """
+    if not answer.strip():
+        return "none"
+    if _ADMITS.search(answer):
+        return "failure"
+    return "success" if _CLAIMS.search(answer) else "none"
+
+
 def write_report(out, results):
     lines = ["# sheets A/B evaluation", "",
-             "| task | arm | pass | checks | stored results | turns | tokens | cost $ | seconds |", "|---|---|---|---|---|---|---|---|---|"]
-    totals = {arm: {"pass": 0, "n": 0, "stored": 0, "stored_n": 0, "turns": 0, "tokens": 0, "cost": 0.0, "seconds": 0.0}
+             "Silent: a failed run whose final answer claims success (the rule is in evals/README.md).", "",
+             "| task | arm | pass | checks | stored results | silent | turns | tokens | cost $ | seconds |", "|---|---|---|---|---|---|---|---|---|---|"]
+    totals = {arm: {"pass": 0, "n": 0, "stored": 0, "stored_n": 0, "silent": 0, "turns": 0, "tokens": 0, "cost": 0.0, "seconds": 0.0}
               for arm in ARMS if any(a == arm for _, a in results)}
     for (task, arm), r in sorted(results.items()):
         task_checks = [c for c in r["checks"] if c["kind"] == "task"]
@@ -235,16 +351,17 @@ def write_report(out, results):
         t["pass"] += r["passed"]
         t["stored"] += sum(c["ok"] for c in stored)
         t["stored_n"] += len(stored)
+        t["silent"] += bool(r.get("silent"))
         t["turns"] += m.get("turns") or 0
         t["tokens"] += m.get("tokens") or 0
         t["cost"] += m.get("cost_usd") or 0
         t["seconds"] += m.get("seconds") or 0
         cost = f"{m['cost_usd']:.2f}" if m.get("cost_usd") is not None else ""
         lines.append(f"| {task} | {arm} | {'✅' if r['passed'] else '❌'} | {sum(c['ok'] for c in task_checks)}/{len(task_checks)} | "
-                     f"{sum(c['ok'] for c in stored)}/{len(stored)} | {m.get('turns', '')} | {m.get('tokens', '')} | {cost} | {m.get('seconds', '')} |")
-    lines += ["", "| arm | tasks passed | stored results | turns | tokens | cost $ | seconds |", "|---|---|---|---|---|---|---|"]
+                     f"{sum(c['ok'] for c in stored)}/{len(stored)} | {'⚠️' if r.get('silent') else ''} | {m.get('turns', '')} | {m.get('tokens', '')} | {cost} | {m.get('seconds', '')} |")
+    lines += ["", "| arm | tasks passed | stored results | silent | turns | tokens | cost $ | seconds |", "|---|---|---|---|---|---|---|---|"]
     for arm, t in totals.items():
-        lines.append(f"| {arm} | {t['pass']}/{t['n']} | {t['stored']}/{t['stored_n']} | {t['turns']} | {t['tokens']} | {t['cost']:.2f} | {t['seconds']:.0f} |")
+        lines.append(f"| {arm} | {t['pass']}/{t['n']} | {t['stored']}/{t['stored_n']} | {t['silent']}/{t['n'] - t['pass']} | {t['turns']} | {t['tokens']} | {t['cost']:.2f} | {t['seconds']:.0f} |")
     lines += ["", "## Failed checks", ""]
     for (task, arm), r in sorted(results.items()):
         for c in r["checks"]:
@@ -255,34 +372,122 @@ def write_report(out, results):
     print("\n".join(lines))
 
 
+def grade(out, task, name, d):
+    """Run TASK's check.py on the run folder D; returns its result."""
+    bindir = os.path.join(out, "bin")
+    env = dict(os.environ, SHEETS_BIN=os.path.join(bindir, "sheets"), PYTHONPATH=os.path.join(ROOT, "lib"), SHEETS_UNDO="off")
+    res = uv(os.path.join(TASKS, task, "check.py"), os.path.join(d, "work"), truth_path(out, task, name),
+             os.path.join(d, "answer.txt"), capture_output=True, text=True, env=env)
+    try:
+        return json.loads(res.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        return {"passed": False, "checks": [{"name": "check ran", "ok": False, "detail": (res.stderr or res.stdout)[-300:], "kind": "task"}]}
+
+
+def validate(out, only):
+    """Check each task's check against its solutions/: right.py must pass
+    and wrong.py must fail. Each runs on a fresh copy of the task's inputs,
+    with sheets on its PATH, and its stdout is graded as an agent's reply.
+    Returns whether every solution came out as it should."""
+    bindir = sheets_bin(out)
+    ok, seen = True, 0
+    for task in tasks(only):
+        sols = os.path.join(TASKS, task, "solutions")
+        if not os.path.isdir(sols):
+            print(f"{task}: no solutions/, skipped")
+            continue
+        for kind in ("right", "wrong"):
+            seen += 1
+            sol = os.path.join(sols, kind + ".py")
+            if not os.path.exists(sol):
+                print(f"{task} / {kind}: FAIL, no solutions/{kind}.py")
+                ok = False
+                continue
+            name = "solution-" + kind
+            d = os.path.join(out, task, name)
+            work = os.path.join(d, "work")
+            shutil.rmtree(d, ignore_errors=True)
+            os.makedirs(work)
+            uv(os.path.join(TASKS, task, "setup.py"), work, truth_path(out, task, name), check=True)
+            env = dict(os.environ, SHEETS_BIN=os.path.join(bindir, "sheets"), SHEETS_CACHE_DIR=os.path.join(d, ".cache"))
+            env["PATH"] = os.pathsep.join([bindir, env.get("PATH", "")])
+            res = subprocess.run(["uv", "run", "--with", "openpyxl", "--with", "xlsxwriter", "python", sol, work],
+                                 cwd=work, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+            with open(os.path.join(d, "answer.txt"), "w") as f:
+                f.write(res.stdout)
+            if res.returncode != 0:
+                # A solution that does not run proves nothing about the check
+                # (and uv failing to fetch openpyxl shows here).
+                print(f"{task} / {kind}: FAIL, the solution exited {res.returncode}: {res.stderr.strip()[-300:]}")
+                ok = False
+                continue
+            r = grade(out, task, name, d)
+            with open(os.path.join(d, "result.json"), "w") as f:
+                json.dump(r, f, indent=1)
+            good = r["passed"] == (kind == "right")
+            ok = ok and good
+            failed = "; ".join(c["name"] for c in r["checks"] if not c["ok"] and c["kind"] == "task")
+            print(f"{task} / {kind}: {'ok' if good else 'FAIL'}, the check {'passed' if r['passed'] else 'failed'}"
+                  + (f" ({failed})" if failed else ""))
+    if not seen:
+        print("no task with solutions/ was named")
+        return False
+    return ok
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", choices=["prepare", "check", "run"])
+    ap.add_argument("action", choices=["prepare", "check", "run", "validate"])
     ap.add_argument("out")
     ap.add_argument("--tasks", nargs="*", help="task name prefixes (default: all)")
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--budget", type=float, default=2.0, help="USD per agent run")
     ap.add_argument("--arms", nargs="*", default=["sheets", "python"], choices=ARMS, help="arms to run (default: sheets python)")
     ap.add_argument("--jobs", type=int, default=1, help="agents to run at once")
+    ap.add_argument("--timeout", type=float, default=TIMEOUT_MIN, metavar="MIN",
+                    help=f"minutes before an agent and its tools are stopped (default {TIMEOUT_MIN})")
+    again = ap.add_mutually_exclusive_group()
+    again.add_argument("--more", action="store_true", help="run: only the task/arm runs without a meta.json; the others are kept")
+    again.add_argument("--redo", nargs="+", metavar="TASK/ARM", help="run: re-prepare and rerun only these (old meta.json kept as meta.prev.json)")
     a = ap.parse_args()
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
+    if (a.more or a.redo) and a.action != "run":
+        ap.error("--more and --redo go with run")
     if a.action == "prepare":
         prepare(out, a.tasks, a.arms)
     elif a.action == "check":
         check(out, a.tasks)
+    elif a.action == "validate":
+        sys.exit(0 if validate(out, a.tasks) else 1)
     else:
-        bindir = prepare(out, a.tasks, a.arms)
         runs = [(task, arm) for task in tasks(a.tasks) for arm in a.arms]
+        prev = {}
+        if a.more:
+            kept = [r for r in runs if finished(out, *r)]
+            runs = [r for r in runs if not finished(out, *r)]
+            for task, arm in kept:
+                print(f"{task} / {arm}: finished before, kept", file=sys.stderr)
+        elif a.redo:
+            runs = redo_runs(a.redo)
+            for task, arm in runs:
+                meta = os.path.join(out, task, arm, "meta.json")
+                if os.path.exists(meta):
+                    prev[(task, arm)] = open(meta).read()
+        bindir = prepare(out, a.tasks, a.arms, runs) if runs else os.path.join(out, "bin")
+        for (task, arm), text in prev.items():
+            with open(os.path.join(out, task, arm, "meta.prev.json"), "w") as f:
+                f.write(text)
 
         def one(run):
             task, arm = run
-            meta = run_agent(os.path.join(out, task, arm), arm, bindir, a.model, a.budget)
+            meta = run_agent(os.path.join(out, task, arm), arm, bindir, a.model, a.budget, timeout_min=a.timeout)
             print(f"{task} / {arm}: {meta['turns']} turns, ${meta['cost_usd'] or 0:.2f}, {meta['seconds']} s", file=sys.stderr)
 
         with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
             list(pool.map(one, runs))
-        check(out, a.tasks)
+        # Redone runs are graded whatever --tasks says.
+        check(out, None if a.redo else a.tasks)
 
 
 if __name__ == "__main__":
