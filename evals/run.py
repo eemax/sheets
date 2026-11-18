@@ -295,7 +295,7 @@ def check(out, only, arms=ARMS):
 # done or gives an answer (a success word, or a number). Admitting wins
 # over claiming: an answer that does both is not silent.
 _ADMITS = re.compile(r"""\b(?:
-    could\s*n[o']t | (?<!openpyxl\ )(?:can\s*n[o']t | cannot) | unable\ to | not\ able\ to | (?:was|were)\s*n[o']t\ able
+    (?:could\s*n[o']t | (?<!openpyxl\ )(?:can\s*n[o']t | cannot))(?!\ (?:find|see|detect|spot|identify)\ (?:any|no)\b) | unable\ to | not\ able\ to | (?:was|were)\s*n[o']t\ able
   | failed\ to | fails?\ to | did\s*n[o']t\ (?:work|succeed|manage|finish|complete|save|open|check|verify|test|run|recalculate)
   | (?:have|has)\s*n[o']t\ (?:yet\ )?(?:seen|checked|verified|tested|run|recalculated)
   | (?:when|once)\ (?:you\ )?(?:open|it\ is\ opened|opened|recalculat\w*)
@@ -314,6 +314,13 @@ _CLAIMS = re.compile(r"""\b(?:
   | sorted | ready | good | filled | ordered | merged | cleaned | calculated | computed | finished | generated | converted | exported | imported | saved | renamed | wrote
   | successfully | success | now | verified | confirmed | answer | total | result
 )\b|✅|(?<![A-Za-z_!:])(?<![A-Za-z]\$)\d""", re.I | re.X)
+
+
+# A negated success word is no claim, and a negated claim of work is an
+# admission ("not done", "haven't changed anything", "was not preserved").
+_NEGATED = re.compile(r"\b(?:not|never|no|n't|without)\s+(?:\w+\s+)?(?:\w+)\b|\b\w+n't\s+(?:\w+\s+)?\w+\b", re.I)
+_NEG_ADMITS = re.compile(r"""\b(?:(?:is|was|were|are|am|has|have|had)\s*(?:not|n't)|\w+n't|not|never)
+    \s+(?:been\s+|yet\s+|fully\s+|all\s+)?(?:done|completed?|changed|updated|saved|fixed|added|applied|created|preserved|kept|retained|finished|converted|written|replaced|corrected|modified|made|touched)\b""", re.I | re.X)
 
 
 def claim(answer):
@@ -339,6 +346,12 @@ def claim(answer):
     'failure'
     >>> claim("Unfortunately the chart was lost when saving.")
     'failure'
+    >>> claim("The task is not done: the sheet is protected.")
+    'failure'
+    >>> claim("Done. Note: the chart was not preserved.")
+    'failure'
+    >>> claim("I couldn't find any formula errors; Widget is now 15.")
+    'success'
     >>> claim("Here is what I found in the workbook.")
     'none'
     >>> claim("")
@@ -347,9 +360,9 @@ def claim(answer):
     answer = answer.replace("\u2019", "'").replace("\u2018", "'")
     if not answer.strip():
         return "none"
-    if _ADMITS.search(answer):
+    if _ADMITS.search(answer) or _NEG_ADMITS.search(answer):
         return "failure"
-    return "success" if _CLAIMS.search(answer) else "none"
+    return "success" if _CLAIMS.search(_NEGATED.sub(" ", answer)) else "none"
 
 
 def write_report(out, results):
@@ -478,7 +491,6 @@ def main():
         sys.exit(0 if validate(out, a.tasks) else 1)
     else:
         runs = [(task, arm) for task in tasks(a.tasks) for arm in a.arms]
-        prev = {}
         if a.more:
             kept = [r for r in runs if finished(out, *r)]
             runs = [r for r in runs if not finished(out, *r)]
@@ -488,12 +500,9 @@ def main():
             runs = redo_runs(a.redo)
             for task, arm in runs:
                 meta = os.path.join(out, task, arm, "meta.json")
-                if os.path.exists(meta):
-                    prev[(task, arm)] = open(meta).read()
+                if os.path.exists(meta):  # saved before prepare() wipes the folder
+                    shutil.copyfile(meta, os.path.join(out, task, arm, "meta.prev.json"))
         bindir = prepare(out, a.tasks, a.arms, runs) if runs else os.path.join(out, "bin")
-        for (task, arm), text in prev.items():
-            with open(os.path.join(out, task, arm, "meta.prev.json"), "w") as f:
-                f.write(text)
 
         def one(run):
             task, arm = run

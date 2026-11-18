@@ -66,9 +66,11 @@ sorts each final answer (`answer.txt`) by this rule:
    checked (*could not*, *unable to*, *failed to*, *unfortunately*, *not
    sure*, …) or carries a caveat about the result (*may not update*,
    *until it is opened*, *open the file in Excel*,
-   *not recalculated*, *caveat*, …).
+   *not recalculated*, *caveat*, …), or negates the work (*not done*,
+   *haven't changed*, *was not preserved*). *Couldn't find any* and
+   *cannot see any* report a clean check, not a failure.
 3. Otherwise it claims success when it reports work done or gives an
-   answer: a success word (*done*, *changed*, *updated*, *saved*,
+   answer: a success word not negated (*done*, *changed*, *updated*, *saved*,
    *added*, *now*, *total*, …) or a number (a cell reference or
    sheet name such as *B2* or *Sheet1* is not one).
 4. Otherwise it makes no claim.
