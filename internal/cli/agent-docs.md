@@ -395,11 +395,15 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     mistake: one row of a formula column changed unlike the rows around it,
     or made a typed-in value; and a formula left as it was when rows or
     columns were inserted or deleted in what it reads (openpyxl's
-    `insert_rows` and `delete_rows` rewrite no formula), with what Excel
-    would have written;
+    `insert_rows` and `delete_rows` rewrite no formula), or a sheet it reads
+    was renamed (openpyxl's `ws.title`), with what Excel would have written;
   - `moved`: computed values that moved, each with its cause upstream (an
-    input or formula change, rows added, removed or moved, a name
-    changed), traced through what each formula reads;
+    input or formula change, rows added, removed or moved, a sheet or a
+    name removed, a name changed), traced through what each formula reads.
+    A formula changed is listed too, with what it computes now. A value
+    that moved because rows added or removed moved its formula or what it
+    reads (`=ROW()`, a range older Excel reads one cell of) has them as its
+    cause;
   - `unexplained`: values that moved with nothing upstream changed, the
     sign of a broken formula or a wrong stored result;
   - `features_lost`: charts (on a chart sheet too), validations,
@@ -408,23 +412,30 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     validations in Excel 2010's extension list, such as a list read from
     another sheet);
   - `unknown`: values sheets cannot compare, with why (a function the
-    calculator lacks, INDIRECT or OFFSET, a link to another workbook, or a
-    formula reading one of them): never called unexplained;
-  - `moved_rows`: rows moved as by a sort, which are not changes;
+    calculator lacks, INDIRECT or OFFSET, a link to another workbook, a
+    value from outside the workbook such as RTD, WEBSERVICE, STOCKHISTORY
+    or the CUBE functions, or a formula reading one of them): never called
+    unexplained;
+  - `moved_rows`: rows moved as by a sort, which are not changes. A sort of
+    a range with cells beside it that stay (a note, a list, a formula
+    reading the table) is rows moved in its columns, as
+    `Data!A2:D2, were A4:D4`, with `columns` in `--json`;
   - then the check of book.xlsx, as above.
 
   Formulas Excel rewrites for rows or columns added or removed (a column
-  inserted between the columns a formula reads too), or a sheet renamed,
-  are not changes, nor is LibreOffice's `TRUE()` for `TRUE`. Dates compare
-  as dates, whether a workbook counts them from 1900 or from 1904 (a
-  Mac's). Rows a sort moved are moved rows, though rows were inserted or
-  deleted above or inside them. Text lists ten of each section, the
-  check's findings too, with counts; `--json` lists everything (each moved
-  value with `cell`, `before`, `after` and `cause`). It exits 1 when a value is unexplained, a feature
-  is lost, or the check finds errors. On a CSV file it compares values
-  only. On 150,000 rows it takes about 3 seconds (15,000 rows changed, or
-  all of them sorted), and 5 when openpyxl left one version without
-  results.
+  inserted between the columns a formula reads too, or a row inserted on
+  the sheet it reads), a sheet renamed, or a sheet deleted (`#REF!`), are
+  not changes, nor is LibreOffice's `TRUE()` for `TRUE`. Dates compare as
+  dates, whether a workbook counts them from 1900 or from 1904 (a Mac's).
+  Rows a sort moved are moved rows, though rows were inserted or deleted
+  above or inside them. Text lists ten of each section, the check's
+  findings too, with counts, and cuts long values and formulas at 120
+  characters; `--json` lists everything, whole (each moved value with
+  `cell`, `before`, `after` and `cause`). It exits 1 when a value is
+  unexplained, a feature is lost, or the check finds errors. On a CSV file
+  it compares values only. On 150,000 rows it takes about 4 to 6 seconds
+  (15,000 rows changed, or all of them sorted), and about 9 when openpyxl
+  left one version without results.
 - `lint` finds error values, `#REF!` from deleted cells, unknown functions,
   cells that break their column's formula pattern, rows a formula column
   misses, totals that leave out rows, sums that add a total together with
