@@ -545,11 +545,10 @@ func folded(f string) string {
 	return b.String()
 }
 
-// spillOnly tells whether a row holds, apart from empty cells, nothing but
-// the cells of array formulas' results (not the formulas themselves): a
-// row a result grew into or shrank out of.
-func (r *report) spillOnly(s *grid.Sheet, row int) bool {
-	u := s.Used()
+// spillOnly tells whether a row (of a sheet that uses u) holds, apart from
+// empty cells, nothing but the cells of array formulas' results (not the
+// formulas themselves): a row a result grew into or shrank out of.
+func (r *report) spillOnly(s *grid.Sheet, u grid.Range, row int) bool {
 	n := 0
 	for c := u.C1; c <= u.C2; c++ {
 		cell := s.At(row, c)
@@ -567,9 +566,8 @@ func (r *report) spillOnly(s *grid.Sheet, row int) bool {
 	return n > 0
 }
 
-// rowEmpty tells whether a row of a sheet holds nothing.
-func rowEmpty(s *grid.Sheet, row int) bool {
-	u := s.Used()
+// rowEmpty tells whether a row of a sheet that uses u holds nothing.
+func rowEmpty(s *grid.Sheet, u grid.Range, row int) bool {
 	if row < u.R1 || row > u.R2 {
 		return true
 	}
@@ -585,6 +583,10 @@ func rowEmpty(s *grid.Sheet, row int) bool {
 // array formula's results where the other version has nothing: a result
 // that grew or shrank at the bottom of a sheet, not rows added or removed.
 func (r *report) pairSpilled(sa, sb *grid.Sheet, rows []diff.Pair) []diff.Pair {
+	if len(sa.Spills)+len(sa.Arrays)+len(sb.Spills)+len(sb.Arrays) == 0 {
+		return rows // nothing spills: Used scans a sheet, so not for each row
+	}
+	ua, ub := sa.Used(), sb.Used()
 	oldTaken, newTaken := map[int]bool{}, map[int]bool{}
 	for _, q := range rows {
 		if q.Old > 0 {
@@ -597,10 +599,10 @@ func (r *report) pairSpilled(sa, sb *grid.Sheet, rows []diff.Pair) []diff.Pair {
 	out := make([]diff.Pair, 0, len(rows))
 	for _, q := range rows {
 		switch {
-		case q.New == 0 && !newTaken[q.Old] && rowEmpty(sb, q.Old) && r.spillOnly(sa, q.Old):
+		case q.New == 0 && !newTaken[q.Old] && rowEmpty(sb, ub, q.Old) && r.spillOnly(sa, ua, q.Old):
 			newTaken[q.Old] = true
 			q.New = q.Old
-		case q.Old == 0 && !oldTaken[q.New] && rowEmpty(sa, q.New) && r.spillOnly(sb, q.New):
+		case q.Old == 0 && !oldTaken[q.New] && rowEmpty(sa, ua, q.New) && r.spillOnly(sb, ub, q.New):
 			oldTaken[q.New] = true
 			q.Old = q.New
 		}
