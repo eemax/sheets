@@ -206,7 +206,8 @@ func pairUpSkipping(na, nb int, matches [][2]int, similar func(i, j int) bool, s
 
 // findMoves pairs the lines an alignment left unmatched that are the same
 // on both sides (a row a sort took elsewhere), blank lines aside. Of all
-// the pairs, those keeping their order stay matches; the rest moved.
+// the pairs, those keeping their order stay matches; the rest moved, and
+// so did those whose number changed among them.
 func findMoves(a, b []uint64, matches [][2]int, blankA, blankB []bool) (inOrder, moved [][2]int) {
 	inA, inB := make([]bool, len(a)), make([]bool, len(b))
 	for _, m := range matches {
@@ -237,10 +238,29 @@ func findMoves(a, b []uint64, matches [][2]int, blankA, blankB []bool) (inOrder,
 	for _, p := range inOrder {
 		kept[p] = true
 	}
+	lo, hi := -1, -1
 	for _, p := range all {
 		if !kept[p] {
 			moved = append(moved, p)
+			lo, hi = minOr(lo, min(p[0], p[1])), max(hi, p[0], p[1])
 		}
 	}
-	return inOrder, moved
+	// Within the rows a sort spans, every row whose number changed moved,
+	// though its order among the others held.
+	var stay [][2]int
+	for _, p := range inOrder {
+		if moved != nil && p[0] != p[1] && p[0] >= lo && p[0] <= hi && p[1] >= lo && p[1] <= hi {
+			moved = append(moved, p)
+			continue
+		}
+		stay = append(stay, p)
+	}
+	return stay, moved
+}
+
+func minOr(a, b int) int {
+	if a < 0 {
+		return b
+	}
+	return min(a, b)
 }

@@ -159,6 +159,9 @@ func movedRuns(moved [][2]int) []Moved {
 	sort.Slice(ps, func(i, j int) bool { return ps[i][1] < ps[j][1] })
 	var out []Moved
 	for _, p := range ps {
+		if p[0] == p[1] {
+			continue // paired out of the others' order, but in its place
+		}
 		if k := len(out) - 1; k >= 0 && out[k].From+out[k].Rows == p[0]+1 && out[k].To+out[k].Rows == p[1]+1 {
 			out[k].Rows++
 			continue

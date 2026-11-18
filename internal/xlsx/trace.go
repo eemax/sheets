@@ -1,6 +1,7 @@
 package xlsx
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/eemax/sheets/internal/formula"
@@ -220,6 +221,34 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 			f := t.fs[id]
 			reach(keyOf(f.sheet, f.row, f.col), it.src)
 		})
+	}
+	return out
+}
+
+// Across lists the formulas whose references on a sheet span a gap where
+// lines were removed (rows, or columns with cols set): gap g lies between
+// lines g-1 and g. Each maps to the index of the first gap it spans; gaps
+// are in increasing order.
+func (t *Tracer) Across(sheet string, gaps []int, cols bool) map[At]int {
+	out := map[At]int{}
+	if len(gaps) == 0 {
+		return out
+	}
+	for id, refs := range t.refs {
+		f := t.fs[id]
+		for _, r := range refs {
+			if !strings.EqualFold(r.Sheet, sheet) {
+				continue
+			}
+			lo, hi := r.Range.R1, r.Range.R2
+			if cols {
+				lo, hi = r.Range.C1, r.Range.C2
+			}
+			if k := sort.SearchInts(gaps, lo+1); k < len(gaps) && gaps[k] <= hi {
+				out[At{f.sheet, f.row, f.col}] = k
+				break
+			}
+		}
 	}
 	return out
 }

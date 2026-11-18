@@ -50,8 +50,9 @@ func TestMovesSort(t *testing.T) {
 	if len(d.Cells)+len(d.RowsAdded)+len(d.RowsRemoved) != 0 {
 		t.Errorf("a sort shows as changes: %+v", d)
 	}
+	// Every row whose number changed: West stays in row 5.
 	n := movedCount(d.RowsMoved)
-	if n == 0 || n > 4 {
+	if want := []Moved{{From: 4, To: 2, Rows: 1}, {From: 6, To: 3, Rows: 1}, {From: 2, To: 4, Rows: 1}, {From: 3, To: 6, Rows: 1}}; !reflect.DeepEqual(d.RowsMoved, want) {
 		t.Errorf("moved rows %+v", d.RowsMoved)
 	}
 	if got := d.Summary(); got != plural(n, "row")+" moved" {

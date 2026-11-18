@@ -30,6 +30,9 @@ type CheckOptions struct {
 	// own), and Compare the time spent comparing Excel's results with the
 	// sheets calculator's.
 	Budget, Compare time.Duration
+	// NoCompare leaves Excel's results unchecked against the calculator's
+	// (a file read for its values only).
+	NoCompare bool
 }
 
 // CheckResult is what a check finds, and what fixing does.
@@ -145,7 +148,7 @@ func CheckResults(path string, data []byte, opts CheckOptions) (*CheckResult, er
 	}
 	// Excel's results against the calculator's, before anything reads
 	// the workbook's values (which computes the missing ones into it).
-	if res.Vouched > 0 {
+	if res.Vouched > 0 && !opts.NoCompare {
 		compare(before, res, opts.Compare)
 	}
 	if res.Missing+res.Stale == 0 {
