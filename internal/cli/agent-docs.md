@@ -414,8 +414,9 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   `--json` lists everything (each moved value with `cell`, `before`,
   `after` and `cause`). It exits 1 when a value is unexplained, a feature
   is lost, or the check finds errors. On a CSV file it compares values
-  only. On 150,000 rows, 15,000 of them changed, it takes about 3
-  seconds.
+  only. On 150,000 rows it takes about 3 seconds (15,000 rows changed, or
+  all of them sorted), and 5 when openpyxl left one version without
+  results.
 - `lint` finds error values, `#REF!` from deleted cells, unknown functions,
   cells that break their column's formula pattern, rows a formula column
   misses, totals that leave out rows, sums that add a total together with

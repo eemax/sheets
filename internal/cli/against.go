@@ -443,6 +443,18 @@ func (r *report) pairAlike(sa, sb *grid.Sheet, rows []diff.Pair, cols [][2]int) 
 		}
 		return value(wb, s, row, col).text
 	}
+	keys := func(wb *grid.Workbook, s *grid.Sheet, rows []int, pick int) map[int][]string {
+		out := make(map[int][]string, len(rows))
+		for _, row := range rows {
+			ks := make([]string, len(cols))
+			for i, c := range cols {
+				ks[i] = key(wb, s, row, c[pick])
+			}
+			out[row] = ks
+		}
+		return out
+	}
+	ka, kb := keys(r.A.wb, sa, olds, 0), keys(r.B.wb, sb, news, 1)
 	taken := map[int]bool{}
 	paired := map[int]int{} // new row → old row
 	for _, nr := range news {
@@ -452,13 +464,13 @@ func (r *report) pairAlike(sa, sb *grid.Sheet, rows []diff.Pair, cols [][2]int) 
 				continue
 			}
 			same, used := 0, 0
-			for _, c := range cols {
-				ka, kb := key(r.A.wb, sa, or, c[0]), key(r.B.wb, sb, nr, c[1])
-				if ka == "" && kb == "" {
+			for i := range cols {
+				x, y := ka[or][i], kb[nr][i]
+				if x == "" && y == "" {
 					continue
 				}
 				used++
-				if ka == kb {
+				if x == y {
 					same++
 				}
 			}
@@ -595,26 +607,35 @@ func (r *report) compare() {
 		}
 		// Where removed lines were, in the new version: the line after
 		// them, or after the last line kept above them.
-		gapAt := func(pairs []diff.Pair, removed []int, cols bool) gap {
-			g := gap{sheet: sb.Name, cols: cols}
-			for _, run := range runs(removed) {
-				next := 0
-				for _, q := range pairs {
-					if q.Old == run[1]+1 && q.New > 0 {
-						next = q.New
-					}
+		gapAt := func(pairs []diff.Pair, removed []int, byCol bool) gap {
+			g := gap{sheet: sb.Name, cols: byCol}
+			newOf := map[int]int{}
+			var kept []diff.Pair // by old line
+			for _, q := range pairs {
+				if q.Old > 0 && q.New > 0 {
+					newOf[q.Old] = q.New
+					kept = append(kept, q)
 				}
+			}
+			sort.Slice(kept, func(i, j int) bool { return kept[i].Old < kept[j].Old })
+			highest := make([]int, len(kept)) // the highest new line of kept[:i+1]
+			for i, q := range kept {
+				highest[i] = q.New
+				if i > 0 {
+					highest[i] = max(highest[i], highest[i-1])
+				}
+			}
+			for _, run := range runs(removed) {
+				next := newOf[run[1]+1]
 				if next == 0 {
 					last := 0
-					for _, q := range pairs {
-						if q.Old > 0 && q.New > last && q.Old < run[0] {
-							last = q.New
-						}
+					if i := sort.Search(len(kept), func(i int) bool { return kept[i].Old >= run[0] }); i > 0 {
+						last = highest[i-1]
 					}
 					next = last + 1
 				}
 				g.lines = append(g.lines, next)
-				g.label = append(g.label, lineRange(sa.Name, run[0], run[1], cols)+" in "+A.path)
+				g.label = append(g.label, lineRange(sa.Name, run[0], run[1], byCol)+" in "+A.path)
 			}
 			return g
 		}
@@ -828,14 +849,9 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 	}
 	at := xlsx.At{Sheet: sb.Name, Row: rb, Col: cb}
 	if !va.known || !vb.known {
-		var why string
-		switch {
-		case !vb.known && !va.known:
+		why := "unknown in " + A.path + ": " + A.unknownWhy(sa.Name, ra, ca)
+		if !vb.known {
 			why = B.unknownWhy(sb.Name, rb, cb)
-		case !vb.known:
-			why = B.unknownWhy(sb.Name, rb, cb)
-		default:
-			why = "unknown in " + A.path + ": " + A.unknownWhy(sa.Name, ra, ca)
 		}
 		out.Unknown = append(out.Unknown, unknownValue{Cell: here, Before: va.text, After: vb.text, Why: why})
 		r.unknownSrc = append(r.unknownSrc, xlsx.Source{Sheet: sb.Name, Range: one})
@@ -1041,14 +1057,8 @@ func lostFeatures(before, after []xlsx.Feature, renamed map[string]string) []los
 		if kept[i] || match(f, true) {
 			continue
 		}
-		where := f.Where
-		switch {
-		case f.Kind == xlsx.FeatureName && f.Sheet != "":
-			where = grid.QuoteSheet(f.Sheet) + "!" + f.Where
-		case f.Sheet != "":
-			where = grid.QuoteSheet(f.Sheet) + "!" + f.Where
-		}
-		if f.Kind == xlsx.FeatureTable {
+		where := f.Where // a name of the workbook
+		if f.Sheet != "" {
 			where = grid.QuoteSheet(f.Sheet) + "!" + f.Where
 		}
 		out = append(out, lostFeature{Kind: f.Kind, Where: where, What: f.What})
