@@ -16,13 +16,14 @@ func dateArg(c *ctx, v Value) (float64, *Value) {
 		case dependent:
 			e := languageDependent(v.Str)
 			return 0, &e
-		case ok && isISODateText(v.Str):
+		case !ok || isISODateText(v.Str) && n < c.shift():
+			// Not a date; or one before the 1904 system's first day.
+			e := errv(ErrValue)
+			return 0, &e
+		case isISODateText(v.Str):
 			return n, nil // a date: read in the 1900 system
-		case ok:
-			return n + c.shift(), nil // a number or a time
 		}
-		e := errv(ErrValue)
-		return 0, &e
+		v = num(n) // a number or a time: a serial of the workbook's system
 	}
 	n, err := toNumber(v)
 	if err != nil {
