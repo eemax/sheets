@@ -270,7 +270,10 @@ func (e *Editor) put(sheet string, row, col int, h *taken, text string, what pas
 			}
 		case text != "":
 			delete(e.legacyArrays(), keyOf(sheet, row, col))
-			err = e.setFormulaAs(sheet, cell, text, h.dynamic)
+			// A formula keeps its kind where it goes, as Excel keeps it:
+			// a plain one that reads a range where one value goes
+			// (=B1:B2*100) stays plain, and does not spill.
+			err = e.putBack(sheet, cell, text, h.dynamic)
 		case h.cell.Kind == grid.Text:
 			err = setText(e.f, sheet, cell, h.cell.Text)
 		case h.cell.Kind == grid.Number:

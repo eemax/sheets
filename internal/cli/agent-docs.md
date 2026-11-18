@@ -303,6 +303,11 @@ naming a table that does not exist is refused.
   all, as in Excel: writing, clearing, copying or moving part of its
   range, or inserting or deleting rows or columns through it, is refused,
   and the message names the array. Copy a whole one with `--values`.
+- `copy`, `move` and `sort` keep each formula as it was stored: plain
+  (`=B1:B2*100` stays plain, reading one cell of the range), an array
+  entered with Ctrl+Shift+Enter, or a dynamic array. `sort` takes rows
+  holding a dynamic array in one cell, and refuses one over several cells
+  or its result, as Excel does.
 
 ## Notes and links
 

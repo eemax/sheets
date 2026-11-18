@@ -1,0 +1,100 @@
+# Move, copy and sort keep every formula's kind, as Excel keeps it: a plain
+# formula stays plain (one reading a range where one value goes too), a
+# legacy array stays one, a dynamic array stays one (cm="1"). Sort takes
+# rows holding a dynamic array in one cell, as Excel does, and refuses a
+# dynamic array over several cells, its result, and a legacy array over
+# several cells, as Excel refuses them.
+fixture kinds_xlsxwriter.xlsx
+exec sheets check --fix kinds_xlsxwriter.xlsx
+cp kinds_xlsxwriter.xlsx batch.xlsx
+
+# A plain formula over a range, moved: still plain, and at F5 its
+# implicit intersection finds no row of B1:B2 (Excel shows #VALUE!).
+exec sheets move kinds_xlsxwriter.xlsx S!F1 S!F5
+part kinds_xlsxwriter.xlsx xl/worksheets/sheet1.xml
+stdout '<c r="F5"[^>]*><f>B1:B2\*100</f>'
+! stdout '<c r="F5"[^>]*cm='
+exec sheets read kinds_xlsxwriter.xlsx S!F5
+stdout '^5	#VALUE!$'
+# Copied: still plain, its references shifted (B3 is 3).
+exec sheets copy kinds_xlsxwriter.xlsx S!F5 S!J7
+part kinds_xlsxwriter.xlsx xl/worksheets/sheet1.xml
+stdout '<c r="J7"[^>]*><f>F3:F4\*100</f>'
+! stdout '<c r="J7"[^>]*cm='
+exec sheets move kinds_xlsxwriter.xlsx S!F5 S!F1
+exec sheets copy kinds_xlsxwriter.xlsx S!F1 S!F3
+part kinds_xlsxwriter.xlsx xl/worksheets/sheet1.xml
+stdout '<c r="F3"[^>]*><f>B3:B4\*100</f>'
+! stdout '<c r="F[13]"[^>]*cm='
+! stdout 'ref="F[13]'
+exec sheets read kinds_xlsxwriter.xlsx S!F1:F3
+stdout '^1	100$'
+stdout '^3	300$'
+exec sheets clear kinds_xlsxwriter.xlsx S!F3
+exec sheets clear kinds_xlsxwriter.xlsx S!J7
+# A dynamic array in one cell, copied: still one; a legacy array in one
+# cell: still one.
+exec sheets copy kinds_xlsxwriter.xlsx S!C3:D3 S!K3
+part kinds_xlsxwriter.xlsx xl/worksheets/sheet1.xml
+stdout '<c r="K3"[^>]*><f t="array" ref="K3">SUM\(I3:J3\*2\)</f>'
+! stdout '<c r="K3"[^>]*cm='
+stdout '<c r="L3"[^>]*cm="1"[^>]*><f t="array" ref="L3">SUM\(I3:J3\*3\)</f>'
+exec sheets clear kinds_xlsxwriter.xlsx S!K3:L3
+xmlorder kinds_xlsxwriter.xlsx
+
+# Sorted: each formula with its row, its references on its new row, its
+# kind kept (C1, C3, C5 legacy arrays; D3, D6 dynamic arrays in one cell).
+exec sheets sort kinds_xlsxwriter.xlsx S!A1:D6 A:desc
+stdout 'sorted S!A1:D6 by A descending \(6 rows; 6 rows moved\)'
+exec sheets read kinds_xlsxwriter.xlsx S!A1:D6 --formulas
+stdout '^1	6	6	=A1\+B1	=SUM\(A1:B1\*3\)$'
+stdout '^3	4	5	=SUM\(A3:B3\*2\)	=A3\*B3$'
+stdout '^4	3	1	=SUM\(A4:B4\*2\)	=A4\*B4$'
+stdout '^5	2	3	=SUM\(A5:B5\*2\)	=SUM\(A5:B5\*3\)$'
+exec sheets read kinds_xlsxwriter.xlsx S!A1:D6
+stdout '^1	6	6	12	36$'
+stdout '^5	2	3	10	15$'
+part kinds_xlsxwriter.xlsx xl/worksheets/sheet1.xml
+stdout '<c r="D1"[^>]*cm="1"[^>]*><f t="array" ref="D1">SUM\(A1:B1\*3\)</f>'
+stdout '<c r="D5"[^>]*cm="1"[^>]*><f t="array" ref="D5">SUM\(A5:B5\*3\)</f>'
+stdout '<c r="C3"><f t="array" ref="C3">SUM\(A3:B3\*2\)</f>'
+! stdout '<c r="C[0-9]"[^>]*cm='
+! stdout '<c r="D[2346]"[^>]*cm='
+stdout '<c r="G1"[^>]*cm="1"[^>]*><f t="array" ref="G1:G2">'
+xmlorder kinds_xlsxwriter.xlsx
+exec sheets check kinds_xlsxwriter.xlsx
+! stdout 'unknown|#SPILL|missing-result'
+
+# The boundary: a dynamic array over several cells, or part of its
+# result, and a legacy array over several cells are refused, as Excel
+# refuses them; nothing changes.
+cp kinds_xlsxwriter.xlsx before.xlsx
+! exec sheets sort kinds_xlsxwriter.xlsx S!A1:H6 A
+stderr 'S!A1:H6 holds the dynamic array formula in G1 or its result \(G1:G2\), which cannot be sorted; sort its source instead, or wrap it in SORT\(\)'
+! exec sheets sort kinds_xlsxwriter.xlsx S!A2:G6 A
+stderr 'S!A2:G6 holds the dynamic array formula in G1 or its result \(G1:G2\), which cannot be sorted'
+! exec sheets sort kinds_xlsxwriter.xlsx S!H1:H2 H
+stderr 'S!H1:H2 takes in the array formula S!H1:H2 \(entered with Ctrl\+Shift\+Enter\), and Excel sorts no cell of an array'
+cmp kinds_xlsxwriter.xlsx before.xlsx
+
+# The same as one batch, and through a script's sort.
+stdin batch.txt
+exec sheets do batch.xlsx
+part batch.xlsx xl/worksheets/sheet1.xml
+stdout '<c r="F5"[^>]*><f>B1:B2\*100</f>'
+! stdout '<c r="F5"[^>]*cm='
+stdout '<c r="D1"[^>]*cm="1"[^>]*><f t="array" ref="D1">SUM\(A1:B1\*3\)</f>'
+stdout '<c r="D5"[^>]*cm="1"[^>]*><f t="array" ref="D5">SUM\(A5:B5\*3\)</f>'
+! stdout '<c r="D[2346]"[^>]*cm='
+xmlorder batch.xlsx
+exec sheets script batch.xlsx -e 'function main(workbook: ExcelScript.Workbook) { workbook.getWorksheet("S")!.getRange("A1:D6").getSort().apply([{ key: 0, ascending: true }]); }'
+part batch.xlsx xl/worksheets/sheet1.xml
+stdout '<c r="D2"[^>]*cm="1"[^>]*><f t="array" ref="D2">SUM\(A2:B2\*3\)</f>'
+stdout '<c r="D6"[^>]*cm="1"[^>]*><f t="array" ref="D6">SUM\(A6:B6\*3\)</f>'
+! stdout '<c r="D[1345]"[^>]*cm='
+xmlorder batch.xlsx
+
+-- batch.txt --
+move S!F1 S!F5
+sort S!A1:D6 A
+sort S!A1:D6 A:desc

@@ -200,8 +200,8 @@ func compareSort(x, y sortValue) int {
 }
 
 // checkSort refuses ranges Excel would not sort, or that sorting would
-// break: merged cells, hidden rows, dynamic arrays, and part of an Excel
-// table.
+// break: merged cells, hidden rows, dynamic arrays over several cells (and
+// their results), and part of an Excel table.
 func (e *Editor) checkSort(s *grid.Sheet, r grid.Range) error {
 	sheet := s.Name
 	ms, err := e.f.GetMergeCells(sheet)
@@ -225,8 +225,11 @@ func (e *Editor) checkSort(s *grid.Sheet, r grid.Range) error {
 			map[bool]string{true: "", false: "s"}[len(hidden) == 1], listOf(hidden, 5), map[bool]string{true: "is", false: "are"}[len(hidden) == 1],
 			map[bool]string{true: "it", false: "them"}[len(hidden) == 1], shellWord(sheet), hidden[0], hidden[len(hidden)-1], map[bool]string{true: "it", false: "them"}[len(hidden) == 1])
 	}
+	// A dynamic array in one cell (Excel 365 stores many formulas that use
+	// arrays so) sorts as a plain formula does, with its row; Excel
+	// sorts no dynamic array over several cells, nor its result.
 	for a, sp := range e.spillsOn(sheet) {
-		if !sp.Intersect(r).Empty() {
+		if sp.Rows()*sp.Cols() > 1 && !sp.Intersect(r).Empty() {
 			return fmt.Errorf("%s holds the dynamic array formula in %s or its result (%s), which cannot be sorted; sort its source instead, or wrap it in SORT()", grid.FormatRef(sheet, r), grid.CellName(a[0], a[1]), sp)
 		}
 	}
