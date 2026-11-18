@@ -461,10 +461,12 @@ func (s *session) step(e Edit, i int) (outcome, error) {
 	}
 	o.applied = true
 	wb, d := compareEditors(after[0], after[1])
-	// An edit that removes several dynamic arrays is made again (see repeats).
-	if prev, err := s.before(before[0]); err != nil {
+	prev, err := s.before(before[0])
+	if err != nil {
 		return o, err
-	} else if wb != nil && arraysGone(prev, wb) >= repeatFrom {
+	}
+	// An edit that removes several dynamic arrays is made again (see repeats).
+	if wb != nil && arraysGone(prev, wb) >= repeatFrom {
 		v, err := s.repeat(e, before, after)
 		if err != nil {
 			return o, err
@@ -485,6 +487,13 @@ func (s *session) step(e Edit, i int) (outcome, error) {
 	}
 	if d != "" {
 		o.broken = append(o.broken, violation{"editors", d})
+	} else if wb != nil {
+		// Where the formulas went: the model of kinds, followed through the edit.
+		m := newModel(prev)
+		m.apply(e)
+		if msg := m.check(wb); msg != "" {
+			o.broken = append(o.broken, violation{"kinds", msg})
+		}
 	}
 	s.cur = wb
 	if k := u; !bytes.Equal(before[k], after[k]) {
