@@ -161,6 +161,49 @@ stdout '^  Data!D1 +6 → 15 +input Data!A1$'
 stdout '^  Data!B5 +\(empty\) → 5 +input Data!A1$'
 ! stdout 'added'
 
+# The last row of a range a total reads deleted: Excel shrinks the range, which
+# is the rows removed, not a formula changed or a value with no cause.
+cp against_before.xlsx lastrow.xlsx
+exec sheets rows delete lastrow.xlsx Data!6
+exec sheets check lastrow.xlsx --against against_before.xlsx
+stdout '^lastrow.xlsx against against_before.xlsx: 0 inputs changed, 0 formulas changed, 6 computed values moved \(each with its cause\), 0 unexplained, 0 features lost, 0 unknown$'
+stdout '^  Summary!B2 +28 → 24 +rows removed: Data!6 in against_before.xlsx$'
+stdout '^  Data!D6 \(was D7\) +630 → 530 +rows removed: Data!6 in against_before.xlsx$'
+stdout '^  Summary!B5 +472.5 → 397.5 +rows removed: Data!6 in against_before.xlsx$'
+! stdout 'unexplained:'
+
+# The first row: the same. Summary!B7 reads the row itself, which is now
+# #REF!, and check's own rule fails (as it does below); the value still has
+# its cause.
+cp against_before.xlsx firstrow.xlsx
+exec sheets rows delete firstrow.xlsx Data!2
+! exec sheets check firstrow.xlsx --against against_before.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 7 computed values moved \(each with its cause\), 0 unexplained,'
+stdout '^  Summary!B7 +5 → #REF! +rows removed: Data!2 in against_before.xlsx$'
+stdout '^error  Summary!B7  1 formula refer to deleted cells'
+
+# A row a formula reads directly deleted: Excel writes #REF!, which is the
+# rows removed, with what reads the formula following.
+exec sheets set direct.xlsx Data!A1 1 Data!A2 2 Data!A3 3 Data!A4 4 Data!B1 '=A3*2' Data!C1 '=B1+1'
+cp direct.xlsx direct2.xlsx
+exec sheets rows delete direct2.xlsx Data!3
+! exec sheets check direct2.xlsx --against direct.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 2 computed values moved \(each with its cause\), 0 unexplained,'
+stdout '^  Data!B1 +6 → #REF! +rows removed: Data!3 in direct.xlsx$'
+stdout '^  Data!C1 +7 → #REF! +rows removed: Data!3 in direct.xlsx$'
+
+# A column the formulas of another read deleted: it is the column removed
+# and the other moved left, not a column added, formulas changed or a
+# formula blamed.
+cp against_before.xlsx cols.xlsx
+exec sheets cols delete cols.xlsx Data!C
+! exec sheets check cols.xlsx --against against_before.xlsx
+stdout '^cols.xlsx against against_before.xlsx: 0 inputs changed, 0 formulas changed, 9 computed values moved \(each with its cause\), 0 unexplained, 1 feature lost, 0 unknown$'
+stdout '^  Data!C2 \(was D2\) +150 → #REF! +columns removed: Data!C in against_before.xlsx$'
+stdout '^  Summary!B3 +630 → #REF! +columns removed: Data!C in against_before.xlsx$'
+stdout '^  column removed: Data!C in against_before.xlsx$'
+! stdout 'column added'
+
 # CSV files: values only, and rows moved.
 exec sheets check after.csv --against before.csv
 cmp stdout csv.out
@@ -243,13 +286,13 @@ warning  Summary!B7  labelled "North units" but reads Data!B2, the "East" line; 
 -- rows.out --
 rows.xlsx against against_before.xlsx: 0 inputs changed, 0 formulas changed, 7 computed values moved (each with its cause), 0 unexplained, 0 features lost, 0 unknown
 moved, each with its cause:
-  Data!B7     28 → 34      rows added: Data!4
-  Data!D7     630 → 580    rows added: Data!4
-  Summary!B2  28 → 34      rows added: Data!4
-  Summary!B3  630 → 580    rows added: Data!4
-  Summary!B4  157.5 → 145  rows added: Data!4
-  Summary!B5  472.5 → 435  rows added: Data!4
-  Summary!B6  9 → 10       rows added: Data!4
+  Data!B7     28 → 34      rows removed: Data!6 in against_before.xlsx
+  Data!D7     630 → 580    rows removed: Data!6 in against_before.xlsx
+  Summary!B2  28 → 34      rows removed: Data!6 in against_before.xlsx
+  Summary!B3  630 → 580    rows removed: Data!6 in against_before.xlsx
+  Summary!B4  157.5 → 145  rows removed: Data!6 in against_before.xlsx
+  Summary!B5  472.5 → 435  rows removed: Data!6 in against_before.xlsx
+  Summary!B6  9 → 10       rows removed: Data!6 in against_before.xlsx
 structure:
   row added: Data!4
   row removed: Data!6 in against_before.xlsx

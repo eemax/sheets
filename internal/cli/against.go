@@ -335,9 +335,26 @@ type report struct {
 	edits   []lineEdit
 	renames [][2]string
 	arrays  arrays
-	// newRow and newCol give, for the sheet being compared, the new number
-	// of each old row and column kept.
-	newRow, newCol map[int]int
+	// lines pairs each old sheet's rows and columns with the new version's
+	// (by the old name, lower-cased); cur is the sheet being compared.
+	lines map[string]*lineMap
+	cur   *lineMap
+}
+
+// lineMap gives the new number of each row and column kept, and its sheet's
+// new name.
+type lineMap struct {
+	sheet    string
+	row, col map[int]int
+}
+
+// removal is rows or columns removed from a sheet, as runs numbered as
+// before, each with its label.
+type removal struct {
+	sheet  string // as the old version names it
+	cols   bool
+	runs   [][2]int
+	labels []string
 }
 
 // lineEdit is the rows and columns added (numbered as now) and removed
@@ -618,20 +635,14 @@ func (r *report) compare() {
 			B.wb.Sheets[0].Name = A.wb.Sheets[0].Name
 		}
 	}
-	al := diff.Align(A.wb, B.wb, diff.Options{Moves: true})
+	al := diff.Align(A.wb, B.wb, diff.Options{Moves: true, LostRefs: true})
 	r.renamed = map[string]string{}
 	r.formulaSrc = map[xlsx.At]string{}
 	var tr *xlsx.Tracer
 	if !out.ValuesOnly {
 		tr = xlsx.NewTracer(B.wb)
 	}
-	type gap struct {
-		sheet string
-		lines []int
-		cols  bool
-		label []string
-	}
-	var gaps []gap
+	var removals []removal
 	type job struct {
 		sa, sb *grid.Sheet
 		rows   []diff.Pair
@@ -677,37 +688,10 @@ func (r *report) compare() {
 			sort.Slice(p.Moved, func(i, j int) bool { return p.Moved[i].To < p.Moved[j].To })
 		}
 		p.Rows = r.pairSpilled(sa, sb, p.Rows)
-		// Where removed lines were, in the new version: the line after
-		// them, or after the last line kept above them.
-		gapAt := func(pairs []diff.Pair, removed []int, byCol bool) gap {
-			g := gap{sheet: sb.Name, cols: byCol}
-			newOf := map[int]int{}
-			var kept []diff.Pair // by old line
-			for _, q := range pairs {
-				if q.Old > 0 && q.New > 0 {
-					newOf[q.Old] = q.New
-					kept = append(kept, q)
-				}
-			}
-			sort.Slice(kept, func(i, j int) bool { return kept[i].Old < kept[j].Old })
-			highest := make([]int, len(kept)) // the highest new line of kept[:i+1]
-			for i, q := range kept {
-				highest[i] = q.New
-				if i > 0 {
-					highest[i] = max(highest[i], highest[i-1])
-				}
-			}
-			for _, run := range runs(removed) {
-				next := newOf[run[1]+1]
-				if next == 0 {
-					last := 0
-					if i := sort.Search(len(kept), func(i int) bool { return kept[i].Old >= run[0] }); i > 0 {
-						last = highest[i-1]
-					}
-					next = last + 1
-				}
-				g.lines = append(g.lines, next)
-				g.label = append(g.label, lineRange(sa.Name, run[0], run[1], byCol)+" in "+A.path)
+		removalOf := func(removed []int, byCol bool) removal {
+			g := removal{sheet: sa.Name, cols: byCol, runs: runs(removed)}
+			for _, run := range g.runs {
+				g.labels = append(g.labels, lineRange(sa.Name, run[0], run[1], byCol)+" in "+A.path)
 			}
 			return g
 		}
@@ -736,10 +720,10 @@ func (r *report) compare() {
 			out.Structure = append(out.Structure, structureEntry{map[bool]string{true: "column removed", false: "columns removed"}[run[0] == run[1]], lineRange(sa.Name, run[0], run[1], true) + " in " + A.path})
 		}
 		if len(rowsRemoved) > 0 {
-			gaps = append(gaps, gapAt(p.Rows, rowsRemoved, false))
+			removals = append(removals, removalOf(rowsRemoved, false))
 		}
 		if len(colsRemoved) > 0 {
-			gaps = append(gaps, gapAt(p.Cols, colsRemoved, true))
+			removals = append(removals, removalOf(colsRemoved, true))
 		}
 		lo, hi := 0, 0
 		for _, m := range p.Moved {
@@ -764,16 +748,21 @@ func (r *report) compare() {
 		}
 	}
 	sort.Slice(r.renames, func(i, j int) bool { return r.renames[i][0] < r.renames[j][0] })
+	r.lines = map[string]*lineMap{}
 	for _, j := range jobs {
-		r.newRow, r.newCol = map[int]int{}, map[int]int{}
+		m := &lineMap{sheet: j.sb.Name, row: map[int]int{}, col: map[int]int{}}
 		for _, q := range j.rows {
 			if q.Old > 0 && q.New > 0 {
-				r.newRow[q.Old] = q.New
+				m.row[q.Old] = q.New
 			}
 		}
 		for _, c := range j.cols {
-			r.newCol[c[0]] = c[1]
+			m.col[c[0]] = c[1]
 		}
+		r.lines[strings.ToLower(j.sa.Name)] = m
+	}
+	for _, j := range jobs {
+		r.cur = r.lines[strings.ToLower(j.sa.Name)]
 		for _, q := range j.rows {
 			if q.Old == 0 || q.New == 0 {
 				continue
@@ -810,20 +799,21 @@ func (r *report) compare() {
 			}
 		}
 	}
-	// Formulas reading across lines removed: what they read changed.
-	for _, g := range gaps {
-		order := make([]int, len(g.lines))
-		for i := range order {
-			order[i] = i
-		}
-		sort.Slice(order, func(i, j int) bool { return g.lines[order[i]] < g.lines[order[j]] })
-		sorted := make([]int, len(order))
-		for i, k := range order {
-			sorted[i] = g.lines[k]
-		}
-		for at, k := range tr.Across(g.sheet, sorted, g.cols) {
-			if _, seen := r.formulaSrc[at]; !seen {
-				r.formulaSrc[at] = map[bool]string{true: "columns removed: ", false: "rows removed: "}[g.cols] + g.label[order[k]]
+	// Formulas that read lines removed (in the old version): what they
+	// read changed, whether Excel shrank a reference or, with nothing left
+	// to read, wrote #REF!.
+	if len(removals) > 0 {
+		ta := xlsx.NewTracer(A.wb)
+		for _, g := range removals {
+			for at, k := range ta.Touching(g.sheet, g.runs, g.cols) {
+				m := r.lines[strings.ToLower(at.Sheet)]
+				if m == nil || m.row[at.Row] == 0 || m.col[at.Col] == 0 {
+					continue // its sheet, row or column was removed
+				}
+				here := xlsx.At{Sheet: m.sheet, Row: m.row[at.Row], Col: m.col[at.Col]}
+				if _, seen := r.formulaSrc[here]; !seen && tr.Formula(here.Sheet, here.Row, here.Col) {
+					r.formulaSrc[here] = map[bool]string{true: "columns removed: ", false: "rows removed: "}[g.cols] + g.labels[k]
+				}
 			}
 		}
 	}
@@ -923,8 +913,8 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 	case ka && !kb && ye:
 		// An array's result that shrank: the cell it left moved, and
 		// what moved the array moved it.
-		if ar, ac, ok := r.arrays.anchor(sa, ra, ca); ok && r.newRow[ar] > 0 && r.newCol[ac] > 0 {
-			via = &xlsx.At{Sheet: sb.Name, Row: r.newRow[ar], Col: r.newCol[ac]}
+		if ar, ac, ok := r.arrays.anchor(sa, ra, ca); ok && r.cur.row[ar] > 0 && r.cur.col[ac] > 0 {
+			via = &xlsx.At{Sheet: sb.Name, Row: r.cur.row[ar], Col: r.cur.col[ac]}
 		}
 	case ka && !kb:
 		// A value where an array's result was.

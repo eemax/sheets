@@ -84,6 +84,11 @@ type Options struct {
 	// were (RowsMoved), instead of reporting them removed and added, or
 	// changed. sheets diff leaves it off; check --against turns it on.
 	Moves bool
+	// LostRefs pairs a formula that Excel rewrote with #REF! (it read what
+	// was deleted) with its old self, so a column or row of them is the
+	// same column or row, not one removed and another added. sheets diff
+	// leaves it off; check --against turns it on.
+	LostRefs bool
 }
 
 // Moved is a run of rows that moved together: old rows From to
@@ -430,7 +435,7 @@ func alignSheet(A, B side, opts Options) sheetAlign {
 			colSteps = append(colSteps, step{c, c})
 		}
 	} else {
-		colSteps = alignColumns(A, B, ra, rb, ca, cb)
+		colSteps = alignColumns(A, B, ra, rb, ca, cb, opts.LostRefs)
 	}
 	pairs := matched(colSteps)
 
@@ -459,7 +464,7 @@ func alignSheet(A, B side, opts Options) sheetAlign {
 				continue
 			}
 			used++
-			if ka == kb || alike(A, i+1, p[0], B, j+1, p[1]) {
+			if ka == kb || alike(A, i+1, p[0], B, j+1, p[1]) || opts.LostRefs && lostRef(ka, kb) {
 				same++
 			}
 		}
@@ -588,7 +593,7 @@ func sheet(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.Sheet,
 
 // alignColumns aligns columns by their first values (usually the header),
 // which inserting rows further down does not disturb.
-func alignColumns(A, B side, ra, rb, ca, cb int) []step {
+func alignColumns(A, B side, ra, rb, ca, cb int, lostRefs bool) []step {
 	head := func(x side, rows, c int) []string {
 		var vals []string
 		for r := 1; r <= rows && len(vals) < 20; r++ {
@@ -615,18 +620,39 @@ func alignColumns(A, B side, ra, rb, ca, cb int) []step {
 		for _, v := range ha[i] {
 			count[v]++
 		}
-		same := 0
+		same, lost := 0, 0
 		for _, v := range hb[j] {
 			if count[v] > 0 {
 				count[v]--
 				same++
+			} else if lostRefs && refLost(v) {
+				lost++
 			}
+		}
+		if lost > 0 {
+			// Formulas that lost a reference pair with old formulas left over.
+			left := 0
+			for v, n := range count {
+				if n > 0 && formulaKey(v) && !refLost(v) {
+					left += n
+				}
+			}
+			same += min(lost, left)
 		}
 		n := max(len(ha[i]), len(hb[j]))
 		return n > 0 && same*2 >= n
 	}
 	return pairUp(ca, cb, align(sa, sb), similar)
 }
+
+// formulaKey tells whether a cell's key (as side.key gives it) is a
+// formula's; refLost whether that formula reads what was deleted.
+func formulaKey(k string) bool { return strings.HasPrefix(k, "=") }
+func refLost(k string) bool    { return formulaKey(k) && strings.Contains(k, "#REF!") }
+
+// lostRef tells whether a cell's key now is its old formula with a
+// reference lost to #REF!.
+func lostRef(old, now string) bool { return formulaKey(old) && !refLost(old) && refLost(now) }
 
 func addLine(list []Lines, n int, content string) []Lines {
 	if k := len(list); k > 0 && list[k-1].To == n-1 {

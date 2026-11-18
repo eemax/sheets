@@ -123,6 +123,44 @@ func TestTracer(t *testing.T) {
 	}
 }
 
+// Touching finds what reads the lines (the ones a later version removed),
+// whether a reference spans them, ends on one, or is nothing else.
+func TestTracerTouching(t *testing.T) {
+	wb, err := Read(filepath.Join("testdata", "against_before.xlsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := NewTracer(wb)
+	// Data!6, the last row of B2:B6 and D2:D6, and the row of D6 itself.
+	got := tr.Touching("Data", [][2]int{{6, 6}}, false)
+	want := map[At]int{
+		{"Data", 6, 4}: 0, {"Data", 7, 2}: 0, {"Data", 7, 4}: 0,
+		{"Summary", 2, 2}: 0, {"Summary", 3, 2}: 0, {"Summary", 6, 2}: 0,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("reading Data!6:\n got %v\nwant %v", got, want)
+	}
+	// The first row, B2 itself: its own row, the ranges it starts, and the
+	// single cell Summary!B7 reads.
+	got = tr.Touching("Data", [][2]int{{2, 2}}, false)
+	if _, ok := got[At{"Summary", 7, 2}]; !ok || got[At{"Summary", 2, 2}] != 0 || len(got) != 7 {
+		t.Errorf("reading Data!2: %v", got)
+	}
+	// Runs: each formula maps to the first it reads in.
+	got = tr.Touching("Data", [][2]int{{1, 1}, {3, 3}, {6, 6}}, false)
+	if got[At{"Summary", 2, 2}] != 1 || got[At{"Data", 6, 4}] != 2 {
+		t.Errorf("reading Data!1, 3 and 6: %v", got)
+	}
+	// Columns: Revenue (D) is read by its total and the summary's.
+	got = tr.Touching("data", [][2]int{{4, 4}}, true)
+	if _, ok := got[At{"Summary", 3, 2}]; !ok || len(got) != 2 {
+		t.Errorf("reading column D: %v", got)
+	}
+	if got := tr.Touching("Data", nil, false); len(got) != 0 {
+		t.Errorf("no lines: %v", got)
+	}
+}
+
 func TestTracerOpaqueAndArrays(t *testing.T) {
 	s := grid.NewSheet("S")
 	s.Set(1, 1, grid.Cell{Kind: grid.Number, Num: 1})

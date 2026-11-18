@@ -233,13 +233,13 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 	return out
 }
 
-// Across lists the formulas whose references on a sheet span a gap where
-// lines were removed (rows, or columns with cols set): gap g lies between
-// lines g-1 and g. Each maps to the index of the first gap it spans; gaps
-// are in increasing order.
-func (t *Tracer) Across(sheet string, gaps []int, cols bool) map[At]int {
+// Touching lists the formulas that read cells in lines of a sheet (rows, or
+// columns with cols set), given as runs of line numbers in increasing order
+// (the lines a later version removed, found by what this version reads).
+// Each maps to the index of the first run it reads in.
+func (t *Tracer) Touching(sheet string, runs [][2]int, cols bool) map[At]int {
 	out := map[At]int{}
-	if len(gaps) == 0 {
+	if len(runs) == 0 {
 		return out
 	}
 	for id, refs := range t.refs {
@@ -252,9 +252,13 @@ func (t *Tracer) Across(sheet string, gaps []int, cols bool) map[At]int {
 			if cols {
 				lo, hi = r.Range.C1, r.Range.C2
 			}
-			if k := sort.SearchInts(gaps, lo+1); k < len(gaps) && gaps[k] <= hi {
-				out[At{f.sheet, f.row, f.col}] = k
-				break
+			k := sort.Search(len(runs), func(i int) bool { return runs[i][1] >= lo })
+			if k >= len(runs) || runs[k][0] > hi {
+				continue
+			}
+			at := At{f.sheet, f.row, f.col}
+			if prev, ok := out[at]; !ok || k < prev {
+				out[at] = k
 			}
 		}
 	}
