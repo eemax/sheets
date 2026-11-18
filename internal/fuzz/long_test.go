@@ -542,6 +542,7 @@ func TestKnownFaces(t *testing.T) {
 		{"script", "editors", `Data!L2: stream holds text "_X005F_X0041_", full holds text "_X005FA"`, script(`ws.getRange("A2").setValue("_x005F_x0041_");`), "escape"},
 		{"sort", "editors", `Bob's Plan!B2: stream holds number 0, full holds nothing (pending)`, plain("sort"), "sort-editors"},
 		{"sort", "editors", `Data!L2: stream holds text "-x", full holds nothing (pending)`, plain("sort"), "sort-editors"},
+		{"sort", "editors", `Summary!B2: stream holds number 6, full holds nothing`, plain("sort"), "sort-editors"},
 		{"do", "editors", `Calc!B2: stream holds number 7, full holds number 0`, batch("sort 'Calc!A2:A6' A A\n"), "sort-editors"},
 		{"script", "editors", `Data!B2: stream holds boolean true, full holds nothing (pending)`, script(`ws.getRange("A2:C9").getSort().apply([{key: 0, ascending: true}]);`), "sort-editors"},
 		{"copy", "repeat", `stream editor: the same edit on the same bytes saved two different workbooks: Data!M3: the first run holds number 86.06, the repeat holds nothing`, plain("copy"), "map-order"},

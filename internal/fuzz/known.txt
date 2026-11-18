@@ -78,10 +78,12 @@ bug escape: set,write,do,script editors; repro long 702637; detail : stream hold
 
 # Known (the default mode's sort editors): after a sort the streaming editor
 # stores the results of the formulas on the sheet it sorted (it computes
-# them), and the full editor leaves them as they were, pending or XlsxWriter's
-# 0. A batch or a script holding a sort shows it too.
-bug sort-editors: sort editors; repro 100047; detail : stream holds .+, full holds (nothing \(pending\)|number 0)$
-bug sort-editors: do,script editors; repro long 701600; detail : stream holds .+, full holds (nothing \(pending\)|number 0)$; edit (?m)^sort |getSort\(\)
+# them), and the full editor leaves them as they were: pending, XlsxWriter's
+# 0, or an empty result (seed 757171: sort 'Summary!A1:A2' A, B2 6 in the
+# streaming editor's file and nothing in the full one's). A batch or a script
+# holding a sort shows it too.
+bug sort-editors: sort editors; repro 100047; detail : stream holds .+, full holds (nothing( \(pending\))?|number 0)$
+bug sort-editors: do,script editors; repro long 701600; detail : stream holds .+, full holds (nothing( \(pending\))?|number 0)$; edit (?m)^sort |getSort\(\)
 
 # Known (the default mode's copy repeat): sheets saves a different workbook
 # from one run to the next when an edit lands on dynamic arrays, a paste, a
@@ -141,8 +143,9 @@ bug insert-turns-dynamic: rows-insert,rows-delete,cols-insert,cols-delete kinds;
 # New (long mode, seed 341566): a replace that gives an Excel table's header
 # the name of another column renames that other column: replace Date 1,200,
 # then replace Item 1,200 Data, and E1 ("1200", the first) is saved as
-# "Column5", outside the replace's reach. Excel names the cell typed anew
-# (with a 2), and leaves the others.
+# "Column5", outside the replace's reach. (Excel keeps a table's column
+# names apart by numbering the header just typed; the other column keeps its
+# name. To confirm with the Excel oracle, WP-11.)
 bug table-header-renamed: replace reach; repro long 34156604779; detail : outside the edit's reach, it held text "[^"]*", and holds text "Column[0-9]+" now$
 
 # New (long mode, seed 63002): replace in formulas writes a dynamic array back
