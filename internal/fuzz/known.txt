@@ -73,8 +73,8 @@ write text 100317
 # reading such a text (=A3&"-x", =UPPER(A2)) gives another text in each
 # editor, the streaming one computing from the text typed, the full one from
 # the text stored.
-bug escape: set,write text; repro 100046; detail typed the text "[^"]*_[xX][0-9A-Fa-f]{4}_[xX][0-9A-Fa-f]{4}_[^"]*", and the cell holds text "
-bug escape: set,write,do,script editors; repro long 702637; detail : stream holds text "[^"]*_[xX][0-9A-Fa-f]{4}_[xX][0-9A-Fa-f]{4}_[^"]*", full holds text "
+bug escape: set,write text; repro 100046; detail typed the text "(?:[^"\\]|\\.)*_[xX][0-9A-Fa-f]{4}_[xX][0-9A-Fa-f]{4}_(?:[^"\\]|\\.)*", and the cell holds text "
+bug escape: set,write,do,script editors; repro long 702637; detail : stream holds text "(?:[^"\\]|\\.)*_[xX][0-9A-Fa-f]{4}_[xX][0-9A-Fa-f]{4}_(?:[^"\\]|\\.)*", full holds text "
 
 # Known (the default mode's sort editors): after a sort the streaming editor
 # stores the results of the formulas on the sheet it sorted (it computes
@@ -125,8 +125,10 @@ bug table-header-control: set,script xml; repro long 700021; detail xl/tables/ta
 # results covered it (set 'Summary!E3' … 'Summary!E2' …, over the array in
 # E2:E3): E3 is saved with no formula. The text and kinds invariants say when
 # the cell is in a dynamic array's results, before or after the edit, and
-# these faces read that.
-bug spill-overwrites: set,write text; repro long 711157; detail typed the text "[^"]*", and the cell holds .*, in the results of the dynamic array at [A-Z]+[0-9]+:[A-Z]+[0-9]+$
+# these faces read that. A text is quoted as Go quotes it, so a quote in it
+# reads as \" (seed 402252: write 'Data!T2' typing say "hi" into U3, which the
+# array in U2 fills: U3 holds its "Fig!"); each text in a face takes that.
+bug spill-overwrites: set,write text; repro long 711157; detail typed the text "(?:[^"\\]|\\.)*", and the cell holds .*, in the results of the dynamic array at [A-Z]+[0-9]+:[A-Z]+[0-9]+$
 bug spill-overwrites: set,write,do kinds; repro long 4001600827; detail : the edit should leave a [a-z ]+ there, and it holds no formula \(it was lost\), in the results of the dynamic array at [A-Z]+[0-9]+:[A-Z]+[0-9]+$
 
 # New (long mode, seeds 61002 and 341566): an edit of rows or columns turns a
@@ -155,7 +157,7 @@ bug insert-turns-dynamic: do,script kinds; repro long 66435500849; detail =IF\(N
 # "Column5", outside the replace's reach. (Excel keeps a table's column
 # names apart by numbering the header just typed; the other column keeps its
 # name. To confirm with the Excel oracle, WP-11.)
-bug table-header-renamed: replace reach; repro long 34156604779; detail : outside the edit's reach, it held text "[^"]*", and holds text "Column[0-9]+" now$
+bug table-header-renamed: replace reach; repro long 34156604779; detail : outside the edit's reach, it held text "(?:[^"\\]|\\.)*", and holds text "Column[0-9]+" now$
 
 # New (long mode, seed 63002): replace in formulas writes a dynamic array back
 # as a plain formula when its references are #REF!: copy 'Data!N2' 'Data!K12'

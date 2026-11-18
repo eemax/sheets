@@ -563,6 +563,10 @@ func TestKnownFaces(t *testing.T) {
 		{"rows-insert", "kinds", `stream editor: sheet2.xml C2: =IF(N("p")=0,MIN(C2:E2)) is stored as a dynamic array, not a plain formula`, plain("rows-insert"), "insert-turns-dynamic"},
 		{"cols-delete", "kinds", `stream editor: sheet1.xml I2: =IF(N("p")=0,COUNTIF(B2:B9,">3")) is stored as a dynamic array, not a plain formula`, plain("cols-delete"), "insert-turns-dynamic"},
 		{"set", "text", `Data!U3: typed the text "N/A", and the cell holds text "R&D!", in the results of the dynamic array at U2:U4`, plain("set"), "spill-overwrites"},
+		// A text with a quote in it, quoted as Go quotes it (seed 402252).
+		{"write", "text", `Data!U3: typed the text "say \"hi\"", and the cell holds text "Fig!", in the results of the dynamic array at U2:U4`, plain("write"), "spill-overwrites"},
+		{"write", "text", `Data!I2: typed the text "say \"_x005F_x0041_\"", and the cell holds text "say \"_x005FA\""`, plain("write"), "escape"},
+		{"replace", "reach", `Data!E1: outside the edit's reach, it held text "say \"hi\"", and holds text "Column5" now`, plain("replace"), "table-header-renamed"},
 		{"replace", "reach", `Data!E1: outside the edit's reach, it held text "1200", and holds text "Column5" now`, plain("replace"), "table-header-renamed"},
 		{"script", "editors", `Q 2026!F4: stream holds number 2, full holds text "!"`, Edit{Class: "script", Args: []string{"script", FileArg, "-e", "const ws = workbook.getWorksheet(\"Q 2026\");\nws.getRange(\"E4\").setFormula(\"=IF(N(\\\"d\\\")=0,SEQUENCE(1,2))\");\nws.getRange(\"F2\").setFormula(\"=IF(N(\\\"d\\\")=0,A2:A4&\\\"!\\\")\");\n"}}, "map-order"},
 		{"write", "editors", `R&D 2!E4: stream holds number 2, full holds text ""`, Edit{Class: "write", Args: []string{"write", FileArg, "R&D 2!D2", "--from", "tsv"}, Stdin: "=IF(N(\"p\")=0,OR(F2,D2>250))\t=IF(N(\"d\")=0,A2:A4&\"!\")\n=IF(N(\"d\")=0,SEQUENCE(1,2))\n"}, "map-order"},
@@ -601,6 +605,7 @@ func TestKnownFaces(t *testing.T) {
 		{"move", "kinds", `Data!E4: the edit should leave a dynamic array there, and it holds no formula (it was lost)`, plain("move"), ""},
 		{"set", "text", `Data!I2: typed the text "Apple", and the cell holds text "APPLE"`, plain("set"), ""},
 		{"set", "text", `Data!I2: typed the text "R&D", and the cell holds nothing`, plain("set"), ""},
+		{"set", "text", `Data!I2: typed the text "say \"hi\"", and the cell holds text "say "`, plain("set"), ""},
 		{"replace", "reach", `Data!E1: outside the edit's reach, it held text "Date", and holds text "1,200" now`, plain("replace"), ""},
 		{"set", "text", `Data!I2: typed the text "_x0041_", and the cell holds text "A"`, plain("set"), ""},
 		{"move", "editors", `Data!B2: stream holds number 2088, full holds nothing (pending)`, plain("move"), ""},
