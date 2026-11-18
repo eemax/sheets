@@ -496,9 +496,18 @@ base commit (99ba275, without the fuzzer) then the branch.
 |---|---|---|
 | 1 | 88 s (980 tests) | 104 s (1,139 tests) |
 | 2 | 71 s | 104 s |
+| 3 (after the audit's fourth round of fixes, load about 4) | 83 s | 118 s (1,159 tests) |
+| 4 | 74 s | 122 s |
+
+The Mac was busier for rounds 3 and 4 than for the first two. To tell the
+load from the fixes, the commit before them (6bbf967) was timed beside the
+branch, alternating: 121 s twice, against 126 s twice for the branch. So the
+fixes cost about 5 s (the plain fuzz run 44 s to 47 s), and the rest of the
+difference from rounds 1 and 2 is the load. Both stay under 135 s, with a
+margin of 9 to 17 s at a load of 3 to 5.
 
 - **Edit counts:** the plain run always makes 2,000 edits (1,884 applied)
-  in 324 sequences, with 34 findings, all known, in 34 s alone. Two runs
+  in 324 sequences, with 34 findings, all known, in 36 s alone. Two runs
   print the same (compared again for the audit's fixes: the log, minus the
   seconds, is identical).
 - **The race count** is from the race step run with `-v`
@@ -511,8 +520,9 @@ base commit (99ba275, without the fuzzer) then the branch.
   go with it (the sorts test takes 3 s, and skips under `-race`, where it
   would take 39 s), and the race step's longer run beside `cmd/sheets` and
   `internal/xlsx`, whose race runs take about 48 s each, so the race step takes
-  about as long as on main. The package takes 42 s in the plain step and 55 s
-  in the race step.
+  about as long as on main. The package takes 47 s in the plain step and 59
+  to 72 s in the race step (the cases that run the whole fuzzer, for the
+  fixes of the audit's fourth round, skip under `-race`: they would add 13 s).
 - **Plain:** an edit takes about 12 ms, most of it sheets' own file writes.
   34 of the 2,000 edits remove a dynamic array and are made again by the
   repeat check, 20 times by each editor: that is 9 s of the 34. (With 8

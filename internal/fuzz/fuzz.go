@@ -473,7 +473,7 @@ var (
 func (s *session) generate(rng *rand.Rand) (e Edit, v *violation, err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			v = &violation{"panic", fmt.Sprintf("making the next edit on the workbook the last one saved: %v\n%s", p, debug.Stack())}
+			v = &violation{"panic", fmt.Sprintf("making the next edit, on the workbook as the last edit saved it: %v\n%s", p, debug.Stack())}
 		}
 	}()
 	if s.cur == nil {
