@@ -116,7 +116,7 @@ func TestDate1904(t *testing.T) {
 	e.Date1904 = true
 	for _, c := range []struct {
 		formula, want string
-		counts       bool
+		counts        bool
 	}{
 		{"YEAR(A1)&\"-\"&MONTH(A1)&\"-\"&DAY(A1)", `"2020-1-1"`, false},
 		{"DATE(2020,1,1)", "42369", false},
