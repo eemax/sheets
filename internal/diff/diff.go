@@ -101,6 +101,12 @@ type Options struct {
 	// rows holding the same dates are the same rows. sheets diff leaves it
 	// off; check --against turns it on.
 	Dates bool
+	// Rewrite gives an old formula (on the old version's sheet named) as
+	// Excel would have rewritten it for what changed on other sheets (rows
+	// added there, a sheet renamed), so rows whose formulas read another
+	// sheet's shifted rows pair with their old selves. sheets diff leaves it
+	// unset; check --against sets it.
+	Rewrite func(sheet, formula string) string
 }
 
 // Moved is a run of rows that moved together: old rows From to
@@ -130,6 +136,21 @@ type SheetPair struct {
 	Rows, Cols []Pair
 	// Moved are the rows that moved (with Options.Moves), as runs.
 	Moved []Moved
+	// Blocks are columns whose rows moved on their own (with Options.Moves):
+	// a sort of a range with other cells beside it, which stay. In their
+	// columns rows pair as each block has them; elsewhere as Rows.
+	Blocks []Block
+}
+
+// Block is columns whose rows moved on their own, apart from the rest of
+// the sheet's.
+type Block struct {
+	// Cols pair the block's columns of the old sheet with the new one's.
+	Cols []Pair
+	// Rows pair its rows, as SheetPair.Rows does the sheet's; Moved are the
+	// rows that moved, as runs.
+	Rows  []Pair
+	Moved []Moved
 }
 
 // Pair is a line in the old version and the new one.
@@ -150,19 +171,7 @@ func Align(a, b *grid.Workbook, opts Options) Alignment {
 			al.Sheets = append(al.Sheets, SheetPair{New: sb})
 			continue
 		}
-		sl := alignSheet(side{wb: a, s: sa}, side{wb: b, s: sb}, opts)
-		p := SheetPair{Old: sa, New: sb}
-		for _, st := range sl.cols {
-			p.Cols = append(p.Cols, Pair{st.a + 1, st.b + 1})
-		}
-		for _, st := range sl.rows {
-			p.Rows = append(p.Rows, Pair{st.a + 1, st.b + 1})
-		}
-		for _, m := range append(append([][2]int{}, sl.placed...), sl.moved...) {
-			p.Rows = append(p.Rows, Pair{m[0] + 1, m[1] + 1})
-		}
-		p.Moved = movedRuns(sl.moved)
-		al.Sheets = append(al.Sheets, p)
+		al.Sheets = append(al.Sheets, AlignSheet(a, sa, b, sb, opts))
 	}
 	for _, sa := range a.Sheets {
 		if matchA[sa] == nil {
@@ -170,6 +179,43 @@ func Align(a, b *grid.Workbook, opts Options) Alignment {
 		}
 	}
 	return al
+}
+
+// AlignSheet pairs the rows and columns of a sheet in two versions of a
+// workbook (sa of a, sb of b), as Align does.
+func AlignSheet(a *grid.Workbook, sa *grid.Sheet, b *grid.Workbook, sb *grid.Sheet, opts Options) SheetPair {
+	A, B := prepare(side{wb: a, s: sa}, side{wb: b, s: sb}, opts)
+	sl := alignSheet(A, B, opts)
+	if opts.Moves {
+		sl = alignBlocks(A, B, opts, sl)
+	}
+	p := SheetPair{Old: sa, New: sb}
+	for _, st := range sl.cols {
+		p.Cols = append(p.Cols, Pair{st.a + 1, st.b + 1})
+	}
+	p.Rows = pairsOf(sl.rows, sl.placed, sl.moved)
+	p.Moved = movedRuns(sl.moved)
+	for _, bl := range sl.blocks {
+		k := Block{Rows: pairsOf(bl.rows, bl.placed, bl.moved), Moved: movedRuns(bl.moved)}
+		for _, c := range bl.cols {
+			k.Cols = append(k.Cols, Pair{c[0], c[1]})
+		}
+		p.Blocks = append(p.Blocks, k)
+	}
+	return p
+}
+
+// pairsOf gives an alignment's rows as pairs, 1-based: the steps in order,
+// then the rows paired out of it.
+func pairsOf(rows []step, placed, moved [][2]int) []Pair {
+	out := make([]Pair, 0, len(rows)+len(placed)+len(moved))
+	for _, st := range rows {
+		out = append(out, Pair{st.a + 1, st.b + 1})
+	}
+	for _, m := range append(append([][2]int{}, placed...), moved...) {
+		out = append(out, Pair{m[0] + 1, m[1] + 1})
+	}
+	return out
 }
 
 // MovedRows finds, among the rows paired in both versions (a Pair with both
@@ -380,6 +426,24 @@ type side struct {
 	// epoch counts the dates of a 1904 workbook as the 1900 system does,
 	// for alignment; loose describes formulas without their columns.
 	epoch, loose bool
+	// rewrite gives a formula as Excel would have rewritten it (the old
+	// side's, with Options.Rewrite), worked out once per cell in rewritten.
+	rewrite   func(string) string
+	rewritten map[[2]int]string
+}
+
+// formulaOf is a cell's formula, as rewritten.
+func (x side) formulaOf(row, col int, f string) string {
+	if x.rewrite == nil {
+		return f
+	}
+	k := [2]int{row, col}
+	g, ok := x.rewritten[k]
+	if !ok {
+		g = x.rewrite(f)
+		x.rewritten[k] = g
+	}
+	return g
 }
 
 // epochDays are the days between the 1900 and the 1904 date systems.
@@ -396,7 +460,7 @@ func (x side) key(row, col int) string {
 		return ""
 	}
 	if c.Formula != "" {
-		k, _ := formula.Pattern(c.Formula, row, col)
+		k, _ := formula.Pattern(x.formulaOf(row, col, c.Formula), row, col)
 		if x.loose {
 			k = columnRefs.ReplaceAllString(k, "C")
 		}
@@ -479,13 +543,27 @@ func rowOverlap(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.S
 type sheetAlign struct {
 	cols, rows    []step
 	moved, placed [][2]int
+	// blocks are columns whose rows moved on their own (alignBlocks).
+	blocks []blockAlign
+}
+
+// prepare sets how two sides key their cells for the options (once: a side
+// prepared stays so).
+func prepare(A, B side, opts Options) (side, side) {
+	A.epoch, B.epoch = opts.Dates && A.wb.Date1904, opts.Dates && B.wb.Date1904
+	A.loose, B.loose = opts.ColumnShifts, opts.ColumnShifts
+	if opts.Rewrite != nil && A.rewritten == nil {
+		name := A.s.Name
+		A.rewrite = func(f string) string { return opts.Rewrite(name, f) }
+		A.rewritten = map[[2]int]string{}
+	}
+	return A, B
 }
 
 // alignSheet aligns a sheet's columns, then its rows over the columns
 // both have.
 func alignSheet(A, B side, opts Options) sheetAlign {
-	A.epoch, B.epoch = opts.Dates && A.wb.Date1904, opts.Dates && B.wb.Date1904
-	A.loose, B.loose = opts.ColumnShifts, opts.ColumnShifts
+	A, B = prepare(A, B, opts)
 	ua, ub := A.s.Used(), B.s.Used()
 	ra, rb := max(ua.R2, 0), max(ub.R2, 0)
 	ca, cb := max(ua.C2, 0), max(ub.C2, 0)

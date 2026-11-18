@@ -77,6 +77,10 @@ func NewTracer(wb *grid.Workbook) *Tracer {
 			if !ok || d.External {
 				t.opaque[k] = opaqueWhy(f.calc, d)
 				refs = nil
+			} else if why := outsideWhy(f.calc); why != "" {
+				// What it reads is known (a change there is its cause), but its
+				// result comes from outside the workbook too.
+				t.opaque[k] = why
 			}
 			t.refs = append(t.refs, refs)
 		})
@@ -121,8 +125,33 @@ func opaqueWhy(text string, d formula.Deps) string {
 	return "what it reads cannot be told (a name or table reference sheets cannot follow)"
 }
 
-// Opaque says why what a formula reads cannot be told: a volatile
-// function, a link to another workbook; "" when it can.
+// outsideFns are the functions whose result comes from outside the
+// workbook: a server (RTD), the web (WEBSERVICE), a data service
+// (STOCKHISTORY, the CUBE functions, TRANSLATE, DETECTLANGUAGE, COPILOT),
+// Python in Excel (PY). Their stored values change with nothing in the
+// workbook changed.
+var outsideFns = map[string]bool{"RTD": true, "WEBSERVICE": true, "STOCKHISTORY": true, "CUBEVALUE": true, "CUBEMEMBER": true,
+	"CUBEMEMBERPROPERTY": true, "CUBERANKEDMEMBER": true, "CUBESET": true, "CUBESETCOUNT": true, "CUBEKPIMEMBER": true,
+	"TRANSLATE": true, "DETECTLANGUAGE": true, "COPILOT": true, "PY": true}
+
+// outsideWhy says which functions of a formula bring in a result from
+// outside the workbook; "" when none does.
+func outsideWhy(text string) string {
+	var fns []string
+	for _, fn := range formula.CalledFunctions(text) {
+		if outsideFns[strings.TrimPrefix(fn, "_XLWS.")] {
+			fns = append(fns, strings.TrimPrefix(fn, "_XLWS."))
+		}
+	}
+	if len(fns) == 0 {
+		return ""
+	}
+	return "it calls " + strings.Join(fns, ", ") + ", whose result comes from outside the workbook"
+}
+
+// Opaque says why what a formula reads cannot be told (a volatile
+// function, a link to another workbook), or why its result comes from
+// outside the workbook (RTD, WEBSERVICE); "" when neither.
 func (t *Tracer) Opaque(sheet string, row, col int) string {
 	return t.opaque[keyOf(sheet, row, col)]
 }

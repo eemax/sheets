@@ -51,6 +51,129 @@ func TestLostFeatures(t *testing.T) {
 	if got := lostFeatures(nil, after, nil); got == nil || len(got) != 0 {
 		t.Errorf("nothing before: %+v", got)
 	}
+	// Both validations grew with a row inserted, then the whole one was
+	// cleared: the one lost is the whole one, not the decimal one, which is
+	// now in another place.
+	got = lostFeatures([]xlsx.Feature{f(xlsx.FeatureValidation, "Data", "B2:B6", "whole validation"), f(xlsx.FeatureValidation, "Data", "C2:C6", "decimal validation")},
+		[]xlsx.Feature{f(xlsx.FeatureValidation, "Data", "C2:C7", "decimal validation")}, map[string]string{"data": "Data"})
+	if want := []lostFeature{{Kind: xlsx.FeatureValidation, Where: "Data!B2:B6", What: "whole validation"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("lost after a move\n got %+v\nwant %+v", got, want)
+	}
+	// A validation that changed its type in place is not lost.
+	if got := lostFeatures([]xlsx.Feature{f(xlsx.FeatureValidation, "Data", "B2:B6", "whole validation")},
+		[]xlsx.Feature{f(xlsx.FeatureValidation, "Data", "B2:B7", "decimal validation")}, nil); len(got) != 0 {
+		t.Errorf("changed: %+v", got)
+	}
+}
+
+// TestStaleWhy checks what a stale formula is said to miss: lines added or
+// removed, a sheet renamed, or both.
+func TestStaleWhy(t *testing.T) {
+	renamed := &report{renames: [][2]string{{"data", "Facts"}}}
+	renamed.setEdits(nil)
+	if got := renamed.staleWhy("SUM(Data!B2:B6)", "Summary"); got != "a sheet it reads was renamed" {
+		t.Errorf("renamed: %q", got)
+	}
+	lines := &report{}
+	lines.setEdits([]lineEdit{{sheet: "Data", rowsAdded: [][2]int{{3, 3}}}})
+	if got := lines.staleWhy("SUM(Data!B2:B6)", "Summary"); got != "rows or columns added or removed moved what it reads" {
+		t.Errorf("lines: %q", got)
+	}
+	both := &report{renames: [][2]string{{"data", "Facts"}}}
+	both.setEdits([]lineEdit{{sheet: "Facts", rowsAdded: [][2]int{{3, 3}}}})
+	if got := both.staleWhy("SUM(Data!B2:B6)", "Summary"); got != "rows or columns added or removed moved what it reads, and a sheet it reads was renamed" {
+		t.Errorf("both: %q", got)
+	}
+}
+
+// TestRewritesRemoved checks what a formula reading a sheet removed may have
+// become: sheets writes =SUM(#REF!), Excel =SUM(#REF!B2:B6).
+func TestRewritesRemoved(t *testing.T) {
+	r := &report{removedSheets: []string{"My Data"}}
+	r.setEdits(nil)
+	for _, now := range []string{"SUM(#REF!)+B1", "SUM(#REF!B2:B6)+B1"} {
+		if !r.adjusted(folded("SUM('My Data'!B2:B6)+B1"), "Summary", folded(now), 2, 2) {
+			t.Errorf("=%s is not what it may have become", now)
+		}
+	}
+	if r.adjusted(folded("SUM('My Data'!B2:B6)+B1"), "Summary", folded("SUM(#REF!)+B2"), 2, 2) {
+		t.Errorf("a formula changed besides is what it may have become")
+	}
+}
+
+// A share of the total in every row and every tenth row deleted: hundreds
+// of runs of rows removed, and every formula reads past all of them. What
+// Excel writes for them is no formula changed, and the shares moved with
+// the rows removed (the total), not with a formula blamed.
+func TestCheckAgainstManyRunsShare(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	build := func(path string, drop bool) {
+		var keep []int
+		for i := 2; i <= 5001; i++ {
+			if !drop || i%10 != 0 {
+				keep = append(keep, i)
+			}
+		}
+		var b strings.Builder
+		b.WriteString("Region\tUnits\tShare\n")
+		for j, i := range keep {
+			fmt.Fprintf(&b, "R%d\t%d\t=B%d/$B$%d\n", i, i%50+1, j+2, len(keep)+2)
+		}
+		fmt.Fprintf(&b, "Total\t=SUM(B2:B%d)\n", len(keep)+1)
+		if out, code := runCLI(b.String(), "write", path, "Data!A1"); code != 0 {
+			t.Fatalf("write: %s", out)
+		}
+	}
+	before, after := filepath.Join(dir, "a.xlsx"), filepath.Join(dir, "b.xlsx")
+	build(before, false)
+	build(after, true)
+	js, code := runCLI("", "--json", "check", after, "--against", before)
+	if code != 0 {
+		t.Fatalf("exit %d:\n%.2000s", code, js)
+	}
+	var r againstResult
+	if err := json.Unmarshal([]byte(js), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Summary.Formulas != 0 || len(r.Unexplained) != 0 {
+		t.Fatalf("formulas changed %d, unexplained %d: %+v", r.Summary.Formulas, len(r.Unexplained), r.Changed[:min(3, len(r.Changed))])
+	}
+	for _, m := range r.Moved {
+		if !strings.HasPrefix(m.Cause, "rows removed: ") {
+			t.Fatalf("moved: %+v", m)
+		}
+	}
+}
+
+// Long text cells, changed: the text output shows each cut, as sheets diff
+// does, so it stays short; --json gives them whole.
+func TestCheckAgainstWide(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	build := func(path, ch string) {
+		var b strings.Builder
+		for r := 0; r < 12; r++ {
+			fmt.Fprintf(&b, "%s%d\t=LEN(A%d)\n", strings.Repeat(ch, 20000), r, r+1)
+		}
+		if out, code := runCLI(b.String(), "write", path, "S!A1"); code != 0 {
+			t.Fatalf("write: %s", out)
+		}
+	}
+	before, after := filepath.Join(dir, "a.xlsx"), filepath.Join(dir, "b.xlsx")
+	build(before, "a")
+	build(after, "b")
+	out, _ := runCLI("", "check", after, "--against", before)
+	if len(out) > 8000 {
+		t.Errorf("%d bytes of text:\n%.3000s", len(out), out)
+	}
+	if !strings.Contains(out, "…") {
+		t.Errorf("nothing cut:\n%.3000s", out)
+	}
+	js, _ := runCLI("", "--json", "check", after, "--against", before)
+	if !strings.Contains(js, strings.Repeat("b", 20000)) {
+		t.Errorf("--json does not give the values whole")
+	}
 }
 
 // A chart on a chart sheet: lost with its sheet, but not for a rename of the
@@ -181,10 +304,8 @@ func TestRuns(t *testing.T) {
 // TestSameRef checks that a name Excel rewrote for lines added and removed
 // and sheets renamed is the same name, and one that points elsewhere is not.
 func TestSameRef(t *testing.T) {
-	r := &report{
-		edits:   []lineEdit{{sheet: "Summary", rowsAdded: [][2]int{{1, 1}}}, {sheet: "Facts", rowsRemoved: [][2]int{{6, 6}}}},
-		renames: [][2]string{{"data", "Facts"}},
-	}
+	r := &report{renames: [][2]string{{"data", "Facts"}}}
+	r.setEdits([]lineEdit{{sheet: "Summary", rowsAdded: [][2]int{{1, 1}}}, {sheet: "Facts", rowsRemoved: [][2]int{{6, 6}}}})
 	for _, c := range []struct {
 		old, now string
 		same     bool
@@ -213,7 +334,8 @@ func TestReplay(t *testing.T) {
 	for r := 5; r <= 1001; r += 4 {
 		removed = append(removed, [2]int{r, r})
 	}
-	r := &report{edits: []lineEdit{{sheet: "Data", rowsRemoved: removed}}}
+	r := &report{}
+	r.setEdits([]lineEdit{{sheet: "Data", rowsRemoved: removed}})
 	f, ok := r.replay("SUM(B2:B1001)", "Data", false)
 	if want := "SUM(B2:B751)"; !ok || f != want {
 		t.Errorf("replay %q %v, want %q", f, ok, want)
@@ -227,7 +349,8 @@ func TestReplay(t *testing.T) {
 		t.Errorf("above the rows removed: %q", f)
 	}
 	// Rows added or removed within what a sort moved are left out when sure.
-	r = &report{edits: []lineEdit{{sheet: "Data", rowsAdded: [][2]int{{3, 3}}, movedNew: [2]int{2, 8}}}}
+	r = &report{}
+	r.setEdits([]lineEdit{{sheet: "Data", rowsAdded: [][2]int{{3, 3}}, movedNew: [2]int{2, 8}}})
 	if f, _ := r.replay("SUM(B2:B6)", "Data", true); f != "SUM(B2:B6)" {
 		t.Errorf("within a sort, sure: %q", f)
 	}
@@ -236,9 +359,6 @@ func TestReplay(t *testing.T) {
 	}
 	if _, ok := (&report{}).replay("SUM(B2:B6)", "Data", false); ok {
 		t.Errorf("nothing to replay, yet it did")
-	}
-	if _, ok := (&report{edits: r.edits, replayed: replayLimit + 1}).replay("SUM(B2:B6)", "Data", false); ok {
-		t.Errorf("past the limit, yet it replayed")
 	}
 }
 

@@ -200,6 +200,34 @@ func TestTracerOpaqueAndArrays(t *testing.T) {
 	}
 }
 
+// Functions whose result comes from outside the workbook (a server, the
+// web, a data service) are opaque, but what they read is still followed: a
+// change there is their cause.
+func TestTracerOutside(t *testing.T) {
+	s := grid.NewSheet("S")
+	s.Set(1, 1, grid.Cell{Kind: grid.Text, Text: "https://example.com/rate"})
+	s.Set(1, 2, grid.Cell{Formula: `RTD("my.server",,"EURUSD")`})
+	s.Set(1, 3, grid.Cell{Formula: `_xlfn.WEBSERVICE(A1)`})
+	s.Set(1, 4, grid.Cell{Formula: `_xlfn.STOCKHISTORY("MSFT",A1)`})
+	s.Set(1, 5, grid.Cell{Formula: `CUBEVALUE("Sales",A1)`})
+	s.Set(1, 6, grid.Cell{Formula: `A1&"x"`})
+	tr := NewTracer(&grid.Workbook{Sheets: []*grid.Sheet{s}})
+	for col, fn := range map[int]string{2: "RTD", 3: "WEBSERVICE", 4: "STOCKHISTORY", 5: "CUBEVALUE"} {
+		if w := tr.Opaque("S", 1, col); !contains(w, "it calls "+fn+", whose result comes from outside the workbook") {
+			t.Errorf("%s: %q", fn, w)
+		}
+	}
+	if w := tr.Opaque("S", 1, 6); w != "" {
+		t.Errorf("a formula of the workbook's own: %q", w)
+	}
+	got := tr.Spread([]Source{{Sheet: "S", Range: grid.Range{R1: 1, C1: 1, R2: 1, C2: 1}}})
+	for _, col := range []int{3, 4, 5, 6} {
+		if _, ok := got[At{"S", 1, col}]; !ok {
+			t.Errorf("what reads A1 does not follow it: column %d in %v", col, got)
+		}
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

@@ -225,7 +225,8 @@ stdout '^  Data!E2 \(was D2\) +150 → 180 +input Data!B2$'
 cp colins.xlsx colbroken.xlsx
 exec sheets set colbroken.xlsx Data!C1 Discount Data!E4 '=B4*D3'
 exec sheets check colbroken.xlsx --against against_before.xlsx
-stdout ': 0 inputs changed, 1 formula changed, 4 computed values moved'
+stdout ': 0 inputs changed, 1 formula changed, 5 computed values moved'
+stdout '^  Data!E4 \(was D4\) +150 → 60 +formula Data!E4$'
 stdout '^  Data!E4 \(was D4\)  =B4\*C4 → =B4\*D3  \(unlike the rows around it, which compute =B\{r\}\*D\{r\}\)$'
 stdout '^  Summary!B3 +630 → 540 +formula Data!E4$'
 ! stdout 'unexplained:'
@@ -324,6 +325,116 @@ stdout '^  chart  Chart1  bar chart on a chart sheet$'
 ! exec sheets --json check against_chartsheet_deleted.xlsx --against against_chartsheet.xlsx
 stdout '"features_lost":\[\{"kind":"chart","where":"Chart1","what":"bar chart on a chart sheet"\}\]'
 
+# A sort of a range with cells beside it, which stay where they are (a note,
+# a formula reading the column): the rows of the range moved, in its
+# columns; nothing beside them changed, no rows were added or removed, and
+# the totals below are as they were.
+cp against_before.xlsx side.xlsx
+exec sheets set side.xlsx Data!H1 Best Data!H2 '=MAX(D2:D6)' Data!H3 Note
+cp side.xlsx sidesorted.xlsx
+exec sheets sort sidesorted.xlsx Data!A1:D6 Units
+exec sheets check sidesorted.xlsx --against side.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 1 computed value moved \(each with its cause\), 0 unexplained, 0 features lost, 0 unknown, 5 rows moved$'
+stdout '^  Summary!B7 +5 → 3 +rows moved: Data!A2:D2 \(were Data!A4:D4\)$'
+stdout '^  Data!A2:D2, were A4:D4$'
+stdout '^  Data!A4:D5, were A2:D3$'
+! stdout 'structure:'
+! stdout 'flagged:'
+exec sheets --json check sidesorted.xlsx --against side.xlsx
+stdout '"moved_rows":\[\{"sheet":"Data","from":4,"to":2,"rows":1,"columns":"A:D"\},'
+# The same with the column beside the range next to it (no empty column
+# between), and a list sorted beside the block of labels and formulas.
+cp against_before.xlsx nextto.xlsx
+exec sheets set nextto.xlsx Data!E1 Code Data!E2 n1 Data!E3 s2 Data!E4 e3 Data!E5 w4 Data!E6 m5
+cp nextto.xlsx nexttosorted.xlsx
+exec sheets sort nexttosorted.xlsx Data!A1:D6 Units
+exec sheets check nexttosorted.xlsx --against nextto.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 1 computed value moved'
+stdout ', 5 rows moved$'
+stdout '^  Data!A2:D2, were A4:D4$'
+! stdout 'structure:'
+cp against_before.xlsx regions.xlsx
+exec sheets sort regions.xlsx Summary!D1:D6 D:desc
+exec sheets check regions.xlsx --against against_before.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown, 4 rows moved$'
+stdout '^  Summary!D2, were D5$'
+
+# A row inserted on a sheet another reads: the formulas Excel rewrote there
+# for it read as before, and rows alike (the same label and formula) still
+# pair with their old selves, not one row off: that sheet did not change.
+exec sheets set q.xlsx Data!A1 Item Data!B1 Units Data!D1 Cost Data!A2 a Data!B2 1 Data!D2 10 Data!A3 b Data!B3 5 Data!D3 20 Data!A4 c Data!B4 7 Data!D4 30 Data!A5 d Data!B5 2 Data!D5 40 Data!A6 e Data!B6 9 Data!D6 50 Data!A7 f Data!B7 4 Data!D7 60 'Q 2026!A1' Key 'Q 2026!B1' Value 'Q 2026!A2' Lime 'Q 2026!B2' '=COUNTIF(Data!B2:B7,">3")' 'Q 2026!A3' Pear 'Q 2026!B3' 76 'Q 2026!A4' Lime 'Q 2026!B4' '=SUM(Data!D2:D7)' 'Q 2026!A5' Lime 'Q 2026!B5' '=SUM(Data!D2:D7)' 'Q 2026!A6' R&D 'Q 2026!B6' '=COUNTIF(Data!B2:B7,">3")' 'Q 2026!A7' Fig 'Q 2026!B7' '=SUM(Data!D2:D7)'
+cp q.xlsx q2.xlsx
+exec sheets rows insert q2.xlsx Data!2
+exec sheets check q2.xlsx --against q.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, '
+stdout '^  row added: Data!2$'
+! stdout 'Q 2026''!\d'
+
+# A value that moved as a formula moved, or as what it reads moved, with
+# rows added and nothing it reads changed: =ROW() moved down, and a formula
+# older Excel stores (openpyxl's), which reads the row of Data!C2:C3 it is
+# in, now reads Data!C3:C4, which does not meet it. The rows added are the
+# cause.
+exec sheets set row.xlsx Data!A1 a Data!A2 b Data!A3 c Data!A4 d Data!A5 e Data!E5 '=ROW()' Data!F5 '=E5*2'
+cp row.xlsx row2.xlsx
+exec sheets rows insert row2.xlsx Data!2
+exec sheets check row2.xlsx --against row.xlsx
+stdout '^  Data!E6 \(was E5\) +5 → 6 +rows added: Data!2$'
+stdout '^  Data!F6 \(was F5\) +10 → 12 +rows added: Data!2$'
+fixture against_legacy.xlsx
+cp against_legacy.xlsx legacy.xlsx
+exec sheets rows insert legacy.xlsx Data!2
+! exec sheets check legacy.xlsx --against against_legacy.xlsx
+stdout ', 0 unexplained,'
+stdout '^  Model!C2 +10 → #VALUE! +rows added: Data!2$'
+stdout '^  Model!D2 +11 → #VALUE! +rows added: Data!2$'
+
+# A feature lost after its range moved: the one lost is the one gone (the
+# whole-number validation on B), not another of its kind on the sheet.
+cp against_before.xlsx novalid.xlsx
+exec sheets rows insert novalid.xlsx Data!3
+exec sheets validate novalid.xlsx Data!B2:B7 --clear
+! exec sheets check novalid.xlsx --against against_before.xlsx
+stdout ', 1 feature lost, '
+stdout '^  validation  Data!B2:B6  whole validation$'
+
+# A sheet removed is the cause of what read it, whether its formulas were
+# left as they were (openpyxl deletes the sheet: they now read nothing) or
+# rewritten with #REF! (sheets and Excel): none is unexplained, and the
+# formulas sheets rewrote are not changes. A name removed is the cause of
+# what used it, ahead of an input changed upstream.
+fixture against_nodata.xlsx against_noname.xlsx against_facts.xlsx
+! exec sheets check against_nodata.xlsx --against against_before.xlsx
+stdout ', 0 unexplained, 6 features lost,'
+stdout '^  Summary!B2 +28 → 0 +sheet removed: Data$'
+stdout '^  Summary!B4 +157.5 → 0 +sheet removed: Data$'
+stdout '^  sheet removed: Data$'
+cp against_before.xlsx nodata.xlsx
+exec sheets sheet delete nodata.xlsx Data --force
+! exec sheets check nodata.xlsx --against against_before.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 6 computed values moved \(each with its cause\), 0 unexplained,'
+stdout '^  Summary!B2 +28 → #REF! +sheet removed: Data$'
+! exec sheets check against_noname.xlsx --against against_before.xlsx
+stdout ', 0 unexplained,'
+stdout '^  Summary!B4 +157.5 → #NAME\? +name TaxRate removed$'
+stdout '^  Summary!B2 +28 → 29 +input Data!B2$'
+stdout '^  name removed: TaxRate = Summary!\$B\$1$'
+
+# A sheet renamed by a tool that leaves the formulas reading its old name
+# (openpyxl's ws.title): flagged, for the sheet renamed, not rows moved.
+! exec sheets check against_facts.xlsx --against against_before.xlsx
+stdout '^  Summary!B2  =SUM\(Data!B2:B6\) → =SUM\(Data!B2:B6\)  \(its text is as it was, though a sheet it reads was renamed: Excel writes =SUM\(Facts!B2:B6\)\)$'
+! stdout 'rows or columns added or removed'
+
+# A value that comes from outside the workbook (RTD: a server's) moves with
+# nothing in the workbook changed: unknown, with why, not unexplained, and
+# so is what reads it.
+fixture against_rtd.xlsx against_rtd2.xlsx
+exec sheets check against_rtd2.xlsx --against against_rtd.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 2 unknown$'
+stdout '^  Data!B1  1.08 → 1.09  moved, and sheets cannot tell why: it calls RTD, whose result comes from outside the workbook$'
+stdout '^  Data!C2  108 → 109 +moved, and sheets cannot tell why: it reads Data!B1, which sheets cannot follow'
+
 # CSV files: values only, and rows moved.
 exec sheets check after.csv --against before.csv
 cmp stdout csv.out
@@ -382,10 +493,11 @@ check of against_openpyxl.xlsx: 2 errors, 0 warnings, 0 notes
 error  Data!D2, D3, D4, D5, D6, B7, D7  7 formulas have no stored result, so pandas, openpyxl and previews read blanks; sheets computes them (D2 = 180): sheets check --fix stores them
 error  Summary!B2, B3, B4, B5, B6, B7   6 formulas have no stored result, so pandas, openpyxl and previews read blanks; sheets computes them (B2 = 29): sheets check --fix stores them
 -- broken.out --
-broken.xlsx against against_before.xlsx: 0 inputs changed, 1 formula changed, 4 computed values moved (each with its cause), 0 unexplained, 0 features lost, 0 unknown
+broken.xlsx against against_before.xlsx: 0 inputs changed, 1 formula changed, 5 computed values moved (each with its cause), 0 unexplained, 0 features lost, 0 unknown
 flagged: formula changes that look like mistakes:
   Data!D4  =B4*C4 → =B4*C3  (unlike the rows around it, which compute =B{r}*C{r})
 moved, each with its cause:
+  Data!D4     150 → 60     formula Data!D4
   Data!D7     630 → 540    formula Data!D4
   Summary!B3  630 → 540    formula Data!D4
   Summary!B4  157.5 → 135  formula Data!D4
@@ -423,7 +535,7 @@ changed:
   Data!A1  input  5 → 7
 unknown: values sheets cannot compare:
   Data!B1  10 → 14  moved, and sheets cannot tell why: it calls INDIRECT, whose result can change while what it names does not
-  Data!C1  11 → 15  moved, and sheets cannot tell why: it reads Data!B1, whose reads sheets cannot follow (it calls INDIRECT, whose result can change while what it names does not)
+  Data!C1  11 → 15  moved, and sheets cannot tell why: it reads Data!B1, which sheets cannot follow (it calls INDIRECT, whose result can change while what it names does not)
 check of vol2.xlsx: 0 errors, 0 warnings, 1 note
 note  Data!B1  1 formula use INDIRECT, which recalculate on every change
 -- csv.out --

@@ -602,3 +602,56 @@ d1904_data.write_datetime("A1", datetime.datetime(2024, 1, 31), d1904.add_format
 d1904_data.write("B1", 5)
 d1904_data.write_formula("C1", "=YEAR(A1)", None, 2024)
 d1904.close()
+
+# against_nodata.xlsx: openpyxl deletes the sheet Data, which Summary's
+# formulas read, and leaves them as they were (Excel would write #REF!);
+# against_noname.xlsx: openpyxl deletes the name TaxRate, which Summary!B4
+# uses (Excel leaves it, now #NAME?), and Data!B2 changed; against_facts.xlsx:
+# openpyxl renames Data to Facts and leaves the formulas reading Data.
+wb = openpyxl.load_workbook(path)
+del wb["Data"]
+wb.save(f"{out}/against_nodata.xlsx")
+wb = openpyxl.load_workbook(path)
+del wb.defined_names["TaxRate"]
+wb["Data"]["B2"] = 6
+wb.save(f"{out}/against_noname.xlsx")
+wb = openpyxl.load_workbook(path)
+wb["Data"].title = "Facts"
+wb.save(f"{out}/against_facts.xlsx")
+
+# against_rtd.xlsx and against_rtd2.xlsx: a rate a server sends (RTD), as
+# Excel stored it at two times, 1.08 and then 1.09, and a formula reading
+# it. Nothing in the workbook changed.
+for name, rate in (("against_rtd", 1.08), ("against_rtd2", 1.09)):
+    rtd = xlsxwriter.Workbook(f"{out}/{name}.xlsx")
+    rtd_data = rtd.add_worksheet("Data")
+    rtd_data.write("A1", "EURUSD")
+    rtd_data.write_formula("B1", '=RTD("my.server",,"EURUSD")', None, rate)
+    rtd_data.write("A2", "Price")
+    rtd_data.write("B2", 100)
+    rtd_data.write_formula("C2", "=B2*B1", None, round(100 * rate, 2))
+    rtd.close()
+    # Excel's results: not marked to be computed again on open.
+    with zipfile.ZipFile(f"{out}/{name}.xlsx") as z:
+        items = [(info, z.read(info.filename)) for info in z.infolist()]
+    with zipfile.ZipFile(f"{out}/{name}.xlsx", "w", zipfile.ZIP_DEFLATED) as z:
+        for info, data in items:
+            if info.filename == "xl/workbook.xml":
+                data = data.replace(b' fullCalcOnLoad="1"', b"")
+            z.writestr(info, data)
+
+# against_legacy.xlsx: openpyxl writes a formula reading a range where one
+# value goes as older Excel stores it (implicit intersection: Model!C2 reads
+# the row of Data!C2:C3 it is in), with no results stored. A row inserted
+# above the range moves it off that row: the value moves with the rows
+# added, though the formula reads none of them.
+wb = openpyxl.Workbook()
+legacy = wb.active
+legacy.title = "Data"
+for row in (["Item", "Units", "Price"], ["a", 1, 5], ["b", 2, 7], ["c", 3, 9]):
+    legacy.append(row)
+model = wb.create_sheet("Model")
+model["A2"] = "x"
+model["C2"] = "=Data!C2:C3*2"
+model["D2"] = "=C2+1"
+wb.save(f"{out}/against_legacy.xlsx")
