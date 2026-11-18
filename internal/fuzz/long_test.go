@@ -562,7 +562,13 @@ func TestKnownFaces(t *testing.T) {
 		{"script", "editors", `Q 2026!F4: stream holds number 2, full holds text "!"`, Edit{Class: "script", Args: []string{"script", FileArg, "-e", "const ws = workbook.getWorksheet(\"Q 2026\");\nws.getRange(\"E4\").setFormula(\"=IF(N(\\\"d\\\")=0,SEQUENCE(1,2))\");\nws.getRange(\"F2\").setFormula(\"=IF(N(\\\"d\\\")=0,A2:A4&\\\"!\\\")\");\n"}}, "map-order"},
 		{"write", "editors", `R&D 2!E4: stream holds number 2, full holds text ""`, Edit{Class: "write", Args: []string{"write", FileArg, "R&D 2!D2", "--from", "tsv"}, Stdin: "=IF(N(\"p\")=0,OR(F2,D2>250))\t=IF(N(\"d\")=0,A2:A4&\"!\")\n=IF(N(\"d\")=0,SEQUENCE(1,2))\n"}, "map-order"},
 		{"replace", "kinds", `stream editor: sheet1.xml K12: =IF(N("d")=0,PRODUCT(IF(#REF!:#REF!>3,#REF!:#REF!))) is stored as a plain formula, not a dynamic array`, plain("replace"), "replace-loses-kind"},
+		// A batch or a script holding an insert or a delete (the audit's seed
+		// 664355, fuzzer-long's audit f1.1).
+		{"do", "kinds", `stream editor: sheet3.xml D2: =IF(N("p")=0,OR(E2,C2>250)) is stored as a dynamic array, not a plain formula`, batch("set 'Data 2!E9' '=IF(N(\"p\")=0,IF(B9>1000,1,\"\"))'\ncols insert 'Data 2!A' -n 2\n"), "insert-turns-dynamic"},
+		{"script", "kinds", `stream editor: sheet3.xml D2: =IF(N("p")=0,OR(E2,C2>250)) is stored as a dynamic array, not a plain formula`, script(`ws.getRange("E2").setFormula("=IF(N(\"p\")=0,OR(F2,D2>250))");`+"\n"+`ws.getRange("A:A").delete("Left");`), "insert-turns-dynamic"},
 		// New: not a known bug's.
+		{"do", "kinds", `stream editor: sheet3.xml D2: =IF(N("p")=0,OR(E2,C2>250)) is stored as a dynamic array, not a plain formula`, batch("set 'Data 2!E9' 5\nsort 'Data 2!A1:A4' A\n"), ""},
+		{"do", "kinds", `stream editor: sheet1.xml I2: =IF(N("p")=0,B3:B4*2) is stored as a dynamic array, not a plain formula`, batch("rows insert 'Data!2'\n"), ""},
 		// The mutant rewrite-loses-kind: a move rewrites a formula's kind.
 		{"move", "kinds", `stream editor: sheet1.xml I2: =IF(N("p")=0,Plan!H6:H7*2) is stored as a dynamic array, not a plain formula`, plain("move"), ""},
 		{"replace", "kinds", `stream editor: sheet1.xml K12: =IF(N("d")=0,PRODUCT(IF(B2:B6>3,B2:B6))) is stored as a plain formula, not a dynamic array`, plain("replace"), ""},

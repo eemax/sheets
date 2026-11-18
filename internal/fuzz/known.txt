@@ -137,8 +137,13 @@ bug spill-overwrites: set,write,do kinds; repro long 4001600827; detail : the ed
 # that deletes and inserts column C over a copied array, then a rows delete
 # elsewhere). Likely script-legacy-dynamic's cause: the array's cell metadata
 # left on the cell. (A formula reading a range where one value goes, turned
-# dynamic, is another bug: the mutant rows-insert-arrays.)
+# dynamic, is another bug: the mutant rows-insert-arrays.) A batch or a script
+# holding an insert or a delete of rows or columns shows it too (seed 664355,
+# the audit's: a script sets 'Bob''s Plan'!E2 to a plain formula and deletes
+# column A, and a batch's cols insert 'Data 2!A' -n 2 stores D2 as a dynamic
+# array).
 bug insert-turns-dynamic: rows-insert,rows-delete,cols-insert,cols-delete kinds; repro long 6100201614; detail =IF\(N\("p"\)=0,[^:]*\) is stored as a dynamic array, not a plain formula$
+bug insert-turns-dynamic: do,script kinds; repro long 66435500849; detail =IF\(N\("p"\)=0,[^:]*\) is stored as a dynamic array, not a plain formula$; edit (?m)^(rows|cols) (insert|delete) |\.(insert|delete)\(
 
 # New (long mode, seed 341566): a replace that gives an Excel table's header
 # the name of another column renames that other column: replace Date 1,200,
