@@ -3,7 +3,10 @@
 A machine doing what wave 1's audits did by hand. It runs the sheets CLI in
 process (`cli.Main`) over random workbooks from openpyxl and XlsxWriter. It
 makes random edits and checks fixed invariants on the saved files after
-each one.
+each one. The default mode runs in every `go test ./...`; long mode
+(`SHEETS_FUZZ=long`) runs for a time over pools it makes fresh; and seven
+mutants put wave 1's bugs back into sheets, to show the fuzzer finds each
+(How the fuzzer was checked).
 
 ## The default mode
 
@@ -158,7 +161,51 @@ They judge files, never a command's output text.
    cell through the edit, so a formula an edit loses, or one it makes out of
    nothing, is a finding. (Before, only the formulas still in the file were
    judged.)
-3. *reach* is fuzzer-long's.
+3. **reach:** nothing outside the edit's reach changed. A model of each edit
+   (`reach.go`, driven by the model of kinds) says which cells it may
+   change: the cells a `set`, `write` or `clear` names, a `copy`'s target, a
+   `move`'s source and target, the range a `sort` takes (the whole sheet when
+   it names a sheet or a table), the values a `replace` finds (as sheets shows
+   them, ignoring case; a find a formatted number can hold matches every
+   number), the rows or columns an insert adds, and a sheet copied. Every
+   other cell is followed through the edit (rows and columns inserted or
+   deleted move it, a sheet renamed takes it along) and must hold what it
+   held, where it stands now; an empty one must stay empty, and no sheet may
+   appear that the edit does not name. Two changes are expected:
+   - **shifted references:** an edit that moves cells (move, rows and
+     columns, a script's `moveTo`, `insert` and `delete`) or renames a sheet
+     may rewrite the formulas that read them, in their references only (each
+     reference, or `#REF!`, reads as one token). Any other edit leaves every
+     formula outside its reach as it was, letter for letter.
+   - **recomputed dependents:** a formula's value may change when it reads a
+     cell whose value may (in the reach, or a formula whose value may, to a
+     fixpoint), when its references were rewritten, when it uses a defined
+     name the edit defined again (rows deleted from `Units`), or when its
+     result is unknown before or after (pending: sheets computed a result it
+     did not know, or dropped one it cannot vouch for). An array's other
+     cells change with its formula, and with an edit that reaches into it or
+     cuts through it.
+
+   So a slip that writes a cell the edit does not name, moves one it should
+   not, loses or rewrites a formula elsewhere, or recomputes one with nothing
+   it reads changed, is a finding. `TestReach` holds 45 cases, right and
+   wrong, and `TestModelReadsGeneratedEdits` that the model reads every edit
+   the generator makes on the pool. The default run makes no reach finding
+   on today's code; a scratch mutation in which `clear` takes one more column
+   is found as `clear reach` (`Data!L1: outside the edit's reach, it held
+   text "Label", and holds nothing now`, after `sheets clear book.xlsx
+   'Data!K1'`), and WP-12's mutant (How the fuzzer was checked) is found by
+   it first in the default run.
+
+   Two slips of the model were found by running it, and fixed. Its first
+   version took a defined name's range as it stands after the edit, and
+   called `SUM(Units)` changed with nothing it reads changed when rows were
+   deleted from `Units` (21 false findings in the default run): a formula
+   that uses a name the edit defined again may change now. And it read the
+   double quotes in a sheet's name (`'Q1 "draft"'!B9`) as a string, which hid
+   the reference (8 false findings in long mode's 20 minutes, each of which
+   replays clean now). The check costs no time a run can see (36 s for the
+   default run, as before).
 4. **editors:** the streaming and the full editor give the same sheets,
    cells, formulas, kinds (arrays and spills) and values, pending or not.
    Both must also take the edit, or both refuse it.
@@ -265,9 +312,14 @@ with the saved file, cell for cell and kind for kind):
   unchanged). A paste of an empty cell empties the target's formula.
 - **move:** the same, and the cells it empties hold none.
 - **rows and cols, insert and delete:** formulas go where their cells go;
-  those in the rows or columns deleted are gone.
+  those in the rows or columns deleted are gone. A single row or column
+  (`Data!4`, `Data!C`, what an insert names) is read as the command reads it;
+  the model once gave up on it, as grid.ParseRef reads no range there, and
+  so judged no insert, nor any batch holding one (fuzzer-core's audit, f4.1).
 - **sheet rename, copy and add:** the formulas stay, and a copy holds the
-  same as its source.
+  same as its source. What the model knows of a sheet goes with its new
+  name: that it was sorted, and that the model lost it (a sheet sorted,
+  edited and renamed was judged by column under its new name: f4.2).
 - **replace:** no cell gains or loses a formula.
 - **sort:** no column gains or loses a formula of a kind (the rows move,
   and the model does not say where). A sheet sorted in a batch or a script
@@ -425,8 +477,9 @@ sequence's seed (`move kinds 100037`).
 
       SHEETS_FUZZ_REPRO=100037 go test ./internal/fuzz -run 'TestFuzz$' -v
 
-- **A fix removes its lines.** A run that is not capped lists the entries
-  it no longer makes.
+- **A fix removes its lines.** A run lists the entries for its seed whose
+  sequences it made in full without making them (fixed), and never fails on
+  them.
 
 Findings on the code this was built on (99ba275), 34 in all:
 
@@ -487,7 +540,110 @@ are for filing as follow-ups too (both replay on the pool as it is now):
 
 `SHEETS_FUZZ_SEED` and `SHEETS_FUZZ_EDITS` change the seed and the count.
 That is not the default mode, and `known.txt` lists only the default seed's
-findings. The long mode is fuzzer-long's.
+findings of it. Long mode (below) runs other seeds on fresh pools.
+
+**known.txt's lines:** `<edit class> <invariant> <seed>`, or several seeds of
+one class and invariant on a line; a line that starts with `long` holds long
+mode's findings, on the pools it made (the same class, invariant and seed on
+the committed pool is another finding). **Fixed:** a run lists the entries
+for its seed whose sequences it made in full without making them (fixed, or
+no longer reached; the last sequence counts only when the edit count did not
+cut it short). It never fails on them. The default mode does not list them
+under `-race`, whose 3 repeats may miss what 20 see.
+
+## Long mode
+
+`SHEETS_FUZZ=long go test ./internal/fuzz -count=1 -v -timeout 30m` runs the
+fuzzer for a time, not a count, over pools it makes fresh.
+
+- **Fresh pools:** `scripts/fuzzgen.py --pool-only` makes a pool of 40
+  workbooks (20 from openpyxl, 20 from XlsxWriter) for each round of 400
+  sequences (about 2,600 edits, a minute), each from its own seed: the run's
+  seed × 1000 plus the round (`PoolSeed`). A 20-minute run starts its
+  sequences from about 800 workbooks, against the committed pool's 40. A pool
+  is the same byte for byte from its seed (the releases are pinned), so a
+  finding replays from its sequence's seed alone:
+  `SHEETS_FUZZ=long SHEETS_FUZZ_REPRO=700012 go test ./internal/fuzz -run 'TestFuzz$' -v`
+  makes pool 7000 again and replays sequence 12 of seed 7. A pool takes
+  about half a second to make. (`--pool-only` leaves out the must-refuse
+  cases, which are made from the committed pool's files: another seed may
+  hold none that fits a case.)
+- **The variables:** `SHEETS_FUZZ_TIME` (default 10m; the run finishes the
+  sequence it is in), `SHEETS_FUZZ_SEED` (default a fresh one, printed),
+  `SHEETS_FUZZ_EDITS` (a cap), `SHEETS_FUZZ_UNTIL=new` (stop at the first
+  finding known.txt does not list: the mutants), and `SHEETS_FUZZ_SOFFICE`
+  (LibreOffice, when `soffice` is not on PATH).
+- **The same edits and invariants** as the default mode. A finding known.txt
+  does not list fails the run, the first five shrunk; long mode's are listed
+  there as `long` lines.
+- **The log** gives the rate of findings per 10,000 edits, by edit class and
+  invariant, the entries of known.txt for the run's seed that no longer
+  reproduce (fixed: reported, never a failure), and LibreOffice's second
+  opinion.
+- **No uv, or no network:** when uv cannot make a pool (or fetch openpyxl and
+  XlsxWriter), that round runs on the committed pool instead, the log says
+  why, and its findings are not long ones. `TestPoolsFallBack` holds the
+  case. `TestFreshPools` (with `SHEETS_FUZZ=long` only: it runs uv, and the
+  default tests use no network) checks that a seed's pool is the same each
+  time and another seed's another, with files from both producers that hold
+  the invariants and name their kinds.
+- **LibreOffice's second opinion:** up to 120 workbooks the sequences leave,
+  spread over the run, are recalculated by LibreOffice (`soffice
+  --convert-to xlsx`, recalculating on load), and the values sheets stored
+  for plain formulas (not arrays, not pending) are compared with LibreOffice's.
+  Only workbooks that started from an openpyxl file are sent: openpyxl stores
+  no results, so each one in them is sheets' own (XlsxWriter stores 0 for a
+  number, which sheets keeps where no edit reaches). It is reported, never a
+  finding: LibreOffice is not Excel, and it is no judge here. LibreOffice
+  reads a `#REF!` in a formula's text as a name it does not know and gives
+  `#NAME?`, so sheets' `#REF!` and its `#NAME?` count as agreeing.
+
+**Seed 7, 20 minutes** (`SHEETS_FUZZ=long SHEETS_FUZZ_SEED=7 SHEETS_FUZZ_TIME=20m
+go test ./internal/fuzz -count=1 -v -timeout 30m`, 2026-11-19, on Max's
+MacBook; the logs are in `~/sheets-evals/wave2/fuzz/`):
+
+- **The first run** (`long-seed7-20m-baseline.log`): 70,934 edits (65,929
+  applied) in 11,477 sequences, on 29 fresh pools; 864 findings, 121.8 per
+  10,000 edits. Eight were the reach model's own slip (a sheet named with
+  double quotes, fixed; each replays clean). known.txt lists the other 856,
+  by the bug each shows:
+  - **540, known:** the `_x005F_x0041_` escape (`set text`, `write text`, and
+    a formula reading such a text, which each editor computes from another
+    text: `write editors`, `script editors`);
+  - **278, known:** sort editors (2 of them a batch holding one sort);
+  - **28, known:** the repeat (map order), by a paste, a move or a batch
+    landing on dynamic arrays;
+  - **2, known:** a script's rows and column turning a legacy array dynamic;
+  - **6, new:** a control character typed into an Excel table's header is
+    written raw into the table's part by the streaming editor
+    (`xl/tables/table1.xml`: illegal character code U+0001). Shrunk,
+    `long set xml 700021` is `sheets set book.xlsx 'Data!I4' … 'Data!B1'
+    $'ctl\x01x' …` on a file whose table is over the data;
+  - **1, new:** a text written into a dynamic array's results is lost to
+    them (`long write text 711157`: `_x0041_` written into O3, which the
+    dynamic array in O2 fills, is saved as the array's 18; Excel keeps what is
+    typed, and shows `#SPILL!`);
+  - **1, new:** a script that sets a dynamic array and then pastes over it
+    (`ws.getRange("C2").copyFrom("A1:C4")`) saves other cells in each editor
+    (`long script editors 701746`).
+- **The run again, on the code as it is now** (`long-seed7-20m.log`, the Mac
+  running the mutants beside it): 61,912 edits (57,623 applied) in 9,996
+  sequences on 25 pools; 755 findings, all in known.txt (0 new), 121.9 per
+  10,000 edits; no entry fixed; it passes.
+- **The rate**, about 122 findings per 10,000 edits, is three known bugs
+  nearly all: the escape (63%) and sort editors (32%), then the repeat.
+  Without those three, about 1.4 per 10,000 are left (the 10 others of the
+  first run).
+- **LibreOffice's second opinion:** 117 workbooks each run, 4,465 and 4,449
+  plain formulas with a result sheets stored; 4,450 and 4,433 agree, 15 and
+  16 differ. Where they differ: a plain formula reading another sheet's range
+  where one value goes (`=Data!C2:C3*10` in `R&D!C3`: sheets 684.9,
+  LibreOffice 50, or `#VALUE!` elsewhere); a text with a line break
+  (`=UPPER(A3)` of `line1\nline2`: LibreOffice drops the break); a boolean
+  compared with a number (`=IF(B13>3,B13,0)` with B13 TRUE: sheets TRUE, as
+  Excel, which ranks a boolean above any number; LibreOffice 0); `ISNUMBER`
+  of a cell the two read otherwise; and `=SUM(Units)`, 121 against 122, once.
+  Reported, not judged: they are for a look with the Excel oracle (WP-11).
 
 ## Timings
 
@@ -545,7 +701,98 @@ margin of 9 to 17 s at a load of 3 to 5.
   s. If 2,000 plain edits still don't fit, report the numbers. Never weaken
   the invariants.
 
+**With the reach invariant** (fuzzer-long, 2026-11-19), `time scripts/check.sh
+full` on the same MacBook, alternating with this run's base commit
+(5803d77: fuzzer-core and kinds-spills, without the reach invariant, long
+mode and the mutants), other sessions running tests beside it:
+
+| run | load average | check full | fuzz, plain | fuzz, race |
+|---|---|---|---|---|
+| branch (two tests not yet cut down) | 3.8 to 4.4 | 133.7 s (1,325 tests) | 52.7 s | 72.9 s |
+| branch | 2.2 to 3.7 | 114.2 s (1,326 tests) | 46.1 s | 62.2 s |
+| base (5803d77) | 3.4 to 4.9 | 117.6 s (1,186 tests) | 46.1 s | 59.7 s |
+| branch | 4.6 to 3.6 | 124.2 s | 47.0 s | 65.5 s |
+
+- **The first was 1.3 s from the bar.** `TestStopAtNew` and
+  `TestPoolsFallBack` then ran 2,000 and 60 edits for what 3 and 12 show
+  (Stop after a finding, a pool that cannot be made): about 4 s of the plain
+  step. Cut down, check full takes about 5 s more than its base, with 11 to
+  21 s to spare under 135 s.
+- **The reach invariant costs no time a plain run can see:** the default
+  run's 2,000 edits take 36 s, as before.
+- **Under -race the run is at its floor:** 206 edits in 43.7 s (about 212 ms
+  an edit, 200 before), its length set by the 200-edit minimum, not the 40 s
+  cap. Lowering the cap would gain nothing, and the minimum is fuzzer-core's,
+  so it stays.
+
 ## How the fuzzer was checked
+
+### The mutants
+
+Wave 1's audits found seven bugs, each fixed since. Seven patches in
+`mutants/` put them back into sheets' code, written against today's (after
+kinds-spills: the rewritten move, copy and sort), each saying first what it
+puts back:
+
+| mutant | wave 1's fix | what it puts back |
+|---|---|---|
+| `wp12-sheet-rows` | 8e2e9cd (WP-12) | `writeWorkbook` no longer drops the sheets excelize holds after a write: a sheet made in a session saves with a cell twice, or rows out of order |
+| `rows-insert-arrays` | 634b2ef | an edit of rows or columns writes the formulas it moved with `setFormula`, which reads the kind off the text: a plain formula reading a range where one value goes (`=B3:B4*2`) turns into a dynamic array |
+| `rewrite-loses-kind` | 65873b1 | a formula a move rewrites where it stands is written again by its text (`rewriteFormula` ends with `setFormula`, not `putBack`) |
+| `one-cell-array-moved-plain` | 2270292 | `take` no longer marks an array formula in one cell, so a move, copy or sort writes it plain |
+| `move-leaves-formula` | 4410f38 | the cells a move empties keep the array formulas it took: a moved array formula stands in two places (see below) |
+| `empty-text-lost` | e7a9d5b | `keepEmptyText` returns at once: the full editor saves an empty-text result as no result |
+| `part-of-legacy-array` | c065389 | `checkArrays` no longer refuses a clear, copy or move that takes in part of a legacy array over several cells |
+
+**4410f38 cannot be put back as it was.** The bug was excelize's: it kept an
+array formula when `put` set a cell empty, and the fix took the formula away
+first (`SetCellFormula(sheet, cell, "")`). excelize v2.11 takes it away itself
+(`SetCellDefault` calls `removeFormula`), so taking the fix out changes
+nothing today: the default run made no new finding with it. The mutant is the
+nearest patch that puts the same bug back: the cells a move empties keep the
+array formulas it took (in one cell, legacy or dynamic), as the old excelize
+kept them, so the formula stands where it went and where it was.
+
+`scripts/fuzz-mutants.sh OUT [--only NAME]` checks the fuzzer finds each. For
+each mutant it copies the working tree as it is (`git ls-files -co
+--exclude-standard`: uncommitted work included; never HEAD, a branch or a
+worktree) into a temporary folder, applies the patch there, and runs long
+mode with seed 7 (whose findings on today's code known.txt lists, so a new one
+is the mutant's) until its first finding known.txt does not list, for at
+most 4 minutes (`SHEETS_FUZZ_UNTIL=new`, `SHEETS_FUZZ_TIME=4m`). It writes
+`OUT/NAME.log` for each (the mutant, the seed, the shrunk repro, the time)
+and `OUT/summary.txt`, and exits 0 only if every mutant is found. When uv
+cannot make long mode's pools, each mutant runs the default mode on the
+committed pool instead (seed 1, its findings all in known.txt), and the logs
+say so. `TestMutantsApply` checks in every `go test ./...` that each patch
+still applies to the tree (`git apply --check`), so a change to the code a
+mutant patches fails the suite until the mutant is written again, putting
+back the same bug; `TestMutantsApplyRefuses` holds a stale one.
+
+**All seven are found**, each well within its 4 minutes: on Max's MacBook,
+2026-11-19, `scripts/fuzz-mutants.sh ~/sheets-evals/wave2/fuzz-mutants` took
+55 s in all, building each copy included, and exited 0. The logs are in
+`~/sheets-evals/wave2/fuzz-mutants/`. Each finding, as shrunk (replay one on
+the mutated copy with `SHEETS_FUZZ=long SHEETS_FUZZ_REPRO=<seed>`):
+
+| mutant | found after | finding | shrunk repro |
+|---|---|---|---|
+| `wp12-sheet-rows` | 13 s | `long set kinds 700123` | `sheets set book.xlsx 'Q1 "draft"!F7' '=IF(N("p")=0,IF(B7>3,"big",""))' 'Q1 "draft"!B9' … 'Q1 "draft"!A1' '=IF(N("d")=0,SEQUENCE(2))'`: a set on a new sheet that spills loses F7's formula |
+| `rows-insert-arrays` | 1 s | `long cols-insert kinds 700000` | a batch that sets cells on `Backup` and renames it, then `sheets cols insert book.xlsx 'Q 2027!U' -n 2`: `Data!I2`, `=B3:B4*2`, is stored as a dynamic array |
+| `rewrite-loses-kind` | 2 s | `long move kinds 700012` | `sheets move book.xlsx 'Data!C2:C3' 'Plan!H6'`: the formula reading them, rewritten `=Plan!H6:H7*2`, is stored as a dynamic array |
+| `one-cell-array-moved-plain` | 1 s | `long copy kinds 700005` | `sheets copy book.xlsx 'Summary!D2:D3' 'Summary!D2'`: the one-cell legacy array in D2 is stored plain |
+| `move-leaves-formula` | 1 s | `long move kinds 700006` | `sheets move book.xlsx 'Data!I2:J3' 'Old!A5'`: J3 still holds its legacy array |
+| `empty-text-lost` | 2 s | `long write editors 700017` | `sheets cols delete book.xlsx 'Data!Q:Q'`, then a write: `Data!L2` holds an empty text in the streaming editor's file, no result in the full editor's |
+| `part-of-legacy-array` | 13 s | `long move kinds 700119` | `sheets move book.xlsx 'Data!T2' 'Data!G7'`, the first cell of the legacy array T2:T3: G7 is stored plain |
+
+The default run (seed 1, 2,000 edits) finds each of the seven as well, with
+7, 496, 20, 19, 13, 72 and 3 new findings in the order above
+(`move-leaves-formula`'s first is `script kinds 100010`:
+`ws.getRange("J4").moveTo("M3")` leaves J4's legacy array behind). Of WP-12's
+seven, two are the reach invariant's, and the first by sequence (`set reach
+100026`, `do reach 100091`; then `sheet-copy xml 100029` and the others).
+
+### Earlier mutations
 
 Besides the must-refuse cases, mutations of sheets were put into a clean
 copy of the committed tree (never into the repo), each to see the default run

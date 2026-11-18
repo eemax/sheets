@@ -229,18 +229,18 @@ func TestFixed(t *testing.T) {
 
 // TestStopAtNew: a run with Stop ends at the first finding it says (the
 // mutants' runs stop at the first one known.txt does not list), and Run
-// says when it found it.
+// says when it found it. (Every command here deletes the workbook: each
+// sequence ends at its first edit, a finding of the invariant missing.)
 func TestStopAtNew(t *testing.T) {
-	if raceOn {
-		t.Skip("the step judges the same code under -race; this is Run's loop")
-	}
 	pool := loadPool(t)
-	res, err := Run(pool, Options{Seed: 1, Edits: 2000, Dir: t.TempDir(), Stop: func(Finding) bool { return true }})
+	afterCommand(t, func([]string) bool { return true }, func(path string) { os.Remove(path) })
+	stops := 0
+	res, err := Run(pool, Options{Seed: 1, Edits: 2000, Dir: t.TempDir(), Stop: func(Finding) bool { stops++; return stops == 3 }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Stopped || len(res.Findings) != 1 || res.Edits >= 2000 {
-		t.Fatalf("stopped %v after %d edits with %d findings", res.Stopped, res.Edits, len(res.Findings))
+	if !res.Stopped || len(res.Findings) != 3 || res.Sequences != 3 || res.Edits >= 2000 {
+		t.Fatalf("stopped %v after %d edits in %d sequences with %d findings", res.Stopped, res.Edits, res.Sequences, len(res.Findings))
 	}
 	if f := res.Findings[0]; f.After <= 0 || f.After > res.Elapsed || f.Long || f.Pool != 0 {
 		t.Errorf("the finding %s: after %s of %s, long %v, pool %d", f.Signature, f.After, res.Elapsed, f.Long, f.Pool)
@@ -269,7 +269,7 @@ func TestPoolsFallBack(t *testing.T) {
 	if raceOn {
 		return
 	}
-	res, err := Run(pool, Options{Seed: 1, Edits: 60, Dir: t.TempDir(), Pools: ps.For})
+	res, err := Run(pool, Options{Seed: 1, Edits: 12, Dir: t.TempDir(), Pools: ps.For})
 	if err != nil {
 		t.Fatal(err)
 	}
