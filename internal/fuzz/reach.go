@@ -168,6 +168,17 @@ func (rc *reach) cell(o origin) grid.Cell {
 	return grid.Cell{}
 }
 
+// shown are the texts a replace may read a value of the workbook before the
+// edit as: as sheets shows it (its number format: a date as 2026-07-01, a
+// percent as 12%), and a number as it is with no format too.
+func (rc *reach) shown(c grid.Cell) []string {
+	out := []string{grid.Display(&c, rc.before.FormatOf(&c), rc.before.Date1904)}
+	if c.Kind == grid.Number {
+		out = append(out, grid.ShowNumber(c.Num), grid.FormatNumber(c.Num))
+	}
+	return out
+}
+
 // shiftLine is where line p (a row, or a column) goes when n lines are
 // inserted before at, or (n == 0) lines at..to are deleted; false when it is
 // deleted.

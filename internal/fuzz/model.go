@@ -444,9 +444,13 @@ func lineSpan(spec string, cols bool) (sheet string, lo, hi int, err error) {
 // replace puts the cells a replace may change in the reach: in its target
 // (a sheet, or every sheet: a range or a table's column is taken as every
 // sheet), the values that hold what it finds as sheets shows them, ignoring
-// case, and with --formulas the formulas whose text holds it. A number or a
-// date is shown formatted (2026-07-01, 1,200), so a find that a formatted
-// number can hold may match any number: the model is cautious, as sortOK is.
+// case, and with --formulas the formulas whose text holds it. A value is
+// matched as sheets' replace reads it (grid.Display: a date as 2026-07-01,
+// 12%), and a number also as it reads with no format, so the whole find must
+// be in one of them. (The first version put every number in the reach for a
+// find holding a digit, a space, an e or a dot, seven of the generator's 15
+// finds among them: a slip that wiped numbers it cannot match was no finding,
+// fuzzer-long's audit, f1.4.)
 func (m *model) replace(w []string) {
 	if m.r == nil || len(w) < 2 {
 		return
@@ -457,7 +461,6 @@ func (m *model) replace(w []string) {
 	if len(w) > 2 && !strings.HasPrefix(w[2], "--") && m.isSheet(w[2]) {
 		scope = []string{strings.ToLower(w[2])}
 	}
-	number := strings.ContainsAny(find, "0123456789-+.,/:%$ e")
 	for _, k := range scope {
 		m.r.touchCells(k, func(o origin) bool {
 			c := m.r.cell(o)
@@ -466,12 +469,13 @@ func (m *model) replace(w []string) {
 				return strings.Contains(strings.ToLower(c.Formula), find)
 			case c.Formula != "":
 				return false
-			case c.Kind == grid.Number:
-				return number
-			case c.Kind == grid.Bool:
-				return strings.Contains(strconv.FormatBool(c.Bool), find)
 			}
-			return strings.Contains(strings.ToLower(c.Text), find)
+			for _, shown := range m.r.shown(c) {
+				if strings.Contains(strings.ToLower(shown), find) {
+					return true
+				}
+			}
+			return false
 		})
 	}
 }

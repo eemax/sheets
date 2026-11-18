@@ -165,6 +165,15 @@ func TestReach(t *testing.T) {
 			after: m{"Data!A1": "'Fig pie", "Data!A2": "'Pear", "Data!A3": "5"}},
 		{name: "replace a text it does not find", before: m{"Data!A1": "'Apple pie", "Data!A2": "'Pear"}, edit: edit("replace", "apple", "Fig"),
 			after: m{"Data!A1": "'Fig pie", "Data!A2": "'Fig"}, wantErr: `Data!A2: outside the edit's reach, it held text "Pear"`},
+		// The numbers a replace may change are those whose text holds the
+		// whole find (fuzzer-long's audit, f1.4: any find with a letter e, a
+		// space or a dot put every number in the reach).
+		{name: "replace wipes numbers it cannot match", before: m{"Data!A1": "'Apple", "Data!B1": "1200", "Data!C1": "7"}, edit: edit("replace", "Apple", "Pear"),
+			after: m{"Data!A1": "'Pear"}, wantErr: "Data!B1: outside the edit's reach, it held number 1200, and holds nothing now"},
+		{name: "replace a digit in a number", before: m{"Data!A1": "1200", "Data!A2": "7"}, edit: edit("replace", "2", "5"),
+			after: m{"Data!A1": "1500", "Data!A2": "7"}},
+		{name: "replace a digit wipes a number without it", before: m{"Data!A1": "1200", "Data!A2": "7"}, edit: edit("replace", "2", "5"),
+			after: m{"Data!A1": "1500"}, wantErr: "Data!A2: outside the edit's reach, it held number 7, and holds nothing now"},
 		{name: "replace in formulas", before: m{"Data!A1": "=SUM(B1:B2)|3", "Data!A2": "=MAX(B1:B2)|2"}, edit: edit("replace", "SUM(", "PRODUCT(", "--formulas"),
 			after: m{"Data!A1": "=PRODUCT(B1:B2)|2", "Data!A2": "=MAX(B1:B2)|2"}},
 		{name: "sort a range", before: m{"Data!A2": "2", "Data!A3": "1", "Data!B9": "=A2|2"}, edit: edit("sort", "Data!A2:A3", "A"),
@@ -351,6 +360,24 @@ func TestReachFormats(t *testing.T) {
 		got := mo.reached(tc.after)
 		if tc.wantErr == "" && got != "" || tc.wantErr != "" && !strings.Contains(got, tc.wantErr) {
 			t.Errorf("%s: the model says %q, want %q", tc.name, got, tc.wantErr)
+		}
+	}
+	// A replace reads a date as sheets shows it: 46022 shown as 2025-12-31
+	// is in the reach of a find of 2025-12, and not of one it cannot hold.
+	for _, tc := range []struct {
+		find    string
+		wantErr string
+	}{
+		{"2025-12", ""},
+		{"Apple", "Data!A1: outside the edit's reach, it held number 46022"},
+	} {
+		mo := newModel(book(1, 0))
+		mo.r = newReach(book(1, 0))
+		mo.apply(Edit{Class: "replace", Args: []string{"replace", FileArg, tc.find, "x"}})
+		after := book(1, 0)
+		after.Sheet("Data").Set(1, 1, grid.Cell{Kind: grid.Text, Text: "x"})
+		if got := mo.reached(after); tc.wantErr == "" && got != "" || tc.wantErr != "" && !strings.Contains(got, tc.wantErr) {
+			t.Errorf("replace %s over a date: the model says %q, want %q", tc.find, got, tc.wantErr)
 		}
 	}
 	// Formats renumbered (another index, the same format) are the same.
