@@ -7,7 +7,8 @@ import (
 )
 
 // ParseKnown reads known.txt: one signature per line, "<edit class>
-// <invariant> <seed>", with # starting a comment.
+// <invariant> <seed>", with # starting a comment. A line that starts with
+// "long" is a finding of long mode, on the pool it generated (see PoolSeed).
 func ParseKnown(text string) (map[Signature]bool, error) {
 	known := map[Signature]bool{}
 	for i, line := range strings.Split(text, "\n") {
@@ -17,6 +18,10 @@ func ParseKnown(text string) (map[Signature]bool, error) {
 		f := strings.Fields(line)
 		if len(f) == 0 {
 			continue
+		}
+		long := f[0] == "long"
+		if long {
+			f = f[1:]
 		}
 		if len(f) != 3 {
 			return nil, fmt.Errorf("known.txt:%d: want <edit class> <invariant> <seed>, got %q", i+1, line)
@@ -31,7 +36,7 @@ func ParseKnown(text string) (map[Signature]bool, error) {
 		if !knownInvariant(f[1]) {
 			return nil, fmt.Errorf("known.txt:%d: no invariant %q", i+1, f[1])
 		}
-		known[Signature{f[0], f[1], seed}] = true
+		known[Signature{f[0], f[1], seed, long}] = true
 	}
 	return known, nil
 }

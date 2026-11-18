@@ -38,6 +38,10 @@ byte: the dates in them (the document properties, and the time of each part
 in the package) are fixed.
 
 --seed changes the pool; --count the number of files (default 40).
+--pool-only writes the pool and no must-refuse cases: the fuzzer's long mode
+(SHEETS_FUZZ=long) makes a fresh pool this way from each seed it runs, and
+the must-refuse cases are made from the committed pool's files (another seed
+may hold none that fits a case).
 """
 import argparse
 import datetime
@@ -580,6 +584,7 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--seed", type=int, default=20261118)
     ap.add_argument("--count", type=int, default=40)
+    ap.add_argument("--pool-only", action="store_true", help="no must-refuse cases (long mode's fresh pools)")
     args = ap.parse_args()
     pool = os.path.join(args.out, "pool")
     os.makedirs(pool, exist_ok=True)
@@ -599,7 +604,8 @@ def main():
             raise SystemExit(f"{path}: kinds stored unlike their markers:\n  " + "\n  ".join(bad))
         fix_dates(path)
         made.append(path)
-    refuse_cases(made, os.path.join(args.out, "refuse"))
+    if not args.pool_only:
+        refuse_cases(made, os.path.join(args.out, "refuse"))
     total = sum(os.path.getsize(p) for p in made)
     print(f"{len(made)} workbooks, {total} bytes, in {pool}")
 

@@ -397,7 +397,8 @@ func TestDefaultOptions(t *testing.T) {
 }
 
 // TestFuzz is the default mode. SHEETS_FUZZ_REPRO=<seed> replays one
-// sequence instead, printing every edit.
+// sequence instead, printing every edit; SHEETS_FUZZ=long runs long mode (see
+// fuzzLong).
 func TestFuzz(t *testing.T) {
 	t.Setenv("SHEETS_STREAM", "")
 	pool := loadPool(t)
@@ -409,12 +410,31 @@ func TestFuzz(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	long := false
+	switch v := os.Getenv("SHEETS_FUZZ"); v {
+	case "":
+	case "long":
+		long = true
+	default:
+		t.Fatalf("SHEETS_FUZZ=%q: the one mode it names is long", v)
+	}
 	if v := os.Getenv("SHEETS_FUZZ_REPRO"); v != "" {
 		seed, err := strconv.ParseUint(v, 10, 64)
 		if err != nil {
 			t.Fatalf("SHEETS_FUZZ_REPRO=%q: %v", v, err)
 		}
-		f, err := Replay(pool, seed, t.TempDir(), 0, func(s string) { t.Log(s) })
+		files := pool
+		var p uint64
+		if long {
+			// The sequence's pool, made again from its seed.
+			ps := &Pools{Root: repoRoot, Dir: t.TempDir(), Committed: pool}
+			p = PoolSeed(seed)
+			if files = ps.Files(p); ps.Failed != "" {
+				t.Fatalf("cannot make the pool of sequence %d: %s", seed, ps.Failed)
+			}
+			t.Logf("sequence %d starts from pool %d: %s", seed, p, GenerateCommand(p, "DIR"))
+		}
+		f, err := Replay(files, seed, t.TempDir(), 0, func(s string) { t.Log(s) })
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -422,11 +442,16 @@ func TestFuzz(t *testing.T) {
 			t.Logf("seed %d: no finding", seed)
 			return
 		}
-		g, err := Shrink(pool, *f, t.TempDir())
+		f.Pool, f.Long = p, p != 0
+		g, err := Shrink(files, *f, t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Errorf("%s(known: %v)", g.Report(), known[f.Signature])
+		return
+	}
+	if long {
+		fuzzLong(t, pool, known)
 		return
 	}
 
@@ -451,47 +476,17 @@ func TestFuzz(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := map[Signature]bool{}
-	var lines []string
-	newFindings := 0
-	for _, f := range res.Findings {
-		seen[f.Signature] = true
-		if known[f.Signature] {
-			lines = append(lines, "known "+f.Signature.String())
-			continue
-		}
-		newFindings++
-		lines = append(lines, "NEW   "+f.Signature.String())
-		// Shrinking replays the edits many times: the first few are shrunk,
-		// the rest printed as the run made them.
-		g, how := f, "as made"
-		if f.Invariant == "hang" {
-			how = "as made: a hang is not shrunk, and the run stopped there"
-		} else if newFindings <= maxShrunk {
-			if g, err = Shrink(pool, f, o.Dir); err != nil {
-				t.Fatal(err)
-			}
-			how = "shrunk"
-		}
-		t.Errorf("a finding not in known.txt, %s (replay: SHEETS_FUZZ_REPRO=%d go test ./internal/fuzz -run 'TestFuzz$' -v):\n%s", how, f.Seed, g.Report())
-	}
-	sort.Strings(lines)
+	newFindings := judgeFindings(t, mode, res, known, func(uint64) []Workbook { return pool }, o.Dir, "")
 	t.Logf("fuzz %s: %d edits (%d applied) in %d sequences, %.1fs, seed %d; %d findings, %d new",
 		mode, res.Edits, res.Applied, res.Sequences, res.Elapsed.Seconds(), o.Seed, len(res.Findings), newFindings)
 	if res.Capped {
 		t.Logf("fuzz %s: the time cap (%s) stopped the run after %d of %d edits", mode, o.Time, res.Edits, o.Edits)
 	}
-	for _, l := range lines {
-		t.Log(l)
-	}
+	logFindings(t, res, known)
 	if res.Hung {
 		return // the run stopped at the edit that hung: the counts below are no judge
 	}
-	var forms []string
-	for _, f := range Results {
-		forms = append(forms, fmt.Sprintf("%s %d", f, res.Saved[f]))
-	}
-	t.Logf("fuzz %s: saved files holding a formula result of each form: %s; %d edits removed a dynamic array and were made again", mode, strings.Join(forms, ", "), res.Repeated)
+	logCounts(t, mode, res, !custom && !raceOn)
 	if !custom {
 		// The invariants must have been put to every type of result and to
 		// shared formulas, or the pool and the edits have lost them.
@@ -501,6 +496,77 @@ func TestFuzz(t *testing.T) {
 			}
 		}
 	}
+	if !raceOn {
+		// Under -race the repeats are 3, and may miss what 20 see.
+		logFixed(t, known, res, o.Seed, false)
+	}
+	if !custom && !raceOn && res.Edits < defaultEdits {
+		t.Errorf("made %d edits, want %d", res.Edits, defaultEdits)
+	}
+	if !custom && raceOn && res.Edits < raceMinEdits {
+		t.Errorf("made %d edits under -race, want at least %d", res.Edits, raceMinEdits)
+	}
+}
+
+// repoRoot is the repository, from the package's directory (go test runs a
+// package's tests there).
+const repoRoot = "../.."
+
+// judgeFindings fails the test on each finding known.txt does not list,
+// shrinking the first maxShrunk (pool gives the files of a pool, by seed),
+// and returns how many there are. env goes before the line that replays one
+// (long mode's SHEETS_FUZZ=long).
+func judgeFindings(t *testing.T, mode string, res *Result, known map[Signature]bool, pool func(uint64) []Workbook, dir, env string) int {
+	t.Helper()
+	newFindings := 0
+	for _, f := range res.Findings {
+		if known[f.Signature] {
+			continue
+		}
+		newFindings++
+		// Shrinking replays the edits many times: the first few are shrunk,
+		// the rest printed as the run made them.
+		g, how := f, "as made"
+		if f.Invariant == "hang" {
+			how = "as made: a hang is not shrunk, and the run stopped there"
+		} else if newFindings <= maxShrunk {
+			var err error
+			if g, err = Shrink(pool(f.Pool), f, dir); err != nil {
+				t.Fatal(err)
+			}
+			how = "shrunk"
+		}
+		t.Errorf("a finding not in known.txt, %s, after %.0fs (replay: %sSHEETS_FUZZ_REPRO=%d go test ./internal/fuzz -run 'TestFuzz$' -v):\n%s", how, f.After.Seconds(), env, f.Seed, g.Report())
+	}
+	return newFindings
+}
+
+// logFindings logs each finding's signature, known or new, in order.
+func logFindings(t *testing.T, res *Result, known map[Signature]bool) {
+	t.Helper()
+	var lines []string
+	for _, f := range res.Findings {
+		if known[f.Signature] {
+			lines = append(lines, "known "+f.Signature.String())
+		} else {
+			lines = append(lines, "NEW   "+f.Signature.String())
+		}
+	}
+	sort.Strings(lines)
+	for _, l := range lines {
+		t.Log(l)
+	}
+}
+
+// logCounts logs what the run put the invariants to, and fails a run held to
+// the minimums (strict) that falls short of one.
+func logCounts(t *testing.T, mode string, res *Result, strict bool) {
+	t.Helper()
+	var forms []string
+	for _, f := range Results {
+		forms = append(forms, fmt.Sprintf("%s %d", f, res.Saved[f]))
+	}
+	t.Logf("fuzz %s: saved files holding a formula result of each form: %s; %d edits removed a dynamic array and were made again", mode, strings.Join(forms, ", "), res.Repeated)
 	streamTotal, takenTotal := 0, 0
 	var by []string
 	for _, c := range Classes {
@@ -511,36 +577,49 @@ func TestFuzz(t *testing.T) {
 		}
 	}
 	t.Logf("fuzz %s: the streaming editor could take %d of %d edits itself (%s); the others are full-editor code in both copies", mode, streamTotal, takenTotal, strings.Join(by, ", "))
-	if !custom && !raceOn && streamTotal < minStreamed {
+	if strict && streamTotal < minStreamed {
 		t.Errorf("only %d edits could be taken by the streaming editor, want %d: the pool or the edits hand too much to the full editor (see README, The streaming editor)", streamTotal, minStreamed)
 	}
 	var escaped []string
 	for _, k := range EscapeKinds {
 		escaped = append(escaped, fmt.Sprintf("%s %d", k, res.Escaped[k]))
-		if !custom && !raceOn && res.Escaped[k] < minEscaped {
+		if strict && res.Escaped[k] < minEscaped {
 			t.Errorf("the streaming editor wrote only %d texts with %s in them, want %d: the edits no longer put its text writer to what it must escape", res.Escaped[k], k, minEscaped)
 		}
 	}
 	t.Logf("fuzz %s: texts the streaming editor could write itself, by what they hold: %s", mode, strings.Join(escaped, ", "))
 	t.Logf("fuzz %s: sorts: %d made, %d taken by both editors, %d refused by both", mode, res.Made["sort"], res.Taken["sort"], res.Made["sort"]-res.Taken["sort"])
-	if !custom && !raceOn && (res.Taken["sort"] < minSorts || res.Taken["sort"] < res.Made["sort"]-res.Taken["sort"]) {
+	if strict && (res.Taken["sort"] < minSorts || res.Taken["sort"] < res.Made["sort"]-res.Taken["sort"]) {
 		t.Errorf("of %d sorts, %d were taken by both editors, want at least %d and at least as many as were refused: the sort class is barely judged (see sortable in edits.go)", res.Made["sort"], res.Taken["sort"], minSorts)
 	}
-	var stale []string
+}
+
+// fixed are the entries of known.txt for a run's seed (long ones or not)
+// whose sequence the run made in full, without making the finding: fixed,
+// or no longer reached. They are reported, and never fail a run.
+func fixed(known map[Signature]bool, res *Result, seed uint64, long bool) []string {
+	seen := map[Signature]bool{}
+	for _, f := range res.Findings {
+		seen[f.Signature] = true
+	}
+	var out []string
 	for s := range known {
-		if !seen[s] {
-			stale = append(stale, s.String())
+		if s.Long != long || s.Seed/100000 != seed || seen[s] {
+			continue
+		}
+		i := int(s.Seed % 100000)
+		if i < res.Sequences-1 || i == res.Sequences-1 && !res.Truncated {
+			out = append(out, s.String())
 		}
 	}
-	sort.Strings(stale)
-	if len(stale) > 0 && !res.Capped && !custom {
-		t.Logf("known.txt lists %d findings this run did not make (fixed? then remove them): %s", len(stale), strings.Join(stale, "; "))
-	}
-	if !custom && !raceOn && res.Edits < defaultEdits {
-		t.Errorf("made %d edits, want %d", res.Edits, defaultEdits)
-	}
-	if !custom && raceOn && res.Edits < raceMinEdits {
-		t.Errorf("made %d edits under -race, want at least %d", res.Edits, raceMinEdits)
+	sort.Strings(out)
+	return out
+}
+
+func logFixed(t *testing.T, known map[Signature]bool, res *Result, seed uint64, long bool) {
+	t.Helper()
+	if fx := fixed(known, res, seed, long); len(fx) > 0 {
+		t.Logf("fixed: known.txt lists %d findings whose sequences this run made in full without them (fixed? then remove them): %s", len(fx), strings.Join(fx, "; "))
 	}
 }
 
