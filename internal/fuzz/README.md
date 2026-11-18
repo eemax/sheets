@@ -161,25 +161,32 @@ findings. The long mode is fuzzer-long's.
 
 ## Timings
 
-On Max's MacBook (M4), 2026-11-18, `time scripts/check.sh full`. The bar is
-135 s.
+On Max's MacBook (M4), 2026-11-18, `scripts/check.sh full`, wall time. The
+bar is 135 s. Other sessions were running tests on the Mac too (load
+average about 5), so rounds 2 and 3 alternate, main then branch; round 1's
+two were run apart.
 
-| | check full | plain fuzz | race fuzz |
-|---|---|---|---|
-| main (99ba275), without the fuzzer | 76.6 s | — | — |
-| with the fuzzer | 94.8 s | 2,000 edits, 22.9 s | 203 edits, 47.5 s |
+| round | main (99ba275), without the fuzzer | with the fuzzer | its plain fuzz | its race fuzz |
+|---|---|---|---|---|
+| 1 | 76.6 s | 94.8 s | 22.9 s | 50.3 s |
+| 2 | 77 s | 107 s | 36.8 s | 53.6 s |
+| 3 | 75 s | 87 s | 24.8 s | 47.2 s |
 
+- **Edit counts:** the plain run always makes 2,000 edits.
 - **The race count** is from the race step run with `-v`
   (`go test -race -count=1 -v ./...`), under the same load as in check
-  full. Alone, `go test -race -v ./internal/fuzz/` makes 259 edits.
+  full: 203 edits in 42 s. Alone, `go test -race -v ./internal/fuzz/` makes
+  226 to 259. It never makes fewer than 200: past the cap, the run goes on
+  until 200 are made.
 - **Plain** `go test -count=1 -v ./internal/fuzz/` makes 2,000 edits
-  (1,654 applied) in 322 sequences, about 21 s, with 33 findings, all
+  (1,654 applied) in 322 sequences, in about 21 s, with 33 findings, all
   known. Two runs print the same.
-
+- **What the fuzzer adds** is its plain run, 12 to 30 s. The plain step's
+  other packages take at most 7 s. The race fuzz runs beside `cmd/sheets`
+  and `internal/xlsx`, whose race runs take 50 to 61 s, so the race step
+  takes no longer than on main.
 - **Plain:** an edit takes about 11 ms, most of it sheets' own file writes.
 - **Under `-race`:** an edit takes about 160 ms.
-- **In check full**, the plain fuzz is the plain step's longest package.
-  The race fuzz runs beside `cmd/sheets`, whose race run takes about a
-  minute.
 - **If check full ever nears 135 s:** lower the race cap first, never
-  below 200 edits. Never weaken the invariants.
+  below 200 edits. If 2,000 plain edits still don't fit, report the
+  numbers. Never weaken the invariants.
