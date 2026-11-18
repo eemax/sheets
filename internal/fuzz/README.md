@@ -277,9 +277,10 @@ To regenerate the pool:
 - **The versions are pinned:** a newer release may write other bytes, which
   would change every edit each seed makes and need `known.txt` made again.
   The script refuses a release but these two.
-- **The output is the same each time:** byte for byte, the dates in the files
-  (openpyxl's `modified` stamp, which it writes over its property) are fixed.
-  Regenerating with the pinned versions changes nothing.
+- **The output is the same each time:** byte for byte. The dates in the
+  files are fixed: the document properties (openpyxl writes its own
+  `modified` stamp over the one it is given) and the time of each part in
+  the package. Regenerating with the pinned versions changes nothing.
 - **The script reads each file back** and refuses one whose stored kinds
   don't match their markers. XlsxWriter, for one, stores any formula calling
   SEQUENCE as a dynamic array.
