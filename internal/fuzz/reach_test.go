@@ -179,6 +179,47 @@ func TestReach(t *testing.T) {
 			after: m{"Data!A1": "5", "Other!A1": "1"}, wantErr: "the edit made a sheet, Other, it does not name"},
 		{name: "sheet rename, and what reads it", before: m{"Data!A1": "1", "Plan!A1": "=Data!A1|1"}, edit: edit("sheet", "rename", "Data", "Old"),
 			after: m{"Old!A1": "1", "Plan!A1": "=Old!A1|1"}},
+		// References rewritten: only as the edit's shift puts them (the
+		// auditor's slip: unqualified references read as on the moved block's
+		// sheet, fuzzer-long's audit f0.2).
+		{name: "a move on another sheet leaves a formula's own references", before: m{"Data!B6": "5", "Data!G6": "=B6*2|10", "Plan!B6": "1"}, edit: edit("move", "Plan!B6", "Plan!E6"),
+			after: m{"Data!B6": "5", "Data!G6": "=B6*2|10", "Plan!E6": "1"}},
+		{name: "a move on another sheet rewrites a formula's own references", before: m{"Data!B6": "5", "Data!G6": "=B6*2|10", "Plan!B6": "1"}, edit: edit("move", "Plan!B6", "Plan!E6"),
+			after: m{"Data!B6": "5", "Data!G6": "=E6*2|0", "Plan!E6": "1"}, wantErr: "Data!G6: outside the edit's reach, its formula =B6*2 is rewritten as =E6*2, and the edit's shift of references gives =B6*2"},
+		{name: "a move to another sheet, and what reads it", before: m{"Data!A1": "1", "Data!B5": "=A1*2+Data!A1|3"}, edit: edit("move", "Data!A1", "Plan!C3"),
+			after: m{"Plan!C3": "1", "Data!B5": "=Plan!C3*2+'Plan'!C3|3"}},
+		{name: "a move leaves what reads it behind", before: m{"Data!A1": "1", "Data!B5": "=A1*2|2"}, edit: edit("move", "Data!A1", "Data!C1"),
+			after: m{"Data!C1": "1", "Data!B5": "=A1*2|0"}, wantErr: "Data!B5: outside the edit's reach, its formula =A1*2 is left as it was, and the edit's shift of references gives =C1*2"},
+		{name: "a move lands on cells a formula reads", before: m{"Data!A1": "1", "Data!C1": "3", "Data!B5": "=C1*2+$C$1|9"}, edit: edit("move", "Data!A1", "Data!C1"),
+			after: m{"Data!C1": "1", "Data!B5": "=#REF!*2+#REF!|0"}},
+		{name: "a move takes part of a range a formula reads", before: m{"Data!A1": "1", "Data!A2": "2", "Data!B5": "=SUM(A1:A2)|3"}, edit: edit("move", "Data!A1", "Data!C1"),
+			after: m{"Data!A2": "2", "Data!C1": "1", "Data!B5": "=SUM(A1:A2)|2"}},
+		{name: "a move takes a range a formula reads, its dollars too", before: m{"Data!A1": "1", "Data!A2": "2", "Data!B5": "=SUM($A$1:A2)|3"}, edit: edit("move", "Data!A1:A2", "Data!C3"),
+			after: m{"Data!C3": "1", "Data!C4": "2", "Data!B5": "=SUM($C$3:C4)|3"}},
+		{name: "a move drops a reference's dollars", before: m{"Data!A1": "1", "Data!B5": "=$A$1*2|2"}, edit: edit("move", "Data!A1", "Data!C1"),
+			after: m{"Data!C1": "1", "Data!B5": "=C1*2|2"}, wantErr: "is rewritten as =C1*2, and the edit's shift of references gives =$C$1*2"},
+		{name: "rows insert grows a range across it", before: m{"Data!A1": "1", "Data!A2": "2", "Data!B9": "=SUM(A1:A2)|3", "Plan!A1": "=Data!A2+A2|2"}, edit: edit("rows", "insert", "Data!2"),
+			after: m{"Data!A1": "1", "Data!A3": "2", "Data!B10": "=SUM(A1:A3)|3", "Plan!A1": "=Data!A3+A2|2"}},
+		{name: "rows insert leaves a reference", before: m{"Data!A1": "1", "Data!A2": "2", "Data!B9": "=SUM(A1:A2)|3"}, edit: edit("rows", "insert", "Data!2"),
+			after: m{"Data!A1": "1", "Data!A3": "2", "Data!B10": "=SUM(A1:A2)|1"}, wantErr: "Data!B10: outside the edit's reach, its formula =SUM(A1:A2) is left as it was, and the edit's shift of references gives =SUM(A1:A3)"},
+		{name: "rows insert shifts another sheet's own references", before: m{"Data!A1": "1", "Data!A2": "2", "Plan!A1": "=Data!A2+A2|2"}, edit: edit("rows", "insert", "Data!2"),
+			after: m{"Data!A1": "1", "Data!A3": "2", "Plan!A1": "=Data!A3+A3|2"}, wantErr: "the edit's shift of references gives =Data!A3+A2"},
+		{name: "rows delete shrinks a range by one too many", before: m{"Data!A1": "1", "Data!A2": "2", "Data!A3": "3", "Data!B9": "=SUM(A1:A3)|6"}, edit: edit("rows", "delete", "Data!2"),
+			after: m{"Data!A1": "1", "Data!A2": "3", "Data!B8": "=SUM(A1:A1)|1"}, wantErr: "is rewritten as =SUM(A1:A1), and the edit's shift of references gives =SUM(A1:A2)"},
+		{name: "rows delete takes a range whole", before: m{"Data!A1": "1", "Data!A2": "2", "Data!A3": "3", "Data!B9": "=SUM(A2:A3)+A1|6"}, edit: edit("rows", "delete", "Data!2:3"),
+			after: m{"Data!A1": "1", "Data!B7": "=SUM(#REF!)+A1|0"}},
+		{name: "cols delete, and another sheet's references", before: m{"Data!A1": "1", "Data!B1": "2", "Plan!B1": "3", "Plan!C1": "=Data!B1+B1|5"}, edit: edit("cols", "delete", "Plan!A"),
+			after: m{"Data!A1": "1", "Data!B1": "2", "Plan!A1": "3", "Plan!B1": "=Data!B1+A1|5"}},
+		{name: "cols delete shifts a reference to another sheet", before: m{"Data!A1": "1", "Data!B1": "2", "Plan!B1": "3", "Plan!C1": "=Data!B1+B1|5"}, edit: edit("cols", "delete", "Plan!A"),
+			after: m{"Data!A1": "1", "Data!B1": "2", "Plan!A1": "3", "Plan!B1": "=Data!A1+A1|4"}, wantErr: "the edit's shift of references gives =Data!B1+A1"},
+		{name: "sheet rename renames a reference to another sheet", before: m{"Data!A1": "1", "Plan!A1": "=Data!A1+Plan!A2|1", "Plan!A2": "0"}, edit: edit("sheet", "rename", "Data", "Old"),
+			after: m{"Old!A1": "1", "Plan!A1": "=Old!A1+Old!A2|1", "Plan!A2": "0"}, wantErr: "the edit's shift of references gives =Old!A1+Plan!A2"},
+		{name: "a batch moves, then inserts", before: m{"Data!A1": "1", "Data!B5": "=A1*2|2"},
+			edit:  Edit{Class: "do", Args: []string{"do", FileArg}, Stdin: "move Data!A1 Data!C1\nrows insert Data!1\n"},
+			after: m{"Data!C2": "1", "Data!B6": "=C2*2|2"}},
+		{name: "a script moves, and what reads it is left", before: m{"Data!A1": "1", "Data!B5": "=A1*2|2"},
+			edit:  script(`ws.getRange("A1").moveTo("E1");`),
+			after: m{"Data!E1": "1", "Data!B5": "=A1*2|0"}, wantErr: "the edit's shift of references gives =E1*2"},
 		{name: "a batch", before: m{"Data!A1": "1", "Data!A2": "2", "Data!A5": "5"},
 			edit:  Edit{Class: "do", Args: []string{"do", FileArg}, Stdin: "rows insert Data!2\nset Data!A2 9\nclear Data!A1\n"},
 			after: m{"Data!A2": "9", "Data!A3": "2", "Data!A6": "5"}},
@@ -244,5 +285,81 @@ func TestRefToken(t *testing.T) {
 	}
 	if masked("B3*2") == masked("B3*3") || masked("SUM(B2:B4)") == masked("MAX(B2:B4)") {
 		t.Error("a formula rewritten other than in its references reads the same")
+	}
+	// What refsOf reads as a reference, and what not: a string, a function or
+	// a name holding letters and digits.
+	for _, tc := range []struct{ f, want string }{
+		{`LOG10(B2)+ATAN2(1,2)`, `B2`},
+		{`"A1"&B2&"x""C3"`, `B2`},
+		{`'Bob''s Plan'!$A$1:B3*2`, `bob's plan!$A$1:B3`},
+		{`Data!#REF!+#REF!`, `data!#REF! #REF!`},
+		{`_xlfn.SEQUENCE(2)+SUM(Units)+Rate`, ``},
+		{`Åäö!B2+'Q1 "draft"'!C9`, `åäö!B2 q1 "draft"!C9`},
+		{`b2+XFD1+XFE1+A1048577`, `B2 XFD1`},
+	} {
+		var got []string
+		for _, r := range refsOf(tc.f) {
+			s := ""
+			if r.sheet != "" {
+				s = r.sheet + "!"
+			}
+			switch {
+			case r.bad:
+				s += "#REF!"
+			case r.rng:
+				s += r.a.String() + ":" + r.b.String()
+			default:
+				s += r.a.String()
+			}
+			got = append(got, s)
+		}
+		if g := strings.Join(got, " "); g != tc.want {
+			t.Errorf("refsOf(%s) = %s, want %s", tc.f, g, tc.want)
+		}
+	}
+}
+
+// TestReachFormats: a cell outside the edit's reach keeps its number format
+// (fuzzer-long's audit, f0.5: a date shown as 46022 passed); one in it may
+// take another.
+func TestReachFormats(t *testing.T) {
+	book := func(a1, b1 uint16) *grid.Workbook {
+		wb := reachBook(map[string]string{"Data!A1": "46022", "Data!B1": "1"})
+		wb.Formats = []grid.Format{{}, {Kind: grid.Date, Code: "yyyy-mm-dd"}, {Kind: grid.Decimal, Decimals: 2, Code: "0.00"}}
+		s := wb.Sheet("Data")
+		for col, f := range []uint16{a1, b1} {
+			c := s.Get(1, col+1)
+			c.Fmt = f
+			s.Set(1, col+1, c)
+		}
+		return wb
+	}
+	set := Edit{Class: "set", Args: []string{"set", FileArg, "Data!B1", "1"}}
+	for _, tc := range []struct {
+		name    string
+		after   *grid.Workbook
+		wantErr string
+	}{
+		{"kept", book(1, 0), ""},
+		{"the cell set takes another", book(1, 2), ""},
+		{"a date loses its format", book(0, 0), "Data!A1: outside the edit's reach, it held number 46022 shown as yyyy-mm-dd, and is shown as General now"},
+		{"a date takes another", book(2, 0), "shown as yyyy-mm-dd, and is shown as 0.00 now"},
+	} {
+		mo := newModel(book(1, 0))
+		mo.r = newReach(book(1, 0))
+		mo.apply(set)
+		got := mo.reached(tc.after)
+		if tc.wantErr == "" && got != "" || tc.wantErr != "" && !strings.Contains(got, tc.wantErr) {
+			t.Errorf("%s: the model says %q, want %q", tc.name, got, tc.wantErr)
+		}
+	}
+	// Formats renumbered (another index, the same format) are the same.
+	after := book(2, 0)
+	after.Formats = []grid.Format{{}, {Kind: grid.Decimal, Decimals: 2, Code: "0.00"}, {Kind: grid.Date, Code: "yyyy-mm-dd"}}
+	mo := newModel(book(1, 0))
+	mo.r = newReach(book(1, 0))
+	mo.apply(set)
+	if got := mo.reached(after); got != "" {
+		t.Errorf("formats renumbered: %s", got)
 	}
 }

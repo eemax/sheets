@@ -52,9 +52,31 @@ type reach struct {
 	// they stand now; member the region each of their other cells belonged to.
 	regions []*region
 	member  map[origin]*region
-	// rewrites: the edit may rewrite references (it moves cells, or renames
-	// a sheet).
-	rewrites bool
+	// xforms are what the edit does to references, in order: blocks moved,
+	// lines inserted or deleted, sheets renamed (none: it rewrites none).
+	xforms []xform
+}
+
+// xform is one rewrite of references an edit makes, as Excel makes it:
+//
+//   - 'm', a block moved (move, a script's moveTo): a reference to a cell or a
+//     range wholly inside src, on sheet, follows the block to sheet to, dr
+//     rows and dc columns away; one wholly inside the cells it lands on
+//     (which did not move themselves) becomes #REF!; the rest stay;
+//   - 'l', lines (rows, or columns with cols) of sheet: n inserted before at,
+//     each end of a reference at or past it moving n on; or (n == 0) at..end
+//     deleted, a reference to a cell in them becoming #REF!, a range wholly
+//     in them too, a range partly in them shrinking, and ends past them moving
+//     back;
+//   - 'r', sheet renamed to.
+type xform struct {
+	kind      byte
+	sheet, to string // lower case
+	src       grid.Range
+	dr, dc    int
+	cols      bool
+	at, end   int
+	n         int
 }
 
 // origin is where a cell stood before the edit: its sheet (lower case) and
@@ -193,7 +215,7 @@ func (rc *reach) shift(k string, cols bool, at, to, n int) {
 	if rc == nil {
 		return
 	}
-	rc.rewrites = true
+	rc.xforms = append(rc.xforms, xform{kind: 'l', sheet: k, cols: cols, at: at, end: to, n: n})
 	i := 0
 	if cols {
 		i = 1
@@ -261,7 +283,7 @@ func (rc *reach) rename(from, to string) {
 	if rc == nil || from == to {
 		return
 	}
-	rc.rewrites = true
+	rc.xforms = append(rc.xforms, xform{kind: 'r', sheet: from, to: to})
 	rc.at[to], rc.rects[to] = rc.at[from], rc.rects[from]
 	delete(rc.at, from)
 	delete(rc.rects, from)
@@ -272,18 +294,344 @@ func (rc *reach) rename(from, to string) {
 	}
 }
 
-// refToken is a reference in a formula's text, with its sheet, or one an
-// edit broke (#REF!): what an edit that moves cells may rewrite.
-var refToken = regexp.MustCompile(`(?:(?:'(?:[^']|'')+'|[A-Za-z0-9_]+)!)?(?:#REF!|\$?[A-Z]{1,3}\$?[0-9]+(?::\$?[A-Z]{1,3}\$?[0-9]+)?)`)
+// move follows a block of cells, src on sheet from (lower case), to sheet to,
+// dr rows and dc columns away: what reads it follows it (see xform).
+func (rc *reach) move(from, to string, src grid.Range, dr, dc int) {
+	if rc == nil {
+		return
+	}
+	rc.xforms = append(rc.xforms, xform{kind: 'm', sheet: from, to: to, src: src, dr: dr, dc: dc})
+}
+
+// refEnd is a cell a reference names, its row and column absolute or not.
+type refEnd struct {
+	r, c       int
+	rAbs, cAbs bool
+}
+
+func (e refEnd) String() string {
+	s := ""
+	if e.cAbs {
+		s = "$"
+	}
+	s += grid.ColName(e.c)
+	if e.rAbs {
+		s += "$"
+	}
+	return s + fmt.Sprint(e.r)
+}
+
+// fref is a reference in a formula's text: its sheet (lower case, "" for the
+// formula's own), a cell or a range (a:b), or one an edit broke (#REF!); and
+// where it stands in the text.
+type fref struct {
+	sheet      string
+	a, b       refEnd
+	rng, bad   bool
+	start, end int
+}
+
+// wordByte tells whether a byte may be part of a name, a function or a sheet
+// written without quotes (non-ASCII letters too).
+func wordByte(c byte) bool {
+	return c == '_' || c == '.' || c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= 0x80
+}
+
+// cellAt reads a cell (B2, $B$2) at f[i:], and where it ends.
+func cellAt(f string, i int) (refEnd, int, bool) {
+	var e refEnd
+	j := i
+	if j < len(f) && f[j] == '$' {
+		e.cAbs = true
+		j++
+	}
+	k := j
+	for k < len(f) && k-j < 4 && (f[k] >= 'A' && f[k] <= 'Z' || f[k] >= 'a' && f[k] <= 'z') {
+		k++
+	}
+	if k == j || k-j > 3 {
+		return e, i, false
+	}
+	col, ok := grid.ColIndex(strings.ToUpper(f[j:k]))
+	if !ok {
+		return e, i, false
+	}
+	if k < len(f) && f[k] == '$' {
+		e.rAbs = true
+		k++
+	}
+	d := k
+	for d < len(f) && f[d] >= '0' && f[d] <= '9' {
+		d++
+	}
+	if d == k {
+		return e, i, false
+	}
+	row := 0
+	for _, ch := range f[k:d] {
+		row = row*10 + int(ch-'0')
+		if row > grid.MaxRows {
+			return e, i, false
+		}
+	}
+	// A name or a function goes on (LOG10(, B2x): no cell.
+	if row < 1 || d < len(f) && (wordByte(f[d]) || f[d] == '(' || f[d] == '!') {
+		return e, i, false
+	}
+	e.r, e.c = row, col
+	return e, d, true
+}
+
+// refsOf reads the references of a formula's text, outside its strings: a
+// cell or a range, with the sheet it names, or #REF!.
+func refsOf(f string) []fref {
+	var out []fref
+	for i := 0; i < len(f); {
+		c := f[i]
+		if c == '"' { // a string; "" inside it is a quote
+			j := i + 1
+			for j < len(f) {
+				if f[j] == '"' {
+					if j+1 < len(f) && f[j+1] == '"' {
+						j += 2
+						continue
+					}
+					break
+				}
+				j++
+			}
+			i = j + 1
+			continue
+		}
+		if i > 0 && wordByte(f[i-1]) || !(c == '\'' || c == '$' || c == '#' || wordByte(c)) {
+			i++
+			continue
+		}
+		r := fref{start: i}
+		j := i
+		// The sheet: 'Bob''s Plan'! or Data!.
+		if c == '\'' {
+			k := i + 1
+			for k < len(f) {
+				if f[k] == '\'' {
+					if k+1 < len(f) && f[k+1] == '\'' {
+						k += 2
+						continue
+					}
+					break
+				}
+				k++
+			}
+			if k+1 < len(f) && f[k+1] == '!' {
+				r.sheet = strings.ToLower(strings.ReplaceAll(f[i+1:k], "''", "'"))
+				j = k + 2
+			}
+		} else if wordByte(c) {
+			k := i
+			for k < len(f) && wordByte(f[k]) {
+				k++
+			}
+			if k < len(f) && f[k] == '!' {
+				r.sheet = strings.ToLower(f[i:k])
+				j = k + 1
+			}
+		}
+		if strings.HasPrefix(f[j:], "#REF!") {
+			r.bad, r.end = true, j+5
+			out = append(out, r)
+			i = r.end
+			continue
+		}
+		a, k, ok := cellAt(f, j)
+		if !ok {
+			// No reference here: past the word (a name, a function).
+			for i++; i < len(f) && wordByte(f[i]); i++ {
+			}
+			continue
+		}
+		r.a, r.end = a, k
+		if k < len(f) && f[k] == ':' {
+			if b, k2, ok := cellAt(f, k+1); ok {
+				r.b, r.rng, r.end = b, true, k2
+			}
+		}
+		out = append(out, r)
+		i = r.end
+	}
+	return out
+}
 
 // masked is a formula's text with each reference one token.
-func masked(f string) string { return refToken.ReplaceAllString(f, "§") }
+func masked(f string) string {
+	var b strings.Builder
+	at := 0
+	for _, r := range refsOf(f) {
+		b.WriteString(f[at:r.start])
+		b.WriteString("§")
+		at = r.end
+	}
+	b.WriteString(f[at:])
+	return b.String()
+}
+
+// span is the range a reference names.
+func (r fref) span() grid.Range {
+	b := r.a
+	if r.rng {
+		b = r.b
+	}
+	return grid.Range{R1: min(r.a.r, b.r), C1: min(r.a.c, b.c), R2: max(r.a.r, b.r), C2: max(r.a.c, b.c)}
+}
+
+func within(r, outer grid.Range) bool {
+	return r.R1 >= outer.R1 && r.R2 <= outer.R2 && r.C1 >= outer.C1 && r.C2 <= outer.C2
+}
+
+// apply is the reference after the rewrite; its sheet is never "".
+func (x xform) apply(r fref) fref {
+	if r.bad {
+		return r
+	}
+	switch x.kind {
+	case 'r':
+		if r.sheet == x.sheet {
+			r.sheet = x.to
+		}
+	case 'm':
+		dst := grid.Range{R1: x.src.R1 + x.dr, C1: x.src.C1 + x.dc, R2: x.src.R2 + x.dr, C2: x.src.C2 + x.dc}
+		switch rg := r.span(); {
+		case r.sheet == x.sheet && within(rg, x.src):
+			r.sheet = x.to
+			r.a.r, r.a.c = r.a.r+x.dr, r.a.c+x.dc
+			if r.rng {
+				r.b.r, r.b.c = r.b.r+x.dr, r.b.c+x.dc
+			}
+		case r.sheet == x.to && within(rg, dst):
+			r.bad = true
+		}
+	case 'l':
+		if r.sheet != x.sheet {
+			return r
+		}
+		line := func(e *refEnd) *int {
+			if x.cols {
+				return &e.c
+			}
+			return &e.r
+		}
+		ends := []*int{line(&r.a)}
+		if r.rng {
+			ends = append(ends, line(&r.b))
+		}
+		limit := grid.MaxRows
+		if x.cols {
+			limit = grid.MaxCols
+		}
+		if x.n > 0 {
+			for _, p := range ends {
+				if *p >= x.at {
+					*p += x.n
+				}
+				if *p > limit {
+					r.bad = true
+				}
+			}
+			return r
+		}
+		in := func(p int) bool { return p >= x.at && p <= x.end }
+		switch {
+		case !r.rng && in(*ends[0]), r.rng && in(*ends[0]) && in(*ends[1]):
+			r.bad = true
+			return r
+		case r.rng && in(*ends[0]):
+			*ends[0] = x.end + 1
+		case r.rng && in(*ends[1]):
+			*ends[1] = x.at - 1
+		}
+		for _, p := range ends {
+			if *p > x.end {
+				*p -= x.end - x.at + 1
+			}
+		}
+	}
+	if r.a.r < 1 || r.a.c < 1 || r.rng && (r.b.r < 1 || r.b.c < 1) || r.a.r > grid.MaxRows || r.a.c > grid.MaxCols || r.b.r > grid.MaxRows || r.b.c > grid.MaxCols {
+		r.bad = true
+	}
+	return r
+}
+
+// sameRef tells whether two references, their sheets resolved, name the same
+// cells the same way (or both are #REF!).
+func sameRef(a, b fref) bool {
+	if a.bad || b.bad {
+		return a.bad == b.bad
+	}
+	return a.sheet == b.sheet && a.rng == b.rng && a.a == b.a && (!a.rng || a.b == b.b)
+}
+
+// shifted checks a formula outside the reach against what the edit's
+// rewrites (rc.xforms) make of it: its text, but for its references, as
+// before; and each reference where the shifts put it (home and now are the
+// formula's sheet before and now). It returns the formula the shifts give,
+// and false when the formula saved is another.
+func (rc *reach) shifted(before, after, home, now string, name func(k string) string) (string, bool) {
+	if masked(before) != masked(after) {
+		return "", false
+	}
+	bs, as := refsOf(before), refsOf(after)
+	ok := len(bs) == len(as)
+	var b strings.Builder
+	at := 0
+	for i, r := range bs {
+		if r.sheet == "" {
+			r.sheet = home
+		}
+		for _, x := range rc.xforms {
+			r = x.apply(r)
+		}
+		b.WriteString(before[at:r.start])
+		at = r.end
+		if r.bad {
+			b.WriteString("#REF!")
+		} else {
+			if r.sheet != now || bs[i].sheet != "" {
+				b.WriteString(grid.QuoteSheet(name(r.sheet)) + "!")
+			}
+			b.WriteString(r.a.String())
+			if r.rng {
+				b.WriteString(":" + r.b.String())
+			}
+		}
+		if ok {
+			got := as[i]
+			if got.sheet == "" {
+				got.sheet = now
+			}
+			ok = sameRef(r, got)
+		}
+	}
+	b.WriteString(before[at:])
+	return b.String(), ok
+}
 
 // sameValue tells whether two cells hold the same value, both pending or
 // neither.
 func sameValue(a, b grid.Cell) bool {
 	return a.Kind == b.Kind && a.Text == b.Text && a.Bool == b.Bool && a.Pending == b.Pending &&
 		(a.Num == b.Num || math.IsNaN(a.Num) && math.IsNaN(b.Num))
+}
+
+// formatName is a number format as a finding names it.
+func formatName(f grid.Format) string {
+	if f.Code == "" || f.Code == "General" {
+		return "General"
+	}
+	return f.Code
+}
+
+// sameFormat tells whether two number formats show a value the same way.
+func sameFormat(a, b grid.Format) bool {
+	return a.Kind == b.Kind && a.Decimals == b.Decimals && a.Symbol == b.Symbol && formatName(a) == formatName(b)
 }
 
 // describe is a cell as a finding names it: its formula and its value.
@@ -490,8 +838,20 @@ func (rc *reach) check(after *grid.Workbook, sheets map[string]bool, order []str
 		return k + "!" + grid.CellName(p[0], p[1])
 	}
 
-	// Formulas: rewritten in their references only, and only by an edit that
-	// moves cells; a result unknown before or now may change.
+	// The name of a sheet (lower case) as it is now, or was.
+	display := func(k string) string {
+		if s := now[k]; s != nil {
+			return s.Name
+		}
+		if s := rc.sheets[k]; s != nil {
+			return s.Name
+		}
+		return k
+	}
+
+	// Formulas: rewritten only by an edit that moves cells, in their
+	// references only, and each reference as the edit's shifts put it; a
+	// result unknown before or now may change.
 	var formulas []tracked
 	for _, t := range cells {
 		b, a := rc.cell(t.o), get(t.k, t.p)
@@ -501,11 +861,20 @@ func (rc *reach) check(after *grid.Workbook, sheets map[string]bool, order []str
 		switch {
 		case a.Formula == "":
 			return fmt.Sprintf("%s: outside the edit's reach, it held %s, and holds %s now", name(t.k, t.p), describe(b), describe(a))
-		case a.Formula != b.Formula && !rc.rewrites:
+		case a.Formula != b.Formula && len(rc.xforms) == 0:
 			return fmt.Sprintf("%s: outside the edit's reach, its formula =%s is rewritten as =%s by an edit that moves no cells", name(t.k, t.p), b.Formula, a.Formula)
 		case a.Formula != b.Formula && masked(a.Formula) != masked(b.Formula):
 			return fmt.Sprintf("%s: outside the edit's reach, its formula =%s is rewritten as =%s, other than in its references", name(t.k, t.p), b.Formula, a.Formula)
-		case a.Formula != b.Formula || a.Pending || b.Pending:
+		}
+		if len(rc.xforms) > 0 {
+			if want, ok := rc.shifted(b.Formula, a.Formula, t.o.sheet, t.k, display); !ok {
+				if a.Formula == b.Formula {
+					return fmt.Sprintf("%s: outside the edit's reach, its formula =%s is left as it was, and the edit's shift of references gives =%s", name(t.k, t.p), b.Formula, want)
+				}
+				return fmt.Sprintf("%s: outside the edit's reach, its formula =%s is rewritten as =%s, and the edit's shift of references gives =%s", name(t.k, t.p), b.Formula, a.Formula, want)
+			}
+		}
+		if a.Formula != b.Formula || a.Pending || b.Pending {
 			mark(t.k, t.p)
 		}
 		formulas = append(formulas, t)
@@ -529,21 +898,22 @@ func (rc *reach) check(after *grid.Workbook, sheets map[string]bool, order []str
 		}
 	}
 
-	// Values.
+	// Values, and how each is shown (its number format: a date shown as
+	// 46022 is a change a value does not show).
 	for _, t := range cells {
 		b, a := rc.cell(t.o), get(t.k, t.p)
-		if may[t.k][t.p] {
-			continue
-		}
-		if g := rc.member[t.o]; g != nil && (g.disturbed || g.gone || may[g.sheet][[2]int{g.rg.R1, g.rg.C1}]) {
-			continue // part of an array whose formula may give another result
-		}
-		if b.Formula == "" && a.Formula != "" || !sameValue(a, b) {
+		// Part of an array whose formula may give another result.
+		g := rc.member[t.o]
+		recomputed := may[t.k][t.p] || g != nil && (g.disturbed || g.gone || may[g.sheet][[2]int{g.rg.R1, g.rg.C1}])
+		if !recomputed && (b.Formula == "" && a.Formula != "" || !sameValue(a, b)) {
 			why := ""
 			if b.Formula != "" {
 				why = ", and nothing it reads may have changed"
 			}
 			return fmt.Sprintf("%s: outside the edit's reach, it held %s, and holds %s now%s", name(t.k, t.p), describe(b), describe(a), why)
+		}
+		if fb, fa := rc.before.FormatOf(&b), after.FormatOf(&a); !sameFormat(fb, fa) {
+			return fmt.Sprintf("%s: outside the edit's reach, it held %s shown as %s, and is shown as %s now", name(t.k, t.p), describe(b), formatName(fb), formatName(fa))
 		}
 	}
 	// Cells empty before (or moved away) that hold something now.
