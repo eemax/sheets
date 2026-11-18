@@ -328,7 +328,7 @@ func TestFuzz(t *testing.T) {
 		}
 	}
 	sort.Strings(stale)
-	if len(stale) > 0 && !res.Capped {
+	if len(stale) > 0 && !res.Capped && !custom {
 		t.Logf("known.txt lists %d findings this run did not make (fixed? then remove them): %s", len(stale), strings.Join(stale, "; "))
 	}
 	if !custom && !raceOn && !res.Capped && res.Edits < defaultEdits {
