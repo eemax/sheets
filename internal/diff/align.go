@@ -1,5 +1,7 @@
 package diff
 
+import "sort"
+
 // Sequence alignment by patience diff (as git uses): lines unique in both
 // sequences anchor the alignment, the longest increasing run of anchors is
 // kept, and the gaps between anchors are aligned recursively. What stays
@@ -155,10 +157,24 @@ type step struct {
 // pairUp walks an alignment and pairs unmatched lines that are similar
 // enough (a changed row rather than a removed and an added one).
 func pairUp(na, nb int, matches [][2]int, similar func(i, j int) bool) []step {
+	return pairUpSkipping(na, nb, matches, similar, nil, nil)
+}
+
+// pairUpSkipping is pairUp leaving out the lines skipA and skipB hold
+// (rows paired elsewhere, as moved).
+func pairUpSkipping(na, nb int, matches [][2]int, similar func(i, j int) bool, skipA, skipB map[int]bool) []step {
 	var out []step
 	i, j := 0, 0
 	gap := func(i2, j2 int) {
 		for i < i2 || j < j2 {
+			if i < i2 && skipA[i] {
+				i++
+				continue
+			}
+			if j < j2 && skipB[j] {
+				j++
+				continue
+			}
 			switch {
 			case i < i2 && j < j2 && similar(i, j):
 				out = append(out, step{i, j})
@@ -186,4 +202,45 @@ func pairUp(na, nb int, matches [][2]int, similar func(i, j int) bool) []step {
 	}
 	gap(na, nb)
 	return out
+}
+
+// findMoves pairs the lines an alignment left unmatched that are the same
+// on both sides (a row a sort took elsewhere), blank lines aside. Of all
+// the pairs, those keeping their order stay matches; the rest moved.
+func findMoves(a, b []uint64, matches [][2]int, blankA, blankB []bool) (inOrder, moved [][2]int) {
+	inA, inB := make([]bool, len(a)), make([]bool, len(b))
+	for _, m := range matches {
+		inA[m[0]], inB[m[1]] = true, true
+	}
+	free := map[uint64][]int{}
+	for i := range a {
+		if !inA[i] && !blankA[i] {
+			free[a[i]] = append(free[a[i]], i)
+		}
+	}
+	all := append([][2]int{}, matches...)
+	for j := range b {
+		if inB[j] || blankB[j] {
+			continue
+		}
+		if l := free[b[j]]; len(l) > 0 {
+			all = append(all, [2]int{l[0], j})
+			free[b[j]] = l[1:]
+		}
+	}
+	if len(all) == len(matches) {
+		return matches, nil
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i][0] < all[j][0] })
+	inOrder = longestIncreasing(all)
+	kept := make(map[[2]int]bool, len(inOrder))
+	for _, p := range inOrder {
+		kept[p] = true
+	}
+	for _, p := range all {
+		if !kept[p] {
+			moved = append(moved, p)
+		}
+	}
+	return inOrder, moved
 }
