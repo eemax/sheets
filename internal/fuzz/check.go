@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"github.com/eemax/sheets/internal/grid"
-	"github.com/eemax/sheets/internal/xlsx"
 	"github.com/eemax/sheets/internal/xlsxtest"
 )
 
@@ -471,11 +470,11 @@ func attr(se xml.StartElement, name string) string {
 // formulas, kinds and values. It returns the first difference, "" when
 // there is none, and the streaming editor's workbook, parsed.
 func compareEditors(stream, full []byte) (*grid.Workbook, string) {
-	a, err := xlsx.ReadBytes(stream)
+	a, err := readBytes(stream)
 	if err != nil {
 		return nil, "the streaming editor's file does not read: " + err.Error()
 	}
-	b, err := xlsx.ReadBytes(full)
+	b, err := readBytes(full)
 	if err != nil {
 		return a, "the full editor's file does not read: " + err.Error()
 	}

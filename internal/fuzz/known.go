@@ -37,10 +37,11 @@ func ParseKnown(text string) (map[Signature]bool, error) {
 }
 
 // Invariants are the invariants findings name that known.txt may list;
-// repeat is an edit that gave different files on the same bytes, and panic
-// a command that panicked, after which nothing can be judged. A hang (an
-// edit that did not finish) is never known: it ends the run.
-var Invariants = []string{"xml", "kinds", "text", "editors", "undo", "repeat", "panic"}
+// repeat is an edit that gave different files on the same bytes, panic a
+// command that panicked or a panic in judging the files it saved, after which
+// nothing can be judged, and missing an edit that left no workbook at its path.
+// A hang (an edit that did not finish) is never known: it ends the run.
+var Invariants = []string{"xml", "kinds", "text", "editors", "undo", "repeat", "panic", "missing"}
 
 func knownClass(name string) bool {
 	for _, c := range Classes {

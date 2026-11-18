@@ -349,8 +349,11 @@ func (g *gen) text(odd bool) string {
 	return pick(g, values)
 }
 
-// value picks what set or write puts in a cell: a value or a formula; row
-// fills in {r} unless 0; odd is for text.
+// value picks what set or write puts in a cell: a value or a formula; row is
+// the row of the cell it is typed in, which fills in {r}: always, since a
+// formula with a literal {r} in it is none Excel can read, and sheets accepts
+// it. For a range, the cell is its first: sheets fills the rest of the range
+// with the formula, its relative references shifted, as Excel does.
 func (g *gen) value(row int, odd bool) string {
 	var v string
 	switch n := g.rng.IntN(10); {
@@ -364,10 +367,7 @@ func (g *gen) value(row int, odd bool) string {
 		v = pick(g, dynamicFormulas)
 	}
 	v = strings.ReplaceAll(v, "{s}", formulaSheet(g.sheet().Name))
-	if row > 0 {
-		v = strings.ReplaceAll(v, "{r}", strconv.Itoa(row))
-	}
-	return v
+	return strings.ReplaceAll(v, "{r}", strconv.Itoa(row))
 }
 
 func (g *gen) newName() string {
@@ -391,7 +391,7 @@ func (g *gen) edit(class string) Edit {
 		if g.chance(0.3) {
 			rg := g.area(s)
 			rg.R2 = rg.R1 + g.rng.IntN(4)
-			e.Args = append(e.Args, ref(s, rg), g.value(0, !g.batch))
+			e.Args = append(e.Args, ref(s, rg), g.value(rg.R1, !g.batch))
 			break
 		}
 		for range 1 + g.rng.IntN(3) {

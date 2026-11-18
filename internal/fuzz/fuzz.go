@@ -274,9 +274,16 @@ func sequence(pool []Workbook, seed uint64, dir string, steps, budget int, log f
 	s.res = res
 	var edits []Edit
 	for i := 0; i < n; i++ {
-		e, err := s.generate(rng)
+		e, v, err := s.generate(rng)
 		if err != nil {
 			return nil, made, applied, err
+		}
+		if v != nil {
+			if len(edits) == 0 {
+				return nil, made, applied, fmt.Errorf("the pool file %s: %s", wb.Name, v.detail)
+			}
+			last := edits[len(edits)-1]
+			return &Finding{Signature{last.Class, v.invariant, seed}, wb.Name, edits, v.detail}, made, applied, nil
 		}
 		edits = append(edits, e)
 		out, err := s.step(e, i)
@@ -452,18 +459,33 @@ func newSession(dir string, data []byte) (*session, error) {
 
 func (s *session) close() { os.RemoveAll(s.root) }
 
-// generate makes the next edit, from the streaming copy.
-func (s *session) generate(rng *rand.Rand) (Edit, error) {
+// readBytes is sheets' reader on a saved file, and makeEdit the generator; both
+// are variables so a test can put one that panics in its place.
+var (
+	readBytes = xlsx.ReadBytes
+	makeEdit  = generate
+)
+
+// generate makes the next edit, from the streaming copy. A panic in it, or in
+// the reader on the file it reads, is returned as a violation of the
+// invariant panic: the workbook the last edit saved cannot be edited, and the
+// finding is that edit's (see sequence).
+func (s *session) generate(rng *rand.Rand) (e Edit, v *violation, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			v = &violation{"panic", fmt.Sprintf("making the next edit on the workbook the last one saved: %v\n%s", p, debug.Stack())}
+		}
+	}()
 	if s.cur == nil {
 		data, err := os.ReadFile(s.paths[0])
 		if err != nil {
-			return Edit{}, err
+			return Edit{}, nil, err
 		}
-		if s.cur, err = xlsx.ReadBytes(data); err != nil {
-			return Edit{}, fmt.Errorf("the workbook does not read: %w", err)
+		if s.cur, err = readBytes(data); err != nil {
+			return Edit{}, nil, fmt.Errorf("the workbook does not read: %w", err)
 		}
 	}
-	return generate(rng, s.cur), nil
+	return makeEdit(rng, s.cur), nil, nil
 }
 
 type violation struct{ invariant, detail string }
@@ -512,6 +534,15 @@ func (s *session) step(e Edit, i int) (outcome, error) {
 	}
 	done := make(chan result, 1)
 	go func() {
+		// A panic in the goroutine would end the whole test binary, with a
+		// dump of goroutines and no seed, no workbook and no edits. The commands
+		// are guarded by run; this guards the rest of the step: the fuzzer's own
+		// judging, and sheets' reader on the files the editors saved.
+		defer func() {
+			if p := recover(); p != nil {
+				done <- result{outcome{broken: []violation{{"panic", fmt.Sprintf("judging the files the editors saved: %v\n%s", p, debug.Stack())}}}, nil}
+			}
+		}()
 		o, err := s.stepNow(e, i)
 		done <- result{o, err}
 	}()
@@ -540,7 +571,11 @@ func (s *session) stepNow(e Edit, i int) (outcome, error) {
 		}
 		o.codes[k], o.errs[k] = run(ed.env, k == u, e, s.paths[k])
 		if after[k], err = os.ReadFile(s.paths[k]); err != nil {
-			return o, err
+			// An edit that deletes or moves the workbook, or puts something
+			// else at its path, is data loss: a finding like any other, with the
+			// seed, the workbook and the edits (both editors are made, so the
+			// finding names each that did it).
+			o.broken = append(o.broken, violation{"missing", fmt.Sprintf("%s editor: the edit (exit %d) left no workbook at book.xlsx: %s", ed.name, o.codes[k], unpath(err, s.paths[k]))})
 		}
 	}
 	for k, ed := range editors {
@@ -667,7 +702,7 @@ func (s *session) before(data []byte) (*grid.Workbook, error) {
 	if s.cur != nil {
 		return s.cur, nil
 	}
-	wb, err := xlsx.ReadBytes(data)
+	wb, err := readBytes(data)
 	if err != nil {
 		return nil, fmt.Errorf("the workbook does not read: %w", err)
 	}
@@ -724,9 +759,8 @@ func (s *session) repeat(e Edit, before, after [2][]byte) (*violation, error) {
 			code, msg := run(ed.env, false, e, s.paths[k])
 			got, err := os.ReadFile(s.paths[k])
 			if err != nil {
-				return nil, err
-			}
-			if code != 0 {
+				v = &violation{"repeat", fmt.Sprintf("%s editor: the same edit on the same bytes left no workbook at book.xlsx: %s", ed.name, unpath(err, s.paths[k]))}
+			} else if code != 0 {
 				v = &violation{"repeat", fmt.Sprintf("%s editor: the same edit on the same bytes worked once and failed once (exit %d: %s)", ed.name, code, firstLine(msg))}
 			} else if _, d := compareEditors(after[k], got); d != "" {
 				v = &violation{"repeat", fmt.Sprintf("%s editor: the same edit on the same bytes saved two different workbooks: %s", ed.name, repeatWords.Replace(d))}
@@ -762,17 +796,26 @@ func (s *session) count(cells []formulaCell) {
 func checkUndo(k int, path string, before, after []byte) (*violation, error) {
 	code, msg := run(editors[k].env, true, Edit{Args: []string{"undo", FileArg}}, path)
 	got, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
 	var v *violation
 	switch {
+	case err != nil:
+		v = &violation{"undo", fmt.Sprintf("%s editor: undo (exit %d) left no workbook at book.xlsx: %s", editors[k].name, code, unpath(err, path))}
 	case code != 0:
 		v = &violation{"undo", editors[k].name + " editor: undo failed: " + firstLine(msg)}
 	case !bytes.Equal(got, before):
 		v = &violation{"undo", editors[k].name + " editor: undo did not restore the bytes: " + partsDiffer(before, got)}
 	}
-	return v, os.WriteFile(path, after, 0o644)
+	// The edit's bytes are put back whatever undo did. A finding ends the
+	// sequence, so that is a courtesy when there is one, and an error when not.
+	if err := os.WriteFile(path, after, 0o644); err != nil && v == nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// unpath is an error's text with the workbook's path as a report names it.
+func unpath(err error, path string) string {
+	return strings.ReplaceAll(err.Error(), path, "book.xlsx")
 }
 
 // cliMain is the command line; a variable so a test can put a hang in its
