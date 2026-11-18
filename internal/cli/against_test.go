@@ -53,6 +53,36 @@ func TestLostFeatures(t *testing.T) {
 	}
 }
 
+// A chart on a chart sheet: lost with its sheet, but not for a rename of the
+// chart sheet, which sheets does not follow as it does a worksheet's.
+func TestLostChartsheet(t *testing.T) {
+	chart := func(sheet string) xlsx.Feature {
+		return xlsx.Feature{Kind: xlsx.FeatureChart, Sheet: sheet, What: "bar chart", Chartsheet: true}
+	}
+	before := []xlsx.Feature{chart("Chart1")}
+	got := lostFeatures(before, nil, map[string]string{"data": "Data"})
+	want := []lostFeature{{Kind: xlsx.FeatureChart, Where: "Chart1", What: "bar chart on a chart sheet"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("lost\n got %+v\nwant %+v", got, want)
+	}
+	if got := lostFeatures(before, before, nil); len(got) != 0 {
+		t.Errorf("kept: %+v", got)
+	}
+	if got := lostFeatures(before, []xlsx.Feature{chart("Chart 1")}, nil); len(got) != 0 {
+		t.Errorf("renamed: %+v", got)
+	}
+	// Two chart sheets, one lost: the one left keeps its own.
+	two := []xlsx.Feature{chart("A"), chart("B")}
+	if got := lostFeatures(two, []xlsx.Feature{chart("B")}, nil); len(got) != 1 || got[0].Where != "A" {
+		t.Errorf("one of two: %+v", got)
+	}
+	// A chart on a worksheet is not matched by a chart sheet's.
+	onSheet := xlsx.Feature{Kind: xlsx.FeatureChart, Sheet: "Data", Where: "F2", What: "bar chart"}
+	if got := lostFeatures([]xlsx.Feature{onSheet}, before, map[string]string{"data": "Data"}); len(got) != 1 {
+		t.Errorf("a chart on a sheet and one on a chart sheet: %+v", got)
+	}
+}
+
 func TestBrokenRow(t *testing.T) {
 	s := grid.NewSheet("S")
 	for r := 2; r <= 5; r++ {

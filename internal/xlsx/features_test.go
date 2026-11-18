@@ -123,6 +123,18 @@ func TestTracer(t *testing.T) {
 	}
 }
 
+// A chart on a chart sheet (a sheet that is one chart, with no anchor) is a
+// feature of that sheet; deleting the sheet takes it away.
+func TestFeaturesChartsheet(t *testing.T) {
+	want := []Feature{{Kind: FeatureChart, Sheet: "Chart1", What: "bar chart", Chartsheet: true}}
+	if got := featuresOf(t, "against_chartsheet.xlsx"); !reflect.DeepEqual(got, want) {
+		t.Errorf("against_chartsheet.xlsx:\n got %+v\nwant %+v", got, want)
+	}
+	if got := featuresOf(t, "against_chartsheet_deleted.xlsx"); len(got) != 0 {
+		t.Errorf("against_chartsheet_deleted.xlsx: %+v", got)
+	}
+}
+
 // Touching finds what reads the lines (the ones a later version removed),
 // whether a reference spans them, ends on one, or is nothing else.
 func TestTracerTouching(t *testing.T) {

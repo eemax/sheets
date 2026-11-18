@@ -575,3 +575,19 @@ import openpyxl
 wb = openpyxl.load_workbook(path)
 wb["Data"]["B2"] = 6
 wb.save(f"{out}/against_openpyxl.xlsx")
+
+# against_chartsheet.xlsx: a chart on a chart sheet (a sheet that is one
+# chart, which sheets does not read as a sheet) beside a worksheet;
+# against_chartsheet_deleted.xlsx: openpyxl loads it, deletes the chart
+# sheet and saves, which loses the chart without a trace in the cells.
+cs = xlsxwriter.Workbook(f"{out}/against_chartsheet.xlsx")
+cs_data = cs.add_worksheet("Data")
+cs_data.write_column("A1", [1, 2, 3])
+cs_chart = cs.add_chart({"type": "bar"})
+cs_chart.add_series({"values": "=Data!$A$1:$A$3"})
+cs.add_chartsheet("Chart1").set_chart(cs_chart)
+cs.close()
+
+wb = openpyxl.load_workbook(f"{out}/against_chartsheet.xlsx")
+del wb["Chart1"]
+wb.save(f"{out}/against_chartsheet_deleted.xlsx")

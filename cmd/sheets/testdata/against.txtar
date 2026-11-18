@@ -204,6 +204,17 @@ stdout '^  Summary!B3 +630 → #REF! +columns removed: Data!C in against_before.
 stdout '^  column removed: Data!C in against_before.xlsx$'
 ! stdout 'column added'
 
+# A chart on a chart sheet, which sheets does not read as a sheet: lost when
+# the chart sheet is deleted, though no cell changed.
+fixture against_chartsheet.xlsx against_chartsheet_deleted.xlsx
+exec sheets check against_chartsheet.xlsx --against against_chartsheet.xlsx
+stdout ', 0 features lost, '
+! exec sheets check against_chartsheet_deleted.xlsx --against against_chartsheet.xlsx
+stdout ', 1 feature lost, '
+stdout '^  chart  Chart1  bar chart on a chart sheet$'
+! exec sheets --json check against_chartsheet_deleted.xlsx --against against_chartsheet.xlsx
+stdout '"features_lost":\[\{"kind":"chart","where":"Chart1","what":"bar chart on a chart sheet"\}\]'
+
 # CSV files: values only, and rows moved.
 exec sheets check after.csv --against before.csv
 cmp stdout csv.out

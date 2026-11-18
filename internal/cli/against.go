@@ -1146,7 +1146,16 @@ func lostFeatures(before, after []xlsx.Feature, renamed map[string]string) []los
 			return false
 		}
 		for i, g := range after {
-			if used[i] || g.Kind != f.Kind || strings.ToLower(g.Sheet) != sheet {
+			if used[i] || g.Kind != f.Kind {
+				continue
+			}
+			if loose && f.Chartsheet && g.Chartsheet {
+				// A chart sheet is no worksheet, so a rename of it is not
+				// followed: its chart is the one chart sheet left.
+				used[i] = true
+				return true
+			}
+			if strings.ToLower(g.Sheet) != sheet {
 				continue
 			}
 			named := f.Kind == xlsx.FeatureName || f.Kind == xlsx.FeatureTable
@@ -1166,11 +1175,14 @@ func lostFeatures(before, after []xlsx.Feature, renamed map[string]string) []los
 		if kept[i] || match(f, true) {
 			continue
 		}
-		where := f.Where // a name of the workbook
+		where, what := f.Where, f.What // a name of the workbook
 		if f.Sheet != "" {
 			where = grid.QuoteSheet(f.Sheet) + "!" + f.Where
 		}
-		out = append(out, lostFeature{Kind: f.Kind, Where: where, What: f.What})
+		if f.Chartsheet {
+			where, what = grid.QuoteSheet(f.Sheet), strings.TrimSpace(what+" on a chart sheet")
+		}
+		out = append(out, lostFeature{Kind: f.Kind, Where: where, What: what})
 	}
 	if out == nil {
 		out = []lostFeature{}

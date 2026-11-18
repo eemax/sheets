@@ -32,6 +32,9 @@ type Feature struct {
 	// What says what it is: "list validation", "column chart", the name
 	// of a shape.
 	What string `json:"what,omitempty"`
+	// Chartsheet: it is on a chart sheet (a sheet that is one chart), which
+	// has no cells and no anchor.
+	Chartsheet bool `json:"chart_sheet,omitempty"`
 }
 
 // Feature kinds.
@@ -102,6 +105,17 @@ func Features(data []byte) ([]Feature, error) {
 	var out []Feature
 	for _, s := range wbx.Sheets {
 		rel, ok := relByID[s.relID()]
+		if ok && strings.HasSuffix(rel.Type, "/chartsheet") {
+			// A sheet that is one chart: sheets does not read it as a sheet,
+			// but losing it loses the chart.
+			if drawing := p.sheetParts(rel.Target).drawing; drawing != "" {
+				for _, f := range p.drawn(s.Name, drawing) {
+					f.Chartsheet = true
+					out = append(out, f)
+				}
+			}
+			continue
+		}
 		if !ok || !strings.HasSuffix(rel.Type, "/worksheet") {
 			continue
 		}
