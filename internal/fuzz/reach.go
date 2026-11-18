@@ -17,16 +17,17 @@ import (
 // insert adds, a sheet the edit makes as a copy. Every other cell of the
 // workbook is followed through the edit (rows and columns inserted or
 // deleted move it, a sheet renamed takes it along), and must hold what it
-// held before, where it stands now, and an empty cell must stay empty.
+// held before, shown with the same number format, where it stands now, and
+// an empty cell must stay empty.
 //
 // Two changes outside the reach are expected:
 //
 //   - shifted references: an edit that moves cells (move, rows, cols, a
 //     script's moveTo, insert and delete) or renames a sheet rewrites the
-//     formulas that read them, so a formula may then differ from what it was
-//     in its references only (each reference, or #REF!, is read as one
-//     token); any other edit leaves every formula outside its reach as it
-//     was, letter for letter;
+//     formulas that read them, in their references only, each as the edit's
+//     shift puts it (xform: what Excel does to a reference, edit by edit);
+//     any other edit leaves every formula outside its reach as it was,
+//     letter for letter;
 //   - recomputed dependents: a formula's value may change when it reads a
 //     cell that may (in the reach, or a formula whose value may change, to a
 //     fixpoint), when its references were rewritten, when it uses a defined
@@ -38,7 +39,8 @@ import (
 //     cuts them.
 //
 // So a slip that writes a cell the edit does not name, moves one it should
-// not, or loses or rewrites a formula elsewhere is a finding, as is a
+// not, loses or rewrites a formula elsewhere (or shifts a reference other
+// than the edit does), or shows a cell another way is a finding, as is a
 // formula whose value changes with nothing it reads changed.
 type reach struct {
 	before *grid.Workbook

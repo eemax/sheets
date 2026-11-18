@@ -9,9 +9,10 @@
 //   - kinds: every formula keeps its kind (plain, legacy array, dynamic
 //     array) and goes where the edit puts it, by a model of what each edit
 //     does to formulas (check.go, model.go);
-//   - reach: nothing outside the edit's reach changes, by a model of the
-//     cells each edit may change, but references an edit that moves cells
-//     rewrites and the values of formulas that read what changed (reach.go);
+//   - reach: nothing outside the edit's reach changes, its value or its
+//     number format, by a model of the cells each edit may change, but
+//     references an edit that moves cells rewrites, as its shift puts them,
+//     and the values of formulas that read what changed (reach.go);
 //   - editors: the streaming and the full editor give the same cells,
 //     formulas, kinds and values (and both take the edit, or both refuse);
 //   - undo: undo restores the bytes from before the edit, and an edit
@@ -28,7 +29,8 @@
 // workbook from the pool and the edits, each made from the state the
 // edits before it left. A sequence ends at its first finding. Its
 // signature (edit class, invariant, the sequence's seed) is what
-// known.txt lists.
+// known.txt lists; long mode, whose fresh seeds no list can hold, knows a
+// finding too by the face of a bug known.txt names (known.go).
 package fuzz
 
 import (

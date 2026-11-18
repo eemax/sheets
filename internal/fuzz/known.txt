@@ -131,3 +131,11 @@ bug spill-overwrites: set,do kinds; repro long 4001600827; detail : the edit sho
 # formula reading a range where one value goes, turned dynamic, is another
 # bug: the mutant rows-insert-arrays.)
 bug insert-turns-dynamic: rows-insert,cols-insert kinds; repro long 6100201614; detail =IF\(N\("p"\)=0,[^:]*\) is stored as a dynamic array, not a plain formula$
+
+# New (long mode, seed 63002): replace in formulas writes a dynamic array back
+# as a plain formula when its references are #REF!: copy 'Data!N2' 'Data!K12'
+# moves =SUM(IF(B2:B6>3,B2:B6)) three columns left of column B (#REF!:#REF!),
+# and replace 'SUM(' 'PRODUCT(' --formulas stores K12 plain (the kind read
+# off the text, which holds no range now). A move that rewrites a formula and
+# changes its kind is another bug: the mutant rewrite-loses-kind.
+bug replace-loses-kind: replace kinds; repro long 6300201846; detail =IF\(N\("d"\)=0,.*#REF!.*\) is stored as a plain formula, not a dynamic array$
