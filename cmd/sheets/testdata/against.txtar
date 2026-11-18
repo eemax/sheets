@@ -109,6 +109,18 @@ exec sheets check renamed2.xlsx --against against_before.xlsx
 stdout ': 1 input changed, 0 formulas changed, '
 stdout ', 0 unexplained,'
 
+# Rows added, then everything sorted: the alignment reads the rows as added
+# at places where Excel never inserted any, but a total whose text is as it
+# was is not a changed formula.
+cp against_before.xlsx addsort.xlsx
+exec sheets rows insert addsort.xlsx Data!7 -n 2
+exec sheets set addsort.xlsx Data!A7 Far Data!B7 6 Data!C7 40 Data!D7 '=B7*C7' Data!A8 Near Data!B8 1 Data!C8 15 Data!D8 '=B8*C8'
+exec sheets sort addsort.xlsx Data!A1:D8 Units
+exec sheets check addsort.xlsx --against against_before.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, '
+! stdout '=SUM\(B2:B6\) → =SUM\(B2:B6\)'
+stdout ', 0 unexplained,'
+
 # CSV files: values only, and rows moved.
 exec sheets check after.csv --against before.csv
 cmp stdout csv.out

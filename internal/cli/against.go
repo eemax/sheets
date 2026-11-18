@@ -818,6 +818,11 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 		}
 		return
 	case fa && fb:
+		if folded(x.Formula) == folded(y.Formula) {
+			// The same text: the formula is as it was (it reads the same
+			// cells), whatever rows were added or moved around it.
+			break
+		}
 		pa, _ := formula.Pattern(folded(x.Formula), ra, ca)
 		pb, _ := formula.Pattern(folded(y.Formula), rb, cb)
 		if pa != pb && !r.adjusted(folded(x.Formula), sb.Name, folded(y.Formula), rb, cb) {
