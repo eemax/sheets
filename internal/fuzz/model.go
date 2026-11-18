@@ -401,7 +401,7 @@ func (m *model) command(w []string, stdin string) {
 			}
 			m.sorted[k] = m.sorted[from]
 			m.lost[k] = m.lost[from]
-			m.r.touch(k, whole) // the copy is all new
+			m.r.copied(k) // the copy is all new, its names too
 		default:
 			fail("sheet %s", w[1])
 		}

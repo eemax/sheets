@@ -11,7 +11,8 @@ import (
 
 // reachBook builds a workbook from cells named "Sheet!A1": "5" is a number,
 // "'x" a text, "=F" a formula with no result (pending), "=F|7" one whose
-// result is 7. spills ("Data!M2:M4") are dynamic arrays, names "Units=Data!B2:B4".
+// result is 7. spills ("Data!M2:M4") are dynamic arrays, names "Units=Data!B2:B4"
+// (one scoped to a sheet: "Rate@Copy=Copy!$B$2").
 func reachBook(cells map[string]string, extra ...string) *grid.Workbook {
 	wb := &grid.Workbook{}
 	sheet := func(name string) *grid.Sheet {
@@ -51,7 +52,8 @@ func reachBook(cells map[string]string, extra ...string) *grid.Workbook {
 	}
 	for _, x := range extra {
 		if n, ref, ok := strings.Cut(x, "="); ok {
-			wb.Names = append(wb.Names, grid.DefinedName{Name: n, Ref: ref})
+			n, scope, _ := strings.Cut(n, "@")
+			wb.Names = append(wb.Names, grid.DefinedName{Name: n, Ref: ref, Scope: scope})
 			continue
 		}
 		name, rg, _ := strings.Cut(x, "!")
@@ -125,6 +127,37 @@ func TestReach(t *testing.T) {
 			after: m{"Data!B2": "1", "Data!H1": "=SUM(Units)|1"}},
 		{name: "a name's value with its range unchanged", before: m{"Data!B2": "1", "Data!H1": "=SUM(Units)|1", "Data!Z1": "3"}, extra: []string{"Units=Data!$B$2:$B$4"}, edit: edit("set", "Data!Z1", "5"),
 			after: m{"Data!B2": "1", "Data!H1": "=SUM(Units)|9", "Data!Z1": "5"}, wantErr: "Data!H1: outside the edit's reach"},
+		// Defined names: kept, or rewritten as the edit's shifts put them
+		// (fuzzer-long's audit, f1.3: a set that rewrote Units, and the
+		// SUM(Units) it changed, were no finding).
+		{name: "a set rewrites a name", before: m{"Data!B2": "1", "Data!B3": "5", "Data!H1": "=SUM(Units)|1", "Data!Z1": "3"}, extra: []string{"Units=Data!$B$2:$B$2"},
+			afterExtra: []string{"Units=Data!$B$2:$B$3"}, edit: edit("set", "Data!Z1", "5"),
+			after:   m{"Data!B2": "1", "Data!B3": "5", "Data!H1": "=SUM(Units)|6", "Data!Z1": "5"},
+			wantErr: "the defined name Units, outside the edit's reach, referred to =Data!$B$2:$B$2, and refers to =Data!$B$2:$B$3 now, after an edit that moves no cells"},
+		{name: "a set loses a name", before: m{"Data!B2": "1", "Data!Z1": "3"}, extra: []string{"Rate=Data!$B$2"},
+			afterExtra: []string{}, edit: edit("set", "Data!Z1", "5"), after: m{"Data!B2": "1", "Data!Z1": "5"},
+			wantErr: "the defined name Rate, outside the edit's reach, is gone (it referred to =Data!$B$2)"},
+		{name: "a set defines a name", before: m{"Data!B2": "1", "Data!Z1": "3"}, extra: []string{"Rate=Data!$B$2"},
+			afterExtra: []string{"Rate=Data!$B$2", "Extra=Data!$Z$1"}, edit: edit("set", "Data!Z1", "5"), after: m{"Data!B2": "1", "Data!Z1": "5"},
+			wantErr: "the edit defined the name Extra (=Data!$Z$1), and names no such name"},
+		{name: "rows insert grows a name", before: m{"Data!B2": "1", "Data!B3": "5", "Data!H1": "=SUM(Units)|6"}, extra: []string{"Units=Data!$B$2:$B$3"},
+			afterExtra: []string{"Units=Data!$B$2:$B$4"}, edit: edit("rows", "insert", "Data!3"),
+			after: m{"Data!B2": "1", "Data!B4": "5", "Data!H1": "=SUM(Units)|6"}},
+		{name: "rows insert leaves a name", before: m{"Data!B2": "1", "Data!B3": "5", "Data!H1": "=SUM(Units)|6"}, extra: []string{"Units=Data!$B$2:$B$3"},
+			edit: edit("rows", "insert", "Data!1"), after: m{"Data!B3": "1", "Data!B4": "5", "Data!H2": "=SUM(Units)|5"},
+			wantErr: "the defined name Units, outside the edit's reach, refers to =Data!$B$2:$B$3 as it did, and the edit's shift of references gives =Data!$B$3:$B$4"},
+		{name: "rows insert on another sheet shifts a name", before: m{"Data!B2": "1", "Plan!A1": "1"}, extra: []string{"Rate=Data!$B$2"},
+			afterExtra: []string{"Rate=Data!$B$3"}, edit: edit("rows", "insert", "Plan!1"), after: m{"Data!B2": "1", "Plan!A2": "1"},
+			wantErr: "the defined name Rate, outside the edit's reach, referred to =Data!$B$2, and refers to =Data!$B$3 now, and the edit's shift of references gives =Data!$B$2"},
+		{name: "a move takes a name along", before: m{"Data!B2": "1", "Data!H1": "=Rate*2|2"}, extra: []string{"Rate=Data!$B$2"},
+			afterExtra: []string{"Rate=Data!$E$2"}, edit: edit("move", "Data!B2", "Data!E2"), after: m{"Data!E2": "1", "Data!H1": "=Rate*2|2"}},
+		{name: "a sheet renamed renames a name's references", before: m{"Data!B2": "1"}, extra: []string{"Rate='Data'!$B$2"},
+			afterExtra: []string{"Rate=Old!$B$2"}, edit: edit("sheet", "rename", "Data", "Old"), after: m{"Old!B2": "1"}},
+		{name: "a sheet copied takes its names along", before: m{"Data!B2": "1"}, extra: []string{"Rate=Data!$B$2"},
+			afterExtra: []string{"Rate=Data!$B$2", "Rate@Copy=Copy!$B$2"}, edit: edit("sheet", "copy", "Data", "Copy"), after: m{"Data!B2": "1", "Copy!B2": "1"}},
+		{name: "a sheet copied, and a name of another sheet", before: m{"Data!B2": "1", "Plan!A1": "1"}, extra: []string{"Rate=Data!$B$2"},
+			afterExtra: []string{"Rate=Data!$B$2", "Rate@Plan=Copy!$B$2"}, edit: edit("sheet", "copy", "Data", "Copy"), after: m{"Data!B2": "1", "Copy!B2": "1", "Plan!A1": "1"},
+			wantErr: "the edit defined the name Rate (of Plan) (=Copy!$B$2)"},
 		{name: "clear", before: m{"Data!A1": "1", "Data!A2": "2", "Data!A3": "3"}, edit: edit("clear", "Data!A1:A2"),
 			after: m{"Data!A3": "3"}},
 		{name: "clear one more", before: m{"Data!A1": "1", "Data!A2": "2", "Data!A3": "3"}, edit: edit("clear", "Data!A1:A2"),

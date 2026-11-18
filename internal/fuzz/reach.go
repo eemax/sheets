@@ -27,11 +27,13 @@ import (
 //     formulas that read them, in their references only, each as the edit's
 //     shift puts it (xform: what Excel does to a reference, edit by edit);
 //     any other edit leaves every formula outside its reach as it was,
-//     letter for letter;
+//     letter for letter; and the workbook's defined names the same way (no
+//     edit names one: checkNames), none lost and none made, but those of a
+//     sheet copied;
 //   - recomputed dependents: a formula's value may change when it reads a
 //     cell that may (in the reach, or a formula whose value may change, to a
 //     fixpoint), when its references were rewritten, when it uses a defined
-//     name the edit defined again (rows deleted from its range), or when its
+//     name the edit's shifts rewrote (rows deleted from its range), or when its
 //     result was unknown before or is unknown now (pending: sheets computes a
 //     result it did not know, or drops one it cannot vouch for). The cells
 //     an array fills (a dynamic array's spill, a legacy array's range)
@@ -57,6 +59,9 @@ type reach struct {
 	// xforms are what the edit does to references, in order: blocks moved,
 	// lines inserted or deleted, sheets renamed (none: it rewrites none).
 	xforms []xform
+	// copies are the sheets the edit made as copies (lower case, as named
+	// now): a sheet copied takes its names along.
+	copies map[string]bool
 }
 
 // xform is one rewrite of references an edit makes, as Excel makes it:
@@ -97,7 +102,7 @@ type region struct {
 }
 
 func newReach(wb *grid.Workbook) *reach {
-	rc := &reach{before: wb, sheets: map[string]*grid.Sheet{}, at: map[string]map[[2]int]origin{}, rects: map[string][]grid.Range{}, member: map[origin]*region{}}
+	rc := &reach{before: wb, sheets: map[string]*grid.Sheet{}, at: map[string]map[[2]int]origin{}, rects: map[string][]grid.Range{}, member: map[origin]*region{}, copies: map[string]bool{}}
 	for _, s := range wb.Sheets {
 		k := strings.ToLower(s.Name)
 		rc.sheets[k] = s
@@ -300,11 +305,25 @@ func (rc *reach) rename(from, to string) {
 	rc.at[to], rc.rects[to] = rc.at[from], rc.rects[from]
 	delete(rc.at, from)
 	delete(rc.rects, from)
+	if rc.copies[from] {
+		rc.copies[to] = true
+		delete(rc.copies, from)
+	}
 	for _, g := range rc.regions {
 		if g.sheet == from {
 			g.sheet = to
 		}
 	}
+}
+
+// copied says the edit made a sheet (lower case) as a copy of another: all of
+// it is in the reach, and names scoped to it may be new.
+func (rc *reach) copied(k string) {
+	if rc == nil {
+		return
+	}
+	rc.copies[k] = true
+	rc.touch(k, whole)
 }
 
 // move follows a block of cells, src on sheet from (lower case), to sheet to,
@@ -697,8 +716,73 @@ func inputs(f, sheet string, names []usedName) (out []readRange, ok bool) {
 	return out, ok
 }
 
+// checkNames judges the workbook's defined names, which no edit names: each
+// name of the workbook before must be there after, under its scope (a sheet
+// renamed takes it along), its references as the edit's shifts put them (as a
+// formula's: rows deleted from Units shrink it), and letter for letter after
+// an edit that moves no cells. No name may appear, but one scoped to a sheet
+// the edit made as a copy (Excel copies a sheet's names with it). The first
+// version took any name the edit rewrote as expected, and every formula using
+// it as free to change: a set that rewrote Units, and the SUM(Units) it
+// changed, were no finding (fuzzer-long's audit, f1.3). It returns the first
+// difference, "" when there is none.
+func (rc *reach) checkNames(after *grid.Workbook, display func(k string) string) string {
+	key := func(n grid.DefinedName) [2]string {
+		return [2]string{strings.ToLower(n.Name), strings.ToLower(n.Scope)}
+	}
+	// follow is where a scope (a sheet, lower case) stands after the edit.
+	follow := func(k string) string {
+		for _, x := range rc.xforms {
+			if x.kind == 'r' && k != "" && k == x.sheet {
+				k = x.to
+			}
+		}
+		return k
+	}
+	now := map[[2]string]grid.DefinedName{}
+	for _, n := range after.Names {
+		now[key(n)] = n
+	}
+	scoped := func(n grid.DefinedName) string {
+		if n.Scope == "" {
+			return n.Name
+		}
+		return n.Name + " (of " + n.Scope + ")"
+	}
+	was := map[[2]string]bool{}
+	for _, n := range rc.before.Names {
+		k := key(n)
+		k[1] = follow(k[1])
+		was[k] = true
+		a, ok := now[k]
+		switch {
+		case !ok:
+			return fmt.Sprintf("the defined name %s, outside the edit's reach, is gone (it referred to =%s)", scoped(n), n.Ref)
+		case a.Ref == n.Ref:
+			if len(rc.xforms) == 0 {
+				continue
+			}
+		case len(rc.xforms) == 0:
+			return fmt.Sprintf("the defined name %s, outside the edit's reach, referred to =%s, and refers to =%s now, after an edit that moves no cells", scoped(n), n.Ref, a.Ref)
+		}
+		if want, ok := rc.shifted(n.Ref, a.Ref, strings.ToLower(n.Scope), k[1], display); !ok {
+			if a.Ref == n.Ref {
+				return fmt.Sprintf("the defined name %s, outside the edit's reach, refers to =%s as it did, and the edit's shift of references gives =%s", scoped(n), n.Ref, want)
+			}
+			return fmt.Sprintf("the defined name %s, outside the edit's reach, referred to =%s, and refers to =%s now, and the edit's shift of references gives =%s", scoped(n), n.Ref, a.Ref, want)
+		}
+	}
+	for _, n := range after.Names {
+		if k := key(n); !was[k] && !(k[1] != "" && rc.copies[k[1]]) {
+			return fmt.Sprintf("the edit defined the name %s (=%s), and names no such name", scoped(n), n.Ref)
+		}
+	}
+	return ""
+}
+
 // usedName is a defined name, how a formula's text uses it, and whether the
-// edit defined it again (moved: its range is another, or it is new).
+// edit defined it again (moved: its range is another, or it is new; that
+// it is the one the edit's shifts give, or a sheet copy's, checkNames says).
 type usedName struct {
 	grid.DefinedName
 	re    *regexp.Regexp
@@ -891,6 +975,10 @@ func (rc *reach) check(after *grid.Workbook, sheets map[string]bool, order []str
 			mark(t.k, t.p)
 		}
 		formulas = append(formulas, t)
+	}
+	// Defined names: kept, or rewritten as the edit's shifts put them.
+	if msg := rc.checkNames(after, display); msg != "" {
+		return msg
 	}
 	// Recomputed dependents, to a fixpoint.
 	names := usedNames(after.Names, rc.before.Names)
