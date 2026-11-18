@@ -422,6 +422,21 @@ for i, (a, b) in enumerate([(3, 1), (1, 2), (2, 3), (5, 4), (4, 5), (6, 6)]):
 s.write_formula("D1", "=SEQUENCE(3)")
 xw.close()
 
+# kinds_unknown.xlsx: the same with dynamic functions sheets cannot compute
+# (MAP over a LAMBDA), so how far they spill is unknown. S has one in D1
+# (Excel spills it over D1:D3) with text in D4; U has one in each of D1:D6.
+xw = xlsxwriter.Workbook(f"{out}/kinds_unknown.xlsx")
+s = xw.add_worksheet("S")
+u = xw.add_worksheet("U")
+for i, (a, b) in enumerate([(9, 1), (5, 2), (4, 3), (1, 4), (3, 5), (2, 6)]):
+    s.write_row(i, 0, [a, b])
+    u.write_row(i, 0, [a, b])
+s.write_formula("D1", "=_xlfn.MAP(B1:B3,_xlfn.LAMBDA(_xlpm.x,_xlpm.x*2))")
+s.write("D4", "x")
+for r in range(1, 7):
+    u.write_formula(f"D{r}", f"=_xlfn.MAP(B{r},_xlfn.LAMBDA(_xlpm.x,_xlpm.x*2))")
+xw.close()
+
 # unlike_excel.xlsx: one formula of each class WP-01 found computed unlike
 # Excel (sheet Cases, A1:D12: the class, the formula, what Excel shows, and
 # a formula reading it), over sheet Data.

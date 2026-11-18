@@ -247,6 +247,8 @@ func (e *Editor) checkSort(s *grid.Sheet, r grid.Range) error {
 		}
 	}
 	if len(pending) > 0 {
+		// In the sheet's order, so the one named is the same on every run.
+		slices.SortFunc(pending, func(x, y [2]int) int { return cmp.Or(cmp.Compare(x[0], y[0]), cmp.Compare(x[1], y[1])) })
 		res, err := e.results()
 		if err != nil {
 			return err
@@ -254,8 +256,11 @@ func (e *Editor) checkSort(s *grid.Sheet, r grid.Range) error {
 		for _, a := range pending {
 			sp, ok := res.arrays[keyOf(sheet, a[0], a[1])]
 			if !ok || sp.arr == nil {
-				if r.Contains(a[0], a[1]) {
-					return fmt.Errorf("%s holds the dynamic array formula in %s, whose result sheets cannot work out, so it is unknown whether it spills over several cells (which Excel does not sort); sort its source instead, or wrap it in SORT()",
+				// A spill runs down and to the right from its cell, so
+				// one that sheets cannot work out may reach the range from
+				// any cell above it or to its left, not only from inside.
+				if a[0] <= r.R2 && a[1] <= r.C2 {
+					return fmt.Errorf("%s may be reached by the dynamic array formula in %s, whose result sheets cannot work out, so it is unknown whether it spills over several cells (which Excel does not sort); sort its source instead, or wrap it in SORT()",
 						grid.FormatRef(sheet, r), grid.CellName(a[0], a[1]))
 				}
 				continue

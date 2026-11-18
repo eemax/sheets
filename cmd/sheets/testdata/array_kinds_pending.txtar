@@ -18,3 +18,39 @@ stdout '<c r="D1"[^>]*cm="1"'
 exec sheets check --fix kinds_pending.xlsx
 ! exec sheets sort kinds_pending.xlsx S!A1:D6 A:desc
 stderr 'holds the dynamic array formula in D1 or its result \(D1:D3\)'
+
+# A dynamic function sheets cannot compute (MAP over a LAMBDA) spills over
+# D1:D3 in Excel, so its spill is unknown: a sort refuses whether it lies
+# inside the range or just above it, where it would otherwise leave text in
+# D4 to land under its spill.
+fixture kinds_unknown.xlsx
+cp kinds_unknown.xlsx before.xlsx
+! exec sheets sort kinds_unknown.xlsx S!A2:D6 A
+stderr 'S!A2:D6 may be reached by the dynamic array formula in D1, whose result sheets cannot work out'
+! exec sheets sort kinds_unknown.xlsx S!A1:D6 A
+stderr 'dynamic array formula in D1, whose result sheets cannot work out'
+cmp kinds_unknown.xlsx before.xlsx
+# Below it the spill may still reach, as far as sheets can tell; a range
+# wholly left of its column cannot be reached, and sorts.
+! exec sheets sort kinds_unknown.xlsx S!A4:D6 A
+stderr 'may be reached by the dynamic array formula in D1'
+cmp kinds_unknown.xlsx before.xlsx
+exec sheets sort kinds_unknown.xlsx S!A2:B6 A
+# Several of them: the first in the sheet's order is named, on every run
+# (U!D1 here, not whichever the map gave first).
+! exec sheets sort kinds_unknown.xlsx U!A1:D6 A
+stderr 'formula in D1,'
+! exec sheets sort kinds_unknown.xlsx U!A1:D6 A
+stderr 'formula in D1,'
+! exec sheets sort kinds_unknown.xlsx U!A1:D6 A
+stderr 'formula in D1,'
+! exec sheets sort kinds_unknown.xlsx U!A1:D6 A
+stderr 'formula in D1,'
+! exec sheets sort kinds_unknown.xlsx U!A1:D6 A
+stderr 'formula in D1,'
+! exec sheets sort kinds_unknown.xlsx U!A1:D6 A
+stderr 'formula in D1,'
+! exec sheets sort kinds_unknown.xlsx U!A3:D6 A
+stderr 'formula in D1,'
+! exec sheets sort kinds_unknown.xlsx U!A3:D6 A
+stderr 'formula in D1,'
