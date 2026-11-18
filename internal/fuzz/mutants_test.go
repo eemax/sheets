@@ -97,4 +97,3 @@ func TestMutantsApplyRefuses(t *testing.T) {
 		t.Error("a mutant applied to code that changed under it (stale) passed the check")
 	}
 }
-

@@ -29,11 +29,13 @@ import (
 //     was, letter for letter;
 //   - recomputed dependents: a formula's value may change when it reads a
 //     cell that may (in the reach, or a formula whose value may change, to a
-//     fixpoint), when its references were rewritten, or when its result was
-//     unknown before or is unknown now (pending: sheets computes a result it
-//     did not know, or drops one it cannot vouch for). The cells an array
-//     fills (a dynamic array's spill, a legacy array's range) change with
-//     their formula, and with an edit that reaches into them or cuts them.
+//     fixpoint), when its references were rewritten, when it uses a defined
+//     name the edit defined again (rows deleted from its range), or when its
+//     result was unknown before or is unknown now (pending: sheets computes a
+//     result it did not know, or drops one it cannot vouch for). The cells
+//     an array fills (a dynamic array's spill, a legacy array's range)
+//     change with their formula, and with an edit that reaches into them or
+//     cuts them.
 //
 // So a slip that writes a cell the edit does not name, moves one it should
 // not, or loses or rewrites a formula elsewhere is a finding, as is a
@@ -422,13 +424,13 @@ func (rc *reach) check(after *grid.Workbook, sheets map[string]bool, order []str
 			mark(g.sheet, [2]int{g.rg.R1, g.rg.C1})
 		}
 	}
-	// mayRead tells whether a range holds a cell whose value may change: in
-	// the reach, marked, or filled by an array whose formula is marked.
 	// anchored tells whether the formula of an array of the workbook now
 	// (at its first cell) may give another result.
 	anchored := func(k string, a [2]int) bool {
 		return may[k][a] || inRects(k, grid.Range{R1: a[0], C1: a[1], R2: a[0], C2: a[1]})
 	}
+	// mayRead tells whether a range holds a cell whose value may change: in
+	// the reach, marked, or filled by an array whose formula may change.
 	mayRead := func(in readRange) bool {
 		if inRects(in.sheet, in.rg) {
 			return true

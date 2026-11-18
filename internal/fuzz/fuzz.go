@@ -9,6 +9,9 @@
 //   - kinds: every formula keeps its kind (plain, legacy array, dynamic
 //     array) and goes where the edit puts it, by a model of what each edit
 //     does to formulas (check.go, model.go);
+//   - reach: nothing outside the edit's reach changes, by a model of the
+//     cells each edit may change, but references an edit that moves cells
+//     rewrites and the values of formulas that read what changed (reach.go);
 //   - editors: the streaming and the full editor give the same cells,
 //     formulas, kinds and values (and both take the edit, or both refuse);
 //   - undo: undo restores the bytes from before the edit, and an edit
