@@ -294,6 +294,9 @@ _ADMITS = re.compile(r"""\b(?:
   | failed\ to | fails?\ to | did\s*n[o']t\ (?:work|succeed|manage|finish|complete|save|open|check|verify|test|run|recalculate)
   | (?:have|has)\s*n[o']t\ (?:yet\ )?(?:seen|checked|verified|tested|run|recalculated)
   | (?:when|once)\ (?:you\ )?(?:open|it\ is\ opened|opened|recalculat\w*)
+  | (?:when|once|after)\ (?:the\ |this\ )?(?:workbook|file|spreadsheet)\ (?:is\ )?(?:opened|open|loaded)
+  | open\ (?:the\ |this\ |it\ )?(?:(?:file|workbook|spreadsheet)\ )?in\ (?:excel|libreoffice)
+  | (?:update|recalculate)s?\ automatically
   | unfortunately | not\ sure | unsure | not\ certain | unverified | not\ verified | could\ not\ verify
   | (?:may|might)\ (?:not|still)\ (?:be|show|update|reflect)
   | won't\ (?:update|show|reflect) | will\ not\ (?:update|show|reflect)
@@ -305,7 +308,7 @@ _CLAIMS = re.compile(r"""\b(?:
     done | completed? | changed | updated | set | saved | fixed | added | inserted | renamed | removed | deleted
   | applied | created | built | wrote | written | replaced | corrected | formatted | moved | appended
   | successfully | success | now | verified | confirmed | answer | total | result
-)\b|✅|\d""", re.I | re.X)
+)\b|✅|(?<![A-Za-z_!:])(?<![A-Za-z]\$)\d""", re.I | re.X)
 
 
 def claim(answer):
@@ -336,6 +339,7 @@ def claim(answer):
     >>> claim("")
     'none'
     """
+    answer = answer.replace("\u2019", "'").replace("\u2018", "'")
     if not answer.strip():
         return "none"
     if _ADMITS.search(answer):
