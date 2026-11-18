@@ -397,6 +397,39 @@ func TestCheckAgainstLarge(t *testing.T) {
 	}
 	t.Logf("output, %d lines:\n%s", len(lines), out)
 
+	// Every tenth formula broken, not an input changed: 15,000 findings and
+	// 15,000 formulas changed, flagged; the text stays as short.
+	broken := filepath.Join(dir, "broken.xlsx")
+	{
+		var b strings.Builder
+		b.WriteString("Region\tUnits\tPrice\tRevenue\n")
+		for i := 1; i <= rows; i++ {
+			if i%10 == 0 {
+				fmt.Fprintf(&b, "R%d\t%d\t%d\t=B{r-1}*C{r}\n", i%7, i%50, 1+i%13)
+			} else {
+				fmt.Fprintf(&b, "R%d\t%d\t%d\t=B{r}*C{r}\n", i%7, i%50, 1+i%13)
+			}
+		}
+		if out, code := run(b.String(), "write", broken, "Data!A1"); code != 0 {
+			t.Fatalf("write: %s", out)
+		}
+		if out, code := run("", "set", broken, "Summary!A1", "Units", "Summary!B1", fmt.Sprintf("=SUM(Data!B2:B%d)", rows+1),
+			"Summary!A2", "Revenue", "Summary!B2", "=SUM(Data!D:D)"); code != 0 {
+			t.Fatalf("set: %s", out)
+		}
+		start = time.Now()
+		out, _ := run("", "check", broken, "--against", before)
+		t.Logf("check --against on %d rows with every tenth formula broken: %s", rows, time.Since(start).Round(time.Millisecond))
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		if len(lines) > 60 || len(out) > 12000 {
+			t.Errorf("output with findings not bounded: %d lines, %d bytes:\n%s", len(lines), len(out), out)
+		}
+		if !strings.Contains(out, "15000 formulas changed") || !strings.Contains(out, "more (--json lists them all)") {
+			t.Errorf("broken formulas:\n%s", out)
+		}
+		t.Logf("output with findings, %d lines, %d bytes", len(lines), len(out))
+	}
+
 	start = time.Now()
 	js, code := run("", "--json", "check", after, "--against", before)
 	t.Logf("check --against --json on %d rows: %s, %d bytes", rows, time.Since(start).Round(time.Millisecond), len(js))

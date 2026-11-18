@@ -49,9 +49,12 @@
   made it (a script, openpyxl, LibreOffice, Excel, sheets). Keep a copy
   before you change a workbook, then run it before handing the workbook
   over. It reports:
-  - `changed`: inputs and formulas that changed; one row of a formula
-    column changed unlike the rows around it, or made a typed-in value, is
-    flagged;
+  - `changed`: inputs and formulas that changed. Flagged, as a likely
+    mistake: one row of a formula column changed unlike the rows around it,
+    or made a typed-in value; and a formula left as it was when rows or
+    columns were inserted or deleted in what it reads (openpyxl's
+    `insert_rows` and `delete_rows` rewrite no formula), with what Excel
+    would have written;
   - `moved`: computed values that moved, each with its cause upstream (an
     input or formula change, rows added, removed or moved, a name
     changed), traced through what each formula reads;
@@ -68,10 +71,14 @@
   - `moved_rows`: rows moved as by a sort, which are not changes;
   - then the check of book.xlsx, as above.
 
-  Formulas Excel rewrites for rows or columns added or removed, or a
-  sheet renamed, are not changes. Text lists ten of each, with counts;
-  `--json` lists everything (each moved value with `cell`, `before`,
-  `after` and `cause`). It exits 1 when a value is unexplained, a feature
+  Formulas Excel rewrites for rows or columns added or removed (a column
+  inserted between the columns a formula reads too), or a sheet renamed,
+  are not changes, nor is LibreOffice's `TRUE()` for `TRUE`. Dates compare
+  as dates, whether a workbook counts them from 1900 or from 1904 (a
+  Mac's). Rows a sort moved are moved rows, though rows were inserted or
+  deleted above or inside them. Text lists ten of each section, the
+  check's findings too, with counts; `--json` lists everything (each moved
+  value with `cell`, `before`, `after` and `cause`). It exits 1 when a value is unexplained, a feature
   is lost, or the check finds errors. On a CSV file it compares values
   only. On 150,000 rows it takes about 3 seconds (15,000 rows changed, or
   all of them sorted), and 5 when openpyxl left one version without
