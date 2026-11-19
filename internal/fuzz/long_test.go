@@ -300,7 +300,13 @@ func bugsFixed(kn *Known, committed []Workbook, ps *Pools, dir string) (fixed, u
 			files = p.Files
 		}
 		// A bug that comes and goes (map order) is replayed until it shows,
-		// up to replays times.
+		// up to replays times, by any of its faces: map-order's script paste
+		// shows its editors face or its kinds face, as the editors' layouts
+		// fall, from one repro.
+		shows := func(f Finding) bool {
+			g := kn.Bug(f)
+			return b.Shows(f) || g != nil && g.Name == b.Name
+		}
 		var f *Finding
 		for range replays {
 			var err error
@@ -309,7 +315,7 @@ func bugsFixed(kn *Known, committed []Workbook, ps *Pools, dir string) (fixed, u
 			}
 			if f != nil {
 				f.Long = b.Repro.Long
-				if b.Shows(*f) {
+				if shows(*f) {
 					break
 				}
 			}
@@ -317,7 +323,7 @@ func bugsFixed(kn *Known, committed []Workbook, ps *Pools, dir string) (fixed, u
 		switch {
 		case f == nil:
 			fixed = append(fixed, fmt.Sprintf("%s (known.txt:%d): its repro, %s, makes no finding", b.Name, b.Line, repro(b)))
-		case !b.Shows(*f):
+		case !shows(*f):
 			detail, _, _ := strings.Cut(f.Detail, "\n")
 			fixed = append(fixed, fmt.Sprintf("%s (known.txt:%d): its repro, %s, makes %s, which it does not show: %s", b.Name, b.Line, repro(b), f.Signature, detail))
 		}
@@ -579,6 +585,7 @@ func TestKnownFaces(t *testing.T) {
 		// in one editor's file, none in the other's (seed 720212).
 		{"script", "editors", `Data!H7: stream has =IF(N("p")=0,IF(#REF!>1000,1,"")), full has =`, script(`ws.getRange("F4").copyFrom("H5:J8");` + "\n" + `ws.getRange("H5").moveTo("F13");`), "map-order"},
 		{"script", "editors", `Data!H6: stream has =, full has =IF(N("p")=0,IF(#REF!>1000,1,""))`, script(`ws.getRange("F4").copyFrom("H5:J8");` + "\n" + `ws.getRange("H5").moveTo("F13");`), "map-order"},
+		{"script", "kinds", `Data!H6: the edit should leave a plain formula there, and it holds no formula (it was lost), in the results of the dynamic array at H5:H7`, script(`ws.getRange("F4").copyFrom("H5:J8");` + "\n" + `ws.getRange("H5").moveTo("F13");`), "map-order"},
 		{"replace", "kinds", `stream editor: sheet1.xml K12: =IF(N("d")=0,PRODUCT(IF(#REF!:#REF!>3,#REF!:#REF!))) is stored as a plain formula, not a dynamic array`, plain("replace"), "replace-loses-kind"},
 		// A batch or a script holding an insert or a delete (the audit's seed
 		// 664355, fuzzer-long's audit f1.1).
@@ -628,6 +635,10 @@ func TestKnownFaces(t *testing.T) {
 		// by each editor in a paste.
 		{"script", "editors", `Data!H7: stream has =IF(N("p")=0,IF(#REF!>1000,1,"")), full has =`, script(`ws.getRange("H5").moveTo("F13");`), ""},
 		{"script", "editors", `Data!I3: stream has =IF(N("p")=0,B4:B5*10), full has =IF(N("p")=0,#REF!*10)`, script(`ws.getRange("F4").copyFrom("H5:J8");`), ""},
+		// A formula lost by a script's paste outside any array's results, or by
+		// a script with no paste in them.
+		{"script", "kinds", `Data!H6: the edit should leave a plain formula there, and it holds no formula (it was lost)`, script(`ws.getRange("F4").copyFrom("H5:J8");`), ""},
+		{"script", "kinds", `Data!H6: the edit should leave a plain formula there, and it holds no formula (it was lost), in the results of the dynamic array at H5:H7`, script(`ws.getRange("H6").setFormula("=IF(N(\"p\")=0,B6)");`), ""},
 		{"move", "reach", `Data!G6: outside the edit's reach, its formula =B6*2 is rewritten as =E6*2, and the edit's shift of references gives =B6*2`, plain("move"), ""},
 	} {
 		f := Finding{Signature: Signature{tc.class, tc.invariant, 4001600827, true}, Detail: tc.detail, Edits: []Edit{tc.edit}}
@@ -715,6 +726,40 @@ bug farther: move kinds; repro long 701600; detail x
 	if len(unchecked) != 2 || !strings.Contains(unchecked[0], "pool 7000: ") || !strings.Contains(unchecked[0], "--seed 7000 ") ||
 		!strings.Contains(unchecked[1], "pool 7004: ") || !strings.Contains(unchecked[1], "--seed 7004 ") {
 		t.Errorf("not replayed, each with its own pool's failure: %q", unchecked)
+	}
+}
+
+// TestBugReproAnyFace: a bug line whose repro shows another face of the same
+// bug is not fixed (map-order's script paste shows its editors face or its
+// kinds face, as the editors' layouts fall), and one whose repro shows only
+// another bug's face is.
+func TestBugReproAnyFace(t *testing.T) {
+	kn, err := ReadKnown(`bug sorts: sort kinds; repro 100047; detail no face of this
+bug sorts: sort editors; repro 100047; detail : stream holds .+, full holds (nothing( \(pending\))?|number 0)$
+bug other: sort repeat; repro 100047; detail no face of this
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := loadPool(t)
+	ps := &Pools{Root: repoRoot, Dir: t.TempDir(), Committed: pool}
+	// One replay for each sorts line, up to 10 for other's (two under -race).
+	if raceOn {
+		kn.Bugs = kn.Bugs[:2]
+	}
+	fx, unchecked, err := bugsFixed(kn, pool, ps, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unchecked) != 0 {
+		t.Errorf("not replayed: %q", unchecked)
+	}
+	want := 1
+	if raceOn {
+		want = 0
+	}
+	if len(fx) != want || want == 1 && !strings.HasPrefix(fx[0], "other (known.txt:3): its repro, 100047, makes sort editors 100047, which it does not show") {
+		t.Errorf("fixed: %q, want only other's", fx)
 	}
 }
 

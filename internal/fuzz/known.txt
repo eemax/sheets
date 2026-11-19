@@ -103,10 +103,14 @@ bug sort-editors: do,script editors; repro long 701600; detail : stream holds .+
 # file and none in the other's (seed 720212: a set lays =B2:B4*2 at Data!H5,
 # over H5:H7, and a script's ws.getRange("F4").copyFrom("H5:J8") pastes J8's
 # formula onto H7: H7 holds it in the streaming editor's file and not in the
-# full one's, or the other way, in two replays of four).
+# full one's, or the other way, in two replays of four). When both editors
+# lose it, the kinds invariant sees it, as a formula lost in the array's old
+# results (the same sequence, the run again: Data!H6 holds no formula, in the
+# results of the dynamic array at H5:H7).
 bug map-order: copy,move,do,script repeat; repro 100139; detail editor: the same edit on the same bytes saved two different workbooks:
 bug map-order: set,write,do,script editors; repro long 701746; detail : stream holds .*, full holds ; edit (?s)N\(\\*"d\\*"\).*(N\(\\*"d\\*"\)|copyFrom\()
 bug map-order: script editors; repro long 72021203186; detail ![A-Z]+[0-9]+: stream has =(, full has =.+|.+, full has =)$; edit copyFrom\(
+bug map-order: script kinds; repro long 72021203186; detail : the edit should leave a [a-z ]+ there, and it holds no formula \(it was lost\), in the results of the dynamic array at [A-Z]+[0-9]+:[A-Z]+[0-9]+$; edit copyFrom\(
 
 # Known (README, other seeds' findings: script kinds): a script that inserts
 # rows or columns leaves a legacy array with a dynamic array's cell metadata:

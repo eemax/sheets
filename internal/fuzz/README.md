@@ -625,7 +625,11 @@ writer). The repro is a sequence that shows it, `long` for
 one on long mode's pools; a long run replays each at its end, up to 10 times
 (the map-order bug's editors face shows one replay in two), and
 `TestBugRepros` replays those on the committed pool in every `go test`
-(all of them with `SHEETS_FUZZ=long`). A repro that no longer shows its bug
+(all of them with `SHEETS_FUZZ=long`). A replay shows the bug when its
+finding shows any of the bug's faces, not only its own line's: map-order's
+script paste shows its editors face or its kinds face from one repro, as the
+editors' layouts fall; held to its own face, the kinds line read as fixed in
+one of two runs of `TestBugRepros` (`TestBugReproAnyFace`). A repro that no longer shows its bug
 is reported as fixed, and one whose pool cannot be made as not replayed,
 with that pool's own failure; neither fails a run or the suite, so a fix of
 a listed bug passes before its lines are removed (the first version failed
@@ -789,6 +793,8 @@ named their bugs (or a new face of one), each with a repro:
 | seeds 771942 and 290155, 10 minutes each, side by side beside a 20-minute run (fix round 2) | 44,221 | 554 | 125.3 | 1 | intersection-kept, moved to a row its range does not cross (`#VALUE!`: the face took a number only, widened) |
 | seeds 366284 and 905117, 10 minutes each, side by side beside a 20-minute run (fix round 2) | 43,849 | 512 | 116.8 | 1 | script-legacy-dynamic, by a script's column delete (the face took an insert only, widened) |
 | seed 718113, 20 minutes (fresh, fix round 2) | 45,052 | 522 | 115.9 | 1 | spill-overwrites, a number typed into an array's results, seen by the reach invariant as its format lost (a new face) |
+| seed 720212, 20 minutes (fresh, before map-order's paste faces) | 58,497 | 717 | 122.6 | 1 | map-order, a script's paste over a dynamic array an earlier edit set, a formula in one editor's file and none in the other's (a new face) |
+| seed 720212 again, 20 minutes (with the editors face) | 57,912 | 711 | 122.8 | 1 | map-order, the same sequence, its formula lost in both editors' files, seen by the kinds invariant (a new face) |
 
 - **The rate** is about 115 findings per 10,000 edits, nearly all the
   escape (60 to 67% of each run's) and sort editors (32 to 36%), then map
@@ -852,6 +858,22 @@ named their bugs (or a new face of one), each with a repro:
   array's results, as the text and kinds invariants do
   (`, in the results of the dynamic array at M2:M3`), and the face takes only
   a format lost there, to General.
+- **map-order by a script's paste over an earlier edit's array:** a
+  script's paste over a dynamic array that an earlier edit set (seed 720212: a set
+  lays `=B2:B4*2` at `Data!H5`, over H5:H7, and a script's
+  `ws.getRange("F4").copyFrom("H5:J8")` pastes J8's formula onto H7) leaves
+  the formula in one editor's file and none in the other's, which side at
+  random (two replays of four, either way round: `long script editors 72021203186`).
+  When both editors lose it, the kinds invariant sees it (the same sequence,
+  the run again: `Data!H6: the edit should leave a plain formula there, and it holds no formula (it was lost), in the results of the dynamic array at H5:H7`).
+  The editors face for arrays set in the same edit asks for the array's
+  `N("d")` in the script and for a value. map-order's two new faces each
+  take a script holding a `copyFrom`: one whose cell holds a formula in one
+  editor's file and none in the other's, and one whose formula is lost in a
+  dynamic array's results in both. A paste in which both editors hold a
+  formula, rewritten otherwise, still reads as new, and so do a formula a
+  paste loses outside any array's results and a lost formula in a script
+  with no paste.
 - **Faces that must not hide a mutant:** the rows-insert mutant turns a
   formula that reads a range where one value goes dynamic (`=B3:B4*2`), so
   insert-turns-dynamic takes only one that reads no range but through an
@@ -974,6 +996,13 @@ repro 10 times under `-race` too, 16 s there (1 s plain), and now checks that
 half in the plain run only. Names and the replace's display cost no time a
 run can see (the default run's 2,000 edits in 35.5 s).
 
+**On the last commit** (fix round 2's faces: the reach invariant naming a
+dynamic array's results, script-legacy-dynamic's delete, map-order's paste),
+`time scripts/check.sh full` on the same MacBook, 2026-11-19, alone, at a
+load average of 2.8 to 5.4: **118.5 s** (1,406 tests), the fuzz package
+47.8 s in the plain step and 63.7 s in the race step, 16.5 s under the bar
+(the log: `~/sheets-evals/wave2/fuzz/fix2/check-full-time-final.log`).
+
 ## How the fuzzer was checked
 
 ### The mutants
@@ -1042,8 +1071,10 @@ seven findings, each one whose sequence the base makes with no finding; no
 finding was the code's. Run once more after fix round 2 (the reach
 invariant's names and replace, insert-turns-dynamic's batch face), it took
 66 s and found the same seven findings again, each the base makes clean.
-The logs are in `~/sheets-evals/wave2/fuzz-mutants/` (fix round 1's in
-`fix1-logs/` there). With the seed the audit used, 40016, `rewrite-loses-kind` is found as
+And on the last commit, with every face known.txt holds, it took 57 s and
+found the same seven again. The logs are in `~/sheets-evals/wave2/fuzz-mutants/`
+(fix round 1's in `fix1-logs/` there, fix round 2's first run in
+`fix2-logs/`). With the seed the audit used, 40016, `rewrite-loses-kind` is found as
 `long move kinds 4001600026` after 3 s, which replays with no finding on the
 tree as it is (`seed40016-rewrite-loses-kind/` there); the first version
 took the known `long sort editors 4001600015` for it. Each finding of seed
