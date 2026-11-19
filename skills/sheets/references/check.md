@@ -114,9 +114,11 @@
     `Sales!A30:C49, were H1:J20`, with `columns` and `was_columns` in
     `--json`): cells that left one rectangle and filled another of its size,
     holding what they held, formulas as Excel rewrites them, while the
-    cells around stayed (a few others may have changed). Moved straight
-    down or up with nothing beside it, that is as well rows added or
-    removed above, and is told as that;
+    cells around stayed (a few others may have changed, but not in the
+    rows it left or went to, nor in its columns when it moved straight
+    down or up: that is not told from a sort of some columns, and is
+    changes). Moved straight down or up with nothing beside it, that is
+    as well rows added or removed above, and is told as that;
   - then the check of book.xlsx, as above.
 
   Formulas Excel rewrites for rows or columns added or removed (a column
