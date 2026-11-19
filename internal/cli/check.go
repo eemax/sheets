@@ -255,7 +255,12 @@ func (a *app) checkFile(path string, fix bool) (*checkResult, *xlsx.CheckResult,
 			res.Fixed = true
 		}
 		if cr.Data != nil {
-			a.trackBytes(path, data, cr.Data, fixEffects(cr.Changes)...)
+			// What the fix stores replaces results the file marked as out of
+			// date, or filled ones it lacked: none of them was known, so none
+			// moved or is new (as with the editors, which count only results
+			// that were stored and current). The report has the features and
+			// the lint.
+			a.trackBytes(path, data, cr.Data)
 		}
 		wb = cr.After
 	} else {
@@ -271,25 +276,6 @@ func (a *app) checkFile(path string, fix bool) (*checkResult, *xlsx.CheckResult,
 	res.Findings = append(own, lintFindings(lint.Check(wb, lint.Options{}))...)
 	sort.SliceStable(res.Findings, func(i, j int) bool { return res.Findings[i].Severity > res.Findings[j].Severity })
 	return res, cr, nil
-}
-
-// fixEffects are the results check --fix changed, for the change report: a
-// stale result replaced moved, one dropped is unknown now.
-func fixEffects(cs []xlsx.Change) []xlsx.ResultChange {
-	var out []xlsx.ResultChange
-	for _, c := range cs {
-		rc := xlsx.ResultChange{Sheet: c.Sheet, Row: c.Row, Col: c.Col, Before: c.Before, After: c.After}
-		switch c.Kind {
-		case "replaced":
-			rc.Was, rc.Now = c.Before.Kind != grid.Empty, true
-		case "dropped":
-			rc.Was, rc.Why = c.Before.Kind != grid.Empty, c.Why
-		default:
-			continue
-		}
-		out = append(out, rc)
-	}
-	return out
 }
 
 func lintFindings(fs []lint.Finding) []checkFinding {

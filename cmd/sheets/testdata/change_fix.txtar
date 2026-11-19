@@ -1,0 +1,77 @@
+# The change report counts what the command did, no more and no less.
+
+# A sort moves a formula that already showed an error: not a new one.
+stdin ratios.tsv
+exec sheets write m.xlsx Data!A1
+exec sheets sort m.xlsx Data Name
+stdout '^change: 9 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before$'
+! stdout 'new errors:'
+# A move does too, and a new error is still told.
+exec sheets move m.xlsx Data!C2:C4 Data!E2:E4
+stdout ', 0 new errors,'
+exec sheets set m.xlsx Data!B3 0
+stdout '^change: 1 cell written, 1 value moved, 1 new error,'
+stdout '^new errors: Data!E3 #DIV/0! \(was 0.5\)$'
+
+# check --fix stores results where the file had none, or marked them out of
+# date: none of them was known, so none moved and none is new.
+fixture kinds_xlsxwriter.xlsx
+fixture kinds_unknown.xlsx
+fixture stale.xlsx
+exec sheets check --fix kinds_xlsxwriter.xlsx
+stdout '^change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, '
+exec sheets check --fix kinds_unknown.xlsx
+stdout '^change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, '
+exec sheets check --fix stale.xlsx --fail-on never
+stdout '^change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, '
+! stdout 'new errors:'
+
+# Cells a dynamic array spills into are not cells written; the values it
+# moves are told.
+exec sheets set s.xlsx B1 3 A1 '=SEQUENCE(B1)'
+stdout '^change: 2 cells written, '
+exec sheets set s.xlsx B1 5
+stdout '^change: 1 cell written, 0 values moved, '
+exec sheets set s.xlsx B1 2
+stdout '^change: 1 cell written, 3 values moved, '
+stdout '^moved: Sheet1!A3 3 → nothing, Sheet1!A4 4 → nothing, Sheet1!A5 5 → nothing$'
+exec sheets set s.xlsx C1 '=SEQUENCE(3,1,B1*10)' B1 5
+stdout '^change: 2 cells written, '
+exec sheets set s.xlsx B1 7
+stdout '^change: 1 cell written, 3 values moved, '
+stdout '^moved: Sheet1!C1 50 → 70, Sheet1!C2 51 → 71, Sheet1!C3 52 → 72$'
+exec sheets --json set s.xlsx B1 1
+stdout '"change":\{"cells":1,"moved":9,'
+
+# Chart add and delete, query --into and undo report too.
+stdin chart.tsv
+exec sheets write d.xlsx Data!A1
+exec sheets chart add d.xlsx Data
+stdout '^change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before$'
+exec sheets chart delete d.xlsx Data!D1
+stdout '^change: 0 cells written, .*, 1 feature lost, '
+stdout '^lost: chart Data!D1 '
+exec sheets undo d.xlsx
+stdout '^change: .*, 0 features lost, '
+exec sheets --json chart delete d.xlsx Data!D1
+stdout '"deleted":"Data!D1"'
+stdout '"change":\{"cells":0,.*"features_lost":1,'
+exec sheets --json undo d.xlsx
+stdout '"change":\{"cells":0,.*"features_lost":0'
+exec sheets undo d.xlsx
+stdout '^change: .*, 1 feature lost, '
+exec sheets query d.xlsx 'select * from Data' --into Out
+stdout '^change: 9 cells written, '
+shortform 15
+exec sheets --json query d.xlsx 'select * from Data' --into Out
+stdout '"change":\{"cells":9,'
+
+-- ratios.tsv --
+Name	Val	Ratio
+b	2	=1/B2
+a	0	=1/B3
+c	3	=1/B4
+-- chart.tsv --
+Name	Val
+a	1
+b	2

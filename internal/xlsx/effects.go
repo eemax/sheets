@@ -28,6 +28,9 @@ type ResultChange struct {
 	// Written: the session wrote the formula (its result before is that of
 	// whatever the cell held, not known here).
 	Written bool
+	// Carried: written, and the formula showed an error where it came from
+	// (a sort or move): an error already there, not a new one.
+	Carried bool
 	// Before is the result stored when the session began; Was says it was
 	// known (a result stored and current).
 	Before grid.Cell
@@ -84,8 +87,8 @@ func SameResult(a, b grid.Cell) bool { return sameResult(a, b) }
 // effectOf is what computing f did to its stored result, or false when
 // the report has nothing to learn from it: a result recomputed to what it
 // was, or a written formula's plain value (the command reports those).
-func effectOf(f *formulaAt, written, must bool, v grid.Cell, ok bool, why string) (ResultChange, bool) {
-	rc := ResultChange{Sheet: f.sheet, Row: f.row, Col: f.col, Written: written, After: valueOnly(v), Now: ok, Why: why}
+func effectOf(f *formulaAt, written, carried, must bool, v grid.Cell, ok bool, why string) (ResultChange, bool) {
+	rc := ResultChange{Sheet: f.sheet, Row: f.row, Col: f.col, Written: written, Carried: written && carried, After: valueOnly(v), Now: ok, Why: why}
 	if !ok {
 		rc.After = grid.Cell{}
 	}
@@ -105,23 +108,69 @@ func effectOf(f *formulaAt, written, must bool, v grid.Cell, ok bool, why string
 	return rc, true
 }
 
-// writtenCells lists cells written, from a session's changed map.
-func writtenCells(changed map[cellKey]string) []EffectCell {
+// writtenCells lists cells written, from a session's changed map; the
+// cells a dynamic array's result fills or leaves are not among them.
+func writtenCells(changed map[cellKey]string, spilled map[cellKey]*spillCell) []EffectCell {
 	out := make([]EffectCell, 0, len(changed))
 	for k, sheet := range changed {
+		if _, ok := spilled[k]; ok {
+			continue
+		}
 		out = append(out, EffectCell{Sheet: sheet, Row: k.row, Col: k.col})
 	}
 	return out
+}
+
+// spillCell is a cell a dynamic array's result fills or leaves: its value
+// when the session began and now.
+type spillCell struct {
+	sheet         string
+	before, after grid.Cell
+}
+
+// spillResults are those cells' values, before and after, as results the
+// report can compare: a value that changed is one the command moved.
+func spillEffects(spilled map[cellKey]*spillCell) []ResultChange {
+	var out []ResultChange
+	for k, c := range spilled {
+		out = append(out, ResultChange{Sheet: c.sheet, Row: k.row, Col: k.col,
+			Before: c.before, Was: c.before.Kind != grid.Empty, After: c.after, Now: true})
+	}
+	return out
+}
+
+// remapNotes moves what the session notes of cells where a change of rows,
+// columns or sheets puts them (false: it took them).
+func (e *Editor) remapNotes(move func(cellKey) (cellKey, bool)) {
+	if len(e.carried) > 0 {
+		m := map[cellKey]bool{}
+		for k := range e.carried {
+			if k2, ok := move(k); ok {
+				m[k2] = true
+			}
+		}
+		e.carried = m
+	}
+	if len(e.spilled) > 0 {
+		m := map[cellKey]*spillCell{}
+		for k, c := range e.spilled {
+			if k2, ok := move(k); ok {
+				m[k2] = c
+			}
+		}
+		e.spilled = m
+	}
 }
 
 // Effects is what the session did, as of its last save (or render).
 func (e *Editor) Effects() []Effects { return []Effects{e.effects()} }
 
 func (e *Editor) effects() Effects {
-	ef := Effects{Written: writtenCells(e.changed), Ops: e.lineOps}
+	ef := Effects{Written: writtenCells(e.changed, e.spilled), Ops: e.lineOps}
 	if e.res != nil {
-		ef.Results = e.res.effects
+		ef.Results = append(ef.Results, e.res.effects...)
 	}
+	ef.Results = append(ef.Results, spillEffects(e.spilled)...)
 	return ef
 }
 
@@ -134,7 +183,7 @@ func (e *Editor) After() []byte  { return e.out }
 func (s *StreamEditor) Effects() []Effects { return []Effects{s.effects()} }
 
 func (s *StreamEditor) effects() Effects {
-	ef := Effects{Written: writtenCells(s.changed)}
+	ef := Effects{Written: writtenCells(s.changed, nil)}
 	for _, op := range s.ops {
 		switch op.kind {
 		case 'i':
@@ -176,3 +225,15 @@ func (a *Auto) After() []byte {
 
 // recordOp notes a change of rows, columns or sheets.
 func (e *Editor) recordOp(op LineOp) { e.lineOps = append(e.lineOps, op) }
+
+// carryError notes a formula put where it stands by a sort or move that
+// showed an error where it came from.
+func (e *Editor) carryError(k cellKey, h *taken, text string) {
+	if text == "" || h.cell.Kind != grid.Error || h.cell.Pending {
+		return
+	}
+	if e.carried == nil {
+		e.carried = map[cellKey]bool{}
+	}
+	e.carried[k] = true
+}

@@ -69,8 +69,32 @@ func (e *Editor) touch(sheet string, row, col int) {
 	if e.changed == nil {
 		e.changed = map[cellKey]string{}
 	}
-	e.changed[keyOf(sheet, row, col)] = sheet
+	k := keyOf(sheet, row, col)
+	e.changed[k] = sheet
+	delete(e.spilled, k) // written, whatever else it was
 	e.edits++
+}
+
+// touchSpill records that a cell's value changed because a dynamic array's
+// result fills it or leaves it (readers of it are recomputed), not
+// because the command wrote it. was is its value before; now, as it is
+// left.
+func (e *Editor) touchSpill(sheet string, row, col int, was, now grid.Cell) {
+	k := keyOf(sheet, row, col)
+	if c := e.spilled[k]; c != nil {
+		c.after = valueOnly(now)
+		e.edits++
+		return
+	}
+	if _, written := e.changed[k]; written {
+		e.edits++
+		return
+	}
+	e.touch(sheet, row, col)
+	if e.spilled == nil {
+		e.spilled = map[cellKey]*spillCell{}
+	}
+	e.spilled[k] = &spillCell{sheet: sheet, before: valueOnly(was), after: valueOnly(now)}
 }
 
 // mustRecompute records a formula an edit of rows, columns or sheets may
@@ -401,6 +425,7 @@ type calcState struct {
 	formulas  map[cellKey]*formulaAt // the workbook's formulas as they stand
 	rs        *resolver
 	changed   map[cellKey]string // cells written, by sheet name
+	carried   map[cellKey]bool   // formulas moved that showed an error already
 	recompute map[cellKey]bool   // formulas an edit of rows, columns or sheets reached
 	edited    bool               // rows, columns or sheets changed
 	// restore stores again the results of formulas not recomputed: an
@@ -504,7 +529,7 @@ func (e *Editor) results() (calcResult, error) {
 	if err != nil {
 		return calcResult{}, err
 	}
-	st := calcState{formulas: all, rs: e.resolver(), changed: e.changed, recompute: e.recompute,
+	st := calcState{formulas: all, rs: e.resolver(), changed: e.changed, carried: e.carried, recompute: e.recompute,
 		edited: e.structural || e.sheetsChanged, restore: e.lines != nil, unshared: e.unshared, order: e.sheetIndex, calcFile: e.calcFile,
 		typer: func(all map[cellKey]*formulaAt, computing map[*formulaAt]bool, rs *resolver) *typer {
 			return e.newTyper(all, computing, rs)
@@ -723,7 +748,7 @@ func computeResults(st calcState) (calcResult, error) {
 			}
 			if i < len(first) {
 				_, written := st.changed[keyOf(f.sheet, f.row, f.col)]
-				if rc, keep := effectOf(f, written, true, grid.Cell{}, false, linkNote); keep {
+				if rc, keep := effectOf(f, written, st.carried[keyOf(f.sheet, f.row, f.col)], true, grid.Cell{}, false, linkNote); keep {
 					out.effects = append(out.effects, rc)
 				}
 			}
@@ -799,7 +824,7 @@ func computeResults(st calcState) (calcResult, error) {
 			store(f, grid.Cell{})
 			out.dropped[key] = why
 			if !(why == arrayNotFilled && st.deferArrays) {
-				if rc, keep := effectOf(f, written, i < len(first), grid.Cell{}, false, why); keep {
+				if rc, keep := effectOf(f, written, st.carried[key], i < len(first), grid.Cell{}, false, why); keep {
 					out.effects = append(out.effects, rc)
 				}
 			}
@@ -817,7 +842,7 @@ func computeResults(st calcState) (calcResult, error) {
 			continue
 		}
 		store(f, v)
-		if rc, keep := effectOf(f, written, i < len(first), v, true, ""); keep {
+		if rc, keep := effectOf(f, written, st.carried[key], i < len(first), v, true, ""); keep {
 			out.effects = append(out.effects, rc)
 		}
 	}

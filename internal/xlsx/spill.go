@@ -77,7 +77,7 @@ func (e *Editor) spillResults(res calcResult) (bool, error) {
 				return
 			}
 			clearErr = e.f.SetCellDefault(sheet, grid.CellName(r, c), "")
-			e.touch(sheet, r, c)
+			e.touchSpill(sheet, r, c, *cell, grid.Cell{})
 			changed = true
 		})
 		if clearErr != nil {
@@ -91,14 +91,15 @@ func (e *Editor) spillResults(res calcResult) (bool, error) {
 					}
 					r, c := k.row+i, k.col+j
 					v := spillValue(a.At(i, j))
-					if now := s.Get(r, c); now.Kind == v.Kind && now.Num == v.Num && now.Text == v.Text && now.Bool == v.Bool && now.Formula == "" {
+					now := s.Get(r, c)
+					if now.Kind == v.Kind && now.Num == v.Num && now.Text == v.Text && now.Bool == v.Bool && now.Formula == "" {
 						continue
 					}
 					if err := e.putValue(sheet, r, c, v); err != nil {
 						return false, err
 					}
 					e.grow(sheet, grid.Range{R1: r, C1: c, R2: r, C2: c})
-					e.touch(sheet, r, c)
+					e.touchSpill(sheet, r, c, now, v)
 					changed = true
 				}
 			}

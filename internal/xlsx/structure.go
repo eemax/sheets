@@ -476,6 +476,14 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 	}
 	e.legacy = moved
 	e.lines, e.recompute, e.changed, e.wasEmpty = keep, recompute, changed, fresh
+	e.remapNotes(func(k cellKey) (cellKey, bool) {
+		if k.sheet != strings.ToLower(target) {
+			return k, true
+		}
+		r, c, ok := move(k.row, k.col)
+		k.row, k.col = r, c
+		return k, ok
+	})
 	e.structural = true
 	e.edits++
 	e.forgetPositions()
@@ -656,6 +664,7 @@ func (e *Editor) sheetEdit(from, to string, copy bool, rewrite func(string) stri
 		}
 	}
 	e.wasEmpty = wasEmpty
+	e.remapNotes(move)
 	recompute := map[cellKey]bool{}
 	for k := range e.recompute {
 		if k2, ok := move(k); ok {
