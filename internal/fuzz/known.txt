@@ -58,6 +58,20 @@ write text 100262
 write text 100272
 write text 100317
 
+# Known (fix round 4: the committed pool holds notes now, in 14 of its 40
+# files, so the default mode judges a note outside an edit's reach and what
+# the editors save of one). Five sequences lose the note of a sheet they
+# copied before (the bug sheet-copy-note, below; seed 100103, shrunk: sheets
+# sheet copy book.xlsx Data 'Q1 "draft"', then sheets clear book.xlsx 'Q1
+# "draft"!I9:K11' leaves Data!B1's note nowhere), and one writes the drawing of
+# a note with a prefix its file does not declare after a row is inserted (the
+# bug stream-note-prefix: seed 100099, sheets rows insert book.xlsx 'Data!16').
+clear reach 100103
+do reach 100085 100310
+move reach 100217
+script reach 100011
+rows-insert xml 100099
+
 # Long mode: the bugs its findings show, by their face. A bug's patterns are
 # Go regular expressions: detail on the first line of the finding's detail,
 # edit on the last edit as a shell command. repro is a sequence that shows it
@@ -225,15 +239,20 @@ bug intersection-kept: script editors; repro long 91548805029; detail ![A-Z]+[0-
 # a workbook whose notes openpyxl wrote. About a seventh of long mode's
 # findings in a 4-minute run: it ends each sequence that reaches it.
 bug stream-note-prefix: rows-insert,rows-delete,cols-insert,cols-delete,script,do xml; repro long 200003100051; detail stream editor: xl/drawings/commentsDrawing[0-9]+\.vml: <v:shape>: the prefix "[vx]" is not declared$
-# A sheet copied that holds a note: the next edit of the workbook loses the
-# note of the sheet it was copied from (XlsxWriter's files; both sheets keep
-# the one comments part, and the next edit saves one of them), by either
-# editor, or by only the full one (the editors invariant's face). After
-# `sheets sheet copy book.xlsx Data Backup`, `sheets set book.xlsx 'Backup!K2' x`
-# leaves Data!C1's note nowhere. (openpyxl's: the copy holds no note at all,
-# which no invariant judges: a sheet made as a copy is all in the reach.)
-bug sheet-copy-note: set,write,clear,copy,move,sort,replace,rows-insert,rows-delete,cols-insert,cols-delete,sheet-rename,sheet-add,sheet-copy,script,do reach; repro long 200003100025; detail : outside the edit's reach, the note "(?:[^"\\]|\\.)*" on [A-Z]+[0-9]+ is not there as it was: the edit's shifts give the note "(?:[^"\\]|\\.)*" on [A-Z]+[0-9]+, and the sheet holds nothing of its kind$
-bug sheet-copy-note: set,write,clear,copy,move,sort,replace,rows-insert,rows-delete,cols-insert,cols-delete,sheet-rename,sheet-add,sheet-copy,script,do editors; repro long 200003100415; detail ![^!]*the (streaming|full) editor's file holds note [A-Z]+[0-9]+ ".*", the (streaming|full) editor's does not$
+# A sheet copied that holds a note: the next edit of the workbook, or a later
+# line of the batch that copies it, loses the note of the sheet it was copied
+# from (both sheets keep the one comments part, and the next edit saves one of
+# them: the sheet copied, or its copy), by either editor, or by only the full
+# one (the editors invariant's face). After `sheets sheet copy book.xlsx Data
+# Backup`, `sheets set book.xlsx 'Backup!K2' x` leaves Data!C1's note nowhere.
+# The face needs the copy: a finding is this bug only when an edit of its
+# sequence that the editors took copied the sheet the finding names (or made
+# it as a copy, and a rename since follows it), `copied` below; a note lost
+# in a workbook where no sheet was copied, by a clear, a rows insert or any
+# edit, is a bug of its own (the audit's mutation that drops the notes a rows
+# or columns edit moves was taken for this one: fix round 4, f3.1).
+bug sheet-copy-note: set,write,clear,copy,move,sort,replace,rows-insert,rows-delete,cols-insert,cols-delete,sheet-rename,sheet-add,sheet-copy,script,do reach; repro long 200003100025; detail ^(?P<sheet>.*?): outside the edit's reach, the note "(?:[^"\\]|\\.)*" on [A-Z]+[0-9]+ is not there as it was: the edit's shifts give the note "(?:[^"\\]|\\.)*" on [A-Z]+[0-9]+, and the sheet holds nothing of its kind$; copied
+bug sheet-copy-note: set,write,clear,copy,move,sort,replace,rows-insert,rows-delete,cols-insert,cols-delete,sheet-rename,sheet-add,sheet-copy,script,do editors; repro long 200003100415; detail ^(?P<sheet>[^!]*)!the (streaming|full) editor's file holds note [A-Z]+[0-9]+ ".*", the (streaming|full) editor's does not$; copied
 
 # A dynamic array whose results reach a merged range: sheets writes the result
 # of the merged cells into the merge's first cell, and the text the merge held

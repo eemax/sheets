@@ -531,6 +531,8 @@ bug broken: rows-delete kinds; repro long 700012; detail holds =#REF! # not a co
 		"bug x y: sort editors; repro 7; detail a\n",                                       // a name with a space
 		"bug x: sort editors; repro long x; detail a\n",                                    // no seed
 		"bug x: sort editors; repro 7; detail a\nbug x: sort editors; repro 8; detail b\n", // a face twice
+		"bug x: set reach; repro 7; detail a; copied\n",                                    // copied, and no sheet to read
+		"bug x: set reach; repro 7; detail (?P<sheet>a); copied yes\n",                     // copied takes no value
 	} {
 		if _, err := ReadKnown(bad); err == nil {
 			t.Errorf("%q parsed", bad)
@@ -614,16 +616,19 @@ func TestKnownFaces(t *testing.T) {
 		// A formula read by its row, moved by a script's insert (seed 915488).
 		{"script", "editors", `R&D!C3 (=IF(N("p")=0,'Data'!C2:C3*2)): stream holds number 6, full holds number 0.58`, script(`ws.getRange("H7").setFormula("=IF(N(\"p\")=0,NOT(F7))");` + "\n" + `ws.getRange("1:1").insert("Down");`), "intersection-kept"},
 		{"script", "editors", `Notes!C1 (=IF(N("p")=0,'Data'!C2:C3*10)): stream holds number 637.4, full holds error "#VALUE!"`, script(`ws.getRange("1:1").delete("Up");`), "intersection-kept"},
-		// Notes (fix round 3): the streaming editor's drawing prefix, and a note
-		// lost after a sheet was copied.
+		// Notes (fix round 3): the streaming editor's drawing prefix. A note
+		// lost in a sequence with no sheet copy is no bug of a sheet copy (fix
+		// round 4, f3.1: the first version took every note lost for it, and so
+		// a slip that drops the notes a rows or columns edit moves); the cases
+		// with a copy are TestKnownSheetCopyNote's.
 		{"rows-insert", "xml", `stream editor: xl/drawings/commentsDrawing1.vml: <v:shape>: the prefix "x" is not declared`, plain("rows-insert"), "stream-note-prefix"},
 		{"cols-delete", "xml", `stream editor: xl/drawings/commentsDrawing1.vml: <v:shape>: the prefix "v" is not declared`, plain("cols-delete"), "stream-note-prefix"},
 		{"rows-insert", "xml", `stream editor: xl/worksheets/sheet1.xml: <row>: the prefix "x" is not declared`, plain("rows-insert"), ""},
 		{"set", "xml", `stream editor: xl/drawings/commentsDrawing1.vml: <v:shape>: the prefix "x" is not declared`, plain("set"), ""},
-		{"clear", "reach", `Data: outside the edit's reach, the note "check this" on C1 is not there as it was: the edit's shifts give the note "check this" on C1, and the sheet holds nothing of its kind`, plain("clear"), "sheet-copy-note"},
-		{"do", "reach", `Q 2027: outside the edit's reach, the note "say \"hi\"" on F1 is not there as it was: the edit's shifts give the note "say \"hi\"" on F1, and the sheet holds nothing of its kind`, plain("do"), "sheet-copy-note"},
-		{"set", "editors", `Data!the streaming editor's file holds note D1 "check this" "\"check this\" false" "" "", the full editor's does not`, plain("set"), "sheet-copy-note"},
-		{"rows-insert", "editors", `Data!the full editor's file holds note B4 "check this" "\"check this\" false" "" "", the streaming editor's does not`, plain("rows-insert"), "sheet-copy-note"},
+		{"clear", "reach", `Data: outside the edit's reach, the note "check this" on C1 is not there as it was: the edit's shifts give the note "check this" on C1, and the sheet holds nothing of its kind`, plain("clear"), ""},
+		{"do", "reach", `Q 2027: outside the edit's reach, the note "say \"hi\"" on F1 is not there as it was: the edit's shifts give the note "say \"hi\"" on F1, and the sheet holds nothing of its kind`, plain("do"), ""},
+		{"set", "editors", `Data!the streaming editor's file holds note D1 "check this" "\"check this\" false" "" "", the full editor's does not`, plain("set"), ""},
+		{"rows-insert", "editors", `Data!the full editor's file holds note B4 "check this" "\"check this\" false" "" "", the streaming editor's does not`, plain("rows-insert"), ""},
 		// A dynamic array spilling over a merge replaces the merge's text.
 		{"set", "reach", `Data!A18: outside the edit's reach, it held text "Remarks", and holds boolean false now`, plain("set"), "spill-into-merge"},
 		{"write", "reach", `Data!A17: outside the edit's reach, it held text "Remarks", and holds text "ÅÄÖ 日本語" now`, plain("write"), "spill-into-merge"},
@@ -687,6 +692,98 @@ func TestKnownFaces(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%s %s %q: the bug %q, want %q", tc.class, tc.invariant, tc.detail, got, tc.want)
 		}
+	}
+}
+
+// TestKnownSheetCopyNote: the bug sheet-copy-note is one of a sheet copied, and
+// takes a note lost only in a sequence where an edit the editors took copied
+// the sheet the finding names, or made it as a copy (fuzzer-long's audit,
+// f3.1: it took every note lost, so the audit's mutation that drops the notes a
+// rows or columns edit moves read as known).
+func TestKnownSheetCopyNote(t *testing.T) {
+	text, err := os.ReadFile("known.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kn, err := ReadKnown(string(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range kn.Bugs {
+		if b.Name == "sheet-copy-note" && !b.Copied {
+			t.Errorf("known.txt:%d: the bug sheet-copy-note, %s face, takes a note lost with no sheet copy before it", b.Line, b.Invariant)
+		}
+	}
+	batch := func(lines string) Edit { return Edit{Class: "do", Args: []string{"do", FileArg}, Stdin: lines} }
+	copyOf := func(from, to string) Edit {
+		return Edit{Class: "sheet-copy", Args: []string{"sheet", "copy", FileArg, from, to}}
+	}
+	rename := func(from, to string) Edit {
+		return Edit{Class: "sheet-rename", Args: []string{"sheet", "rename", FileArg, from, to}}
+	}
+	set := Edit{Class: "set", Args: []string{"set", FileArg, "Data!K2", "x"}}
+	script := Edit{Class: "script", Args: []string{"script", FileArg, "-e", "const ws = workbook.getWorksheet(\"Data\");\nws.getRange(\"1:1\").insert(\"Down\");\n"}}
+	lost := func(sheet string) string {
+		return sheet + `: outside the edit's reach, the note "check this" on C1 is not there as it was: the edit's shifts give the note "check this" on C1, and the sheet holds nothing of its kind`
+	}
+	editors := func(sheet string) string {
+		return sheet + `!the full editor's file holds note C1 "check this" "\"check this\" false" "" "", the streaming editor's does not`
+	}
+	for _, tc := range []struct {
+		name      string
+		earlier   []Edit
+		refused   bool // the earlier edits were refused
+		class     string
+		last      Edit
+		invariant string
+		detail    string
+		wantKnown bool
+	}{
+		// The copy is the cause: a note of the sheet copied, or of its copy.
+		{name: "the sheet copied", earlier: []Edit{copyOf("Data", "Backup")}, class: "set", last: set, invariant: "reach", detail: lost("Data"), wantKnown: true},
+		{name: "its copy", earlier: []Edit{copyOf("Data", "Backup")}, class: "set", last: set, invariant: "reach", detail: lost("Backup"), wantKnown: true},
+		{name: "in other letters", earlier: []Edit{copyOf("Data", "Backup")}, class: "set", last: set, invariant: "reach", detail: lost("data"), wantKnown: true},
+		{name: "a sheet named with quotes", earlier: []Edit{copyOf("Data", `Q1 "draft"`)}, class: "clear", last: set, invariant: "reach", detail: lost(`Q1 "draft"`), wantKnown: true},
+		{name: "the editors face", earlier: []Edit{copyOf("Data", "Backup")}, class: "set", last: set, invariant: "editors", detail: editors("Data"), wantKnown: true},
+		{name: "the editors face, on the copy", earlier: []Edit{copyOf("Data", "Backup")}, class: "set", last: set, invariant: "editors", detail: editors("Backup"), wantKnown: true},
+		{name: "a copy long before", earlier: []Edit{copyOf("Data", "Backup"), set, set, script}, class: "script", last: script, invariant: "reach", detail: lost("Data"), wantKnown: true},
+		{name: "a batch that copied", earlier: []Edit{batch("set Data!A1 1\nsheet copy Data Backup\n"), set}, class: "set", last: set, invariant: "reach", detail: lost("Data"), wantKnown: true},
+		{name: "a batch that copies and goes on", class: "do", last: batch("sheet copy Data Backup\nclear Data!L5 --all\n"), invariant: "reach", detail: lost("Data"), wantKnown: true},
+		{name: "a copy of the copy", earlier: []Edit{copyOf("Data", "Backup"), copyOf("Backup", "Plan")}, class: "set", last: set, invariant: "reach", detail: lost("Plan"), wantKnown: true},
+		{name: "followed through a rename", earlier: []Edit{copyOf("Data", "Backup"), rename("Data", "Main")}, class: "set", last: set, invariant: "reach", detail: lost("Main"), wantKnown: true},
+		{name: "its copy renamed", earlier: []Edit{copyOf("Data", "Backup"), rename("Backup", "Old")}, class: "set", last: set, invariant: "reach", detail: lost("Old"), wantKnown: true},
+		{name: "renamed in a batch", earlier: []Edit{copyOf("Data", "Backup"), batch("sheet rename Data Main\n")}, class: "set", last: set, invariant: "reach", detail: lost("Main"), wantKnown: true},
+		// Not the copy's: no copy, or not of this sheet.
+		{name: "no copy", class: "clear", last: Edit{Class: "clear", Args: []string{"clear", FileArg, "Data!L5", "--all"}}, invariant: "reach", detail: lost("Data")},
+		{name: "no copy, a rows insert", class: "rows-insert", last: Edit{Class: "rows-insert", Args: []string{"rows", "insert", FileArg, "Data!2"}}, invariant: "reach", detail: lost("Data")},
+		{name: "no copy, a column insert after sets", earlier: []Edit{set, set}, class: "cols-insert", last: Edit{Class: "cols-insert", Args: []string{"cols", "insert", FileArg, "Data!A", "-n", "1"}}, invariant: "reach", detail: lost("Data")},
+		{name: "no copy, the editors face", earlier: []Edit{set}, class: "set", last: set, invariant: "editors", detail: editors("Data")},
+		{name: "a sheet added, not copied", earlier: []Edit{{Class: "sheet-add", Args: []string{"sheet", "add", FileArg, "Backup"}}}, class: "set", last: set, invariant: "reach", detail: lost("Data")},
+		{name: "a copy refused", earlier: []Edit{copyOf("Data", "Backup")}, refused: true, class: "set", last: set, invariant: "reach", detail: lost("Data")},
+		{name: "a batch refused", earlier: []Edit{batch("sheet copy Data Backup\n")}, refused: true, class: "set", last: set, invariant: "reach", detail: lost("Data")},
+		{name: "another sheet", earlier: []Edit{copyOf("Data", "Backup")}, class: "set", last: set, invariant: "reach", detail: lost("Plan")},
+		{name: "another sheet, the editors face", earlier: []Edit{copyOf("Data", "Backup")}, class: "set", last: set, invariant: "editors", detail: editors("Plan")},
+		{name: "a sheet renamed away", earlier: []Edit{copyOf("Data", "Backup"), rename("Data", "Main")}, class: "set", last: set, invariant: "reach", detail: lost("Data")},
+		{name: "another sheet copied", earlier: []Edit{copyOf("Plan", "Backup")}, class: "set", last: set, invariant: "reach", detail: lost("Data")},
+		{name: "a batch that copies another sheet", class: "do", last: batch("set Data!K2 x\nsheet copy Plan Backup\n"), invariant: "reach", detail: lost("Data")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := Finding{Signature: Signature{tc.class, tc.invariant, 4001600827, true}, Detail: tc.detail, Edits: append(append([]Edit{}, tc.earlier...), tc.last)}
+			if tc.refused {
+				f.Taken = make([]bool, len(f.Edits))
+				f.Taken[len(f.Taken)-1] = true
+			}
+			got := ""
+			if b := kn.Bug(f); b != nil {
+				got = b.Name
+			}
+			switch {
+			case tc.wantKnown && got != "sheet-copy-note":
+				t.Errorf("the bug %q, want sheet-copy-note", got)
+			case !tc.wantKnown && got != "":
+				t.Errorf("the bug %q, want none: a note lost with no sheet copy of its sheet before it is a new finding", got)
+			}
+		})
 	}
 }
 

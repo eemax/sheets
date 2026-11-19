@@ -132,8 +132,12 @@ type Finding struct {
 	Pool     uint64 // the seed fuzzgen.py made the pool from; 0 for the committed pool (testdata/pool)
 	Workbook string // the pool file the sequence started from
 	Edits    []Edit // the sequence, ending with the edit that broke it
-	Detail   string
-	After    time.Duration // how long the run had run when it made it
+	// Taken says, for each edit of Edits, whether both editors took it (an
+	// edit refused changes nothing: a sheet copy refused made no copy). Nil:
+	// not known, and every edit counts as taken.
+	Taken  []bool
+	Detail string
+	After  time.Duration // how long the run had run when it made it
 }
 
 // Report prints the finding as a repro: seed, workbook, edits, detail.
@@ -355,6 +359,7 @@ func sequence(pool []Workbook, seed uint64, dir string, steps, budget int, log f
 	defer s.close()
 	s.res = res
 	var edits []Edit
+	var taken []bool
 	for i := 0; i < n; i++ {
 		e, v, err := s.generate(rng)
 		if err != nil {
@@ -365,7 +370,7 @@ func sequence(pool []Workbook, seed uint64, dir string, steps, budget int, log f
 				return nil, made, applied, fmt.Errorf("the pool file %s: %s", wb.Name, v.detail)
 			}
 			last := edits[len(edits)-1]
-			return &Finding{Signature: Signature{Class: last.Class, Invariant: v.invariant, Seed: seed}, Workbook: wb.Name, Edits: edits, Detail: v.detail}, made, applied, nil
+			return &Finding{Signature: Signature{Class: last.Class, Invariant: v.invariant, Seed: seed}, Workbook: wb.Name, Edits: edits, Taken: taken, Detail: v.detail}, made, applied, nil
 		}
 		edits = append(edits, e)
 		out, err := s.step(e, i)
@@ -376,6 +381,7 @@ func sequence(pool []Workbook, seed uint64, dir string, steps, budget int, log f
 		if res != nil {
 			res.Made[e.Class]++
 		}
+		taken = append(taken, out.applied)
 		if out.applied {
 			applied++
 		}
@@ -388,7 +394,7 @@ func sequence(pool []Workbook, seed uint64, dir string, steps, budget int, log f
 			for _, w := range out.broken[1:] {
 				detail += "\nalso " + w.invariant + ": " + w.detail
 			}
-			return &Finding{Signature: Signature{Class: e.Class, Invariant: v.invariant, Seed: seed}, Workbook: wb.Name, Edits: edits, Detail: detail}, made, applied, nil
+			return &Finding{Signature: Signature{Class: e.Class, Invariant: v.invariant, Seed: seed}, Workbook: wb.Name, Edits: edits, Taken: taken, Detail: detail}, made, applied, nil
 		}
 	}
 	if sample != nil && made > 0 {
@@ -424,7 +430,7 @@ func Shrink(pool []Workbook, f Finding, dir string) (Finding, error) {
 			return false, err
 		}
 		if g != nil && g.edit == len(try)-1 && try[g.edit].Class == f.Class && g.invariant == f.Invariant {
-			f.Detail = g.detail
+			f.Detail, f.Taken = g.detail, g.taken
 			return true, nil
 		}
 		return false, nil
@@ -492,6 +498,7 @@ type broke struct {
 	edit      int
 	invariant string
 	detail    string
+	taken     []bool // which edits up to it both editors took
 }
 
 // replayEdits makes the given edits on a workbook and returns the first
@@ -502,13 +509,15 @@ func replayEdits(wb []byte, edits []Edit, dir string) (*broke, error) {
 		return nil, err
 	}
 	defer s.close()
+	var taken []bool
 	for i, e := range edits {
 		out, err := s.step(e, i)
 		if err != nil {
 			return nil, err
 		}
+		taken = append(taken, out.applied)
 		if len(out.broken) > 0 {
-			return &broke{i, out.broken[0].invariant, out.broken[0].detail}, nil
+			return &broke{i, out.broken[0].invariant, out.broken[0].detail, taken}, nil
 		}
 	}
 	return nil, nil

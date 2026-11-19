@@ -8,8 +8,10 @@ pools of runs from seed 2,000,000: fix round 3 of the fuzzer's long mode) it
 adds merges, notes, links, hidden rows and columns and a styled header, which
 the reach invariant judges outside an edit's reach. They come from a random
 stream of their own, and only with the flag, so every seed without it makes
-the files it always made, byte for byte: the committed pool, and the pools the
-repros of known.txt replay on, need no change.
+the files it always made, byte for byte: the pools the repros of known.txt
+replay on need no change. --notes adds only the notes of --objects (the same
+ones, for a seed), which the committed pool holds: the default mode judges a
+note outside an edit's reach too (fix round 4: a note lost went unseen in it).
 
 Every formula carries its kind in its text, as the condition N("p")=0,
 N("l")=0 or N("d")=0 of an IF that is always true: IF(N("p")=0,B2*C2). N of
@@ -47,7 +49,8 @@ in the package) are fixed.
 --pool-only writes the pool and no must-refuse cases: the fuzzer's long mode
 (SHEETS_FUZZ=long) makes a fresh pool this way from each seed it runs, and
 the must-refuse cases are made from the committed pool's files (another seed
-may hold none that fits a case). --objects adds the objects named above.
+may hold none that fits a case). --objects adds the objects named above,
+--notes the notes among them alone.
 """
 import argparse
 import datetime
@@ -138,7 +141,7 @@ class Plan:
     (sheet, row, col) -> value, formula ("=...") or None, and its arrays,
     tables, names, charts, validations and conditional formats."""
 
-    def __init__(self, rng, dynamic, objects=False):
+    def __init__(self, rng, dynamic, objects=False, notes=False):
         self.rng = rng
         self.sheets = ["Data"]
         n2 = rng.choice([0, 1, 1, 2])
@@ -163,7 +166,7 @@ class Plan:
         self.arrays = rng.random() < 0.5
         self.n = rng.randint(4, 14)  # data rows on Data
         self.build(dynamic)
-        self.extras(objects)
+        self.extras(objects, notes)
 
     def build(self, dynamic):
         rng, n = self.rng, self.n
@@ -272,23 +275,29 @@ class Plan:
                 self.shared = [("G", 2, last)]
         self.typed_empty = rng.random() < 0.5
 
-    def extras(self, objects):
+    def extras(self, objects, notes=False):
         """What a sheet holds besides cells and the objects above, with
         --objects: a merge, a note, a link (to the web, or to a cell), a hidden
         row and column, and a header in bold on a fill. The fuzzer's reach
         invariant judges these outside an edit's reach (internal/fuzz/objects.go).
         They come from a random stream of their own, and only with the flag, so
         the cells and objects above are the same for a seed as before they were
-        added."""
+        added. With --notes alone, only the notes: the ones --objects makes for
+        the seed (the draw before theirs is the merge's, taken and not used)."""
         self.merges = []  # (sheet, ref)
         self.notes = []  # (sheet, cell, text)
         self.links = []  # (sheet, cell, target): "https://..." or "Data!B2"
         self.hidden_cols = []  # (sheet, column letter)
         self.hidden_rows = []  # (sheet, row)
         self.styled = False
-        if not objects:
+        if not objects and not notes:
             return
         o = random.Random(str(self.rng.getstate()[1][:8]) + "objects")
+        if not objects:
+            o.random()
+            if o.random() < 0.25:
+                self.notes.append(("Data", f"{o.choice('BCDEF')}1", "check this"))
+            return
         last = self.n + 1
         if o.random() < 0.4:
             r = last + 5
@@ -660,6 +669,7 @@ def main():
     ap.add_argument("--count", type=int, default=40)
     ap.add_argument("--pool-only", action="store_true", help="no must-refuse cases (long mode's fresh pools)")
     ap.add_argument("--objects", action="store_true", help="merges, notes, links, hidden rows and columns, a styled header (long mode's pools of runs from seed 2,000,000)")
+    ap.add_argument("--notes", action="store_true", help="the notes of --objects alone (the committed pool's)")
     args = ap.parse_args()
     pool = os.path.join(args.out, "pool")
     os.makedirs(pool, exist_ok=True)
@@ -667,7 +677,7 @@ def main():
     for i in range(args.count):
         rng = random.Random(args.seed * 1000 + i)
         producer = "openpyxl" if i % 2 == 0 else "xlsxwriter"
-        plan = Plan(rng, dynamic=producer == "xlsxwriter", objects=args.objects)
+        plan = Plan(rng, dynamic=producer == "xlsxwriter", objects=args.objects, notes=args.notes)
         path = os.path.join(pool, f"{producer}-{i:02d}.xlsx")
         (write_openpyxl if producer == "openpyxl" else write_xlsxwriter)(plan, path)
         if plan.shared:

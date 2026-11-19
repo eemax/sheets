@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/eemax/sheets/internal/words"
 )
 
 // Known is what known.txt lists: findings by their signature (the default
@@ -22,6 +24,12 @@ type Known struct {
 // that its pattern matches; with Edit, the last edit, as a shell command,
 // matches that too (a batch holding a sort). Repro is a sequence that shows
 // it, which a run replays to see whether it is fixed.
+//
+// Copied says the bug is one of sheets copied: the sheet the finding names (the
+// pattern's group "sheet") must be one an edit of the sequence copied, or made
+// as a copy, and not renamed away from since (a bug of a sheet copy shows only
+// after one: a note lost by an edit of a workbook where no sheet was copied is
+// another bug, fuzzer-long's audit, f3.1).
 type Bug struct {
 	Name      string
 	Classes   []string
@@ -29,10 +37,12 @@ type Bug struct {
 	Repro     Signature
 	Detail    *regexp.Regexp
 	Edit      *regexp.Regexp
+	Copied    bool
 	Line      int // in known.txt
 }
 
-// Shows tells whether a finding is one of the bug's.
+// Shows tells whether a finding is one of the bug's (copied: a sheet copy of
+// the sequence's is among its causes, see Bug).
 func (b Bug) Shows(f Finding) bool {
 	if f.Invariant != b.Invariant || !slices.Contains(b.Classes, f.Class) {
 		return false
@@ -41,7 +51,77 @@ func (b Bug) Shows(f Finding) bool {
 	if !b.Detail.MatchString(detail) {
 		return false
 	}
-	return b.Edit == nil || len(f.Edits) > 0 && b.Edit.MatchString(f.Edits[len(f.Edits)-1].String())
+	if b.Edit != nil && !(len(f.Edits) > 0 && b.Edit.MatchString(f.Edits[len(f.Edits)-1].String())) {
+		return false
+	}
+	if b.Copied {
+		m := b.Detail.FindStringSubmatch(detail)
+		if m == nil || b.Detail.SubexpIndex("sheet") < 0 {
+			return false
+		}
+		return copiedSheets(f)[strings.ToLower(m[b.Detail.SubexpIndex("sheet")])]
+	}
+	return true
+}
+
+// sheetOp is a sheet copy or rename an edit makes.
+type sheetOp struct {
+	copy     bool // a copy, else a rename
+	from, to string
+}
+
+// sheetOps are the sheet copies and renames an edit makes, in order: the
+// command itself, or the lines of a batch (a script makes none).
+func sheetOps(e Edit) []sheetOp {
+	var cmds [][]string
+	switch e.Class {
+	case "sheet-copy", "sheet-rename":
+		var w []string
+		for _, a := range e.Args {
+			if a != FileArg {
+				w = append(w, a)
+			}
+		}
+		cmds = append(cmds, w)
+	case "do":
+		for _, line := range strings.Split(e.Stdin, "\n") {
+			if w, err := words.Texts(line); err == nil {
+				cmds = append(cmds, w)
+			}
+		}
+	}
+	var ops []sheetOp
+	for _, w := range cmds {
+		if len(w) == 4 && w[0] == "sheet" && (w[1] == "copy" || w[1] == "rename") {
+			ops = append(ops, sheetOp{w[1] == "copy", w[2], w[3]})
+		}
+	}
+	return ops
+}
+
+// copiedSheets are the sheets (lower case) a finding's sequence copied, or
+// made as a copy, as they are named after its last edit: both the sheet
+// copied and its copy, followed through the renames after. An edit both
+// editors refused made none (Finding.Taken; a finding that does not say took
+// them all), and the last edit's sheet copies count when it is a batch: they
+// come before the lines after them.
+func copiedSheets(f Finding) map[string]bool {
+	out := map[string]bool{}
+	for i, e := range f.Edits {
+		if len(f.Taken) == len(f.Edits) && !f.Taken[i] {
+			continue
+		}
+		for _, op := range sheetOps(e) {
+			from, to := strings.ToLower(op.from), strings.ToLower(op.to)
+			if op.copy {
+				out[from], out[to] = true, true
+			} else if out[from] {
+				delete(out, from)
+				out[to] = true
+			}
+		}
+	}
+	return out
 }
 
 func (b Bug) String() string { return b.Name }
@@ -71,7 +151,7 @@ func ParseKnown(text string) (map[Signature]bool, error) {
 //     class and invariant; a line that starts with "long" holds findings of
 //     long mode, on the pools it generated (see PoolSeed);
 //   - "bug <name>: <class>[,<class>...] <invariant>; repro [long] <seed>;
-//     detail <pattern>[; edit <pattern>]", a bug by its
+//     detail <pattern>[; edit <pattern>][; copied]", a bug by its
 //     findings' face (see Bug): long mode takes any finding that shows it as
 //     known, whatever its seed. The patterns are Go's regular expressions,
 //     and may hold # (no comment on a bug's line).
@@ -165,6 +245,11 @@ func parseBug(s string) (Bug, error) {
 				return b, fmt.Errorf("bug %s: repro %q: want [long] <seed>", name, val)
 			}
 			b.Repro = Signature{b.Classes[0], b.Invariant, seed, long}
+		case "copied":
+			if val != "" {
+				return b, fmt.Errorf("bug %s: copied takes no value, got %q", name, val)
+			}
+			b.Copied = true
 		case "detail", "edit":
 			re, err := regexp.Compile(val)
 			if err != nil {
@@ -181,6 +266,9 @@ func parseBug(s string) (Bug, error) {
 	}
 	if b.Repro.Seed == 0 || b.Detail == nil {
 		return b, fmt.Errorf("bug %s: a repro and a detail are needed", name)
+	}
+	if b.Copied && b.Detail.SubexpIndex("sheet") < 0 {
+		return b, fmt.Errorf("bug %s: copied needs a (?P<sheet>...) group in the detail, for the sheet the finding names", name)
 	}
 	return b, nil
 }

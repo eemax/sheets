@@ -113,6 +113,33 @@ func TestPool(t *testing.T) {
 	}
 }
 
+// TestPoolNotes: the committed pool holds notes, written by each producer, so
+// the default mode judges what a note does outside an edit's reach (fuzzer-long's
+// audit, f3.1: it held none, and a slip that loses a note went unseen in it).
+// fuzzgen.py --notes makes them, in the 14 files whose seeds draw one.
+func TestPoolNotes(t *testing.T) {
+	notes := map[string]int{}
+	files := map[string]int{}
+	for _, wb := range loadPool(t) {
+		w, err := xlsx.ReadBytes(wb.Data)
+		if err != nil {
+			t.Fatalf("%s: %v", wb.Name, err)
+		}
+		producer := strings.SplitN(wb.Name, "-", 2)[0]
+		for _, s := range w.Sheets {
+			notes[producer] += len(s.Notes)
+			if len(s.Notes) > 0 {
+				files[producer]++
+			}
+		}
+	}
+	for _, producer := range []string{"openpyxl", "xlsxwriter"} {
+		if files[producer] < 3 {
+			t.Errorf("the committed pool holds notes in %d %s files, want at least 3 (%v): regenerate it with fuzzgen.py --notes", files[producer], producer, notes)
+		}
+	}
+}
+
 // TestPoolResults: the pool holds a formula result of every stored form but
 // an error (XlsxWriter stores results, openpyxl none), and shared formulas,
 // which neither producer writes: fuzzgen.py rewrites a filled-down column.
