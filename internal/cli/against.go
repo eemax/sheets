@@ -677,8 +677,92 @@ func pairReplaced(rows []diff.Pair) []diff.Pair {
 	return out
 }
 
+// alikeKey is what a cell holds as rows are compared for being alike: its
+// value, or its formula by its pattern (relative to the cell); "" for none.
+func alikeKey(wb *grid.Workbook, s *grid.Sheet, row, col int) string {
+	c := s.At(row, col)
+	if c == nil || c.IsEmpty() {
+		return ""
+	}
+	if c.Formula != "" {
+		k, _ := formula.Pattern(folded(c.Formula), row, col)
+		return "=" + k
+	}
+	return value(wb, s, row, col).text
+}
+
 // alikeLimit bounds the rows pairAlike compares, each with each.
 const alikeLimit = 500
+
+// reseatReach is how many rows removed or added beside a row changed reseat
+// looks at, each way.
+const reseatReach = 32
+
+// reseat pairs a row changed with the row removed (or added) beside it that
+// differs from it in the fewest cells, when the alignment paired it with
+// another that differs in more: the alignment pairs a row with the first of
+// the rows removed that is mostly alike, or in order, and formulas of one
+// pattern make any row alike (a row deleted, then a cell set in the row that
+// moved up into its place: the row deleted is the one removed, not the one
+// the cell is in, nor, when a blank row follows, the blank one). A row
+// removed counts as one change, so the story with the fewest cells changed
+// is the one told. It gives the rows with those pairs.
+func (r *report) reseat(sa, sb *grid.Sheet, rows []diff.Pair, cols [][2]int) []diff.Pair {
+	differ := func(o, n int) int {
+		k := 0
+		for _, c := range cols {
+			x, y := alikeKey(r.A.wb, sa, o, c[0]), alikeKey(r.B.wb, sb, n, c[1])
+			if x != y {
+				k++
+			}
+		}
+		return k
+	}
+	cur, copied := rows, false
+	for i := range cur {
+		q := cur[i]
+		if q.Old == 0 || q.New == 0 {
+			continue
+		}
+		if i+1 >= len(cur) || cur[i+1].Old != 0 && cur[i+1].New != 0 {
+			if i == 0 || cur[i-1].Old != 0 && cur[i-1].New != 0 {
+				continue // no row removed or added beside it
+			}
+		}
+		best, fewest := -1, differ(q.Old, q.New)
+		// The rows removed or added beside it (both ways), each a candidate
+		// to take its place when it differs in fewer cells.
+		for _, step := range []int{1, -1} {
+			for k, n := i+step, 0; k >= 0 && k < len(cur) && n < reseatReach; k, n = k+step, n+1 {
+				o := cur[k]
+				if o.Old != 0 && o.New != 0 {
+					break
+				}
+				d := 0
+				if o.New == 0 {
+					d = differ(o.Old, q.New)
+				} else {
+					d = differ(q.Old, o.New)
+				}
+				if d < fewest {
+					best, fewest = k, d
+				}
+			}
+		}
+		if best < 0 {
+			continue
+		}
+		if !copied {
+			cur, copied = append([]diff.Pair{}, rows...), true
+		}
+		if cur[best].New == 0 {
+			cur[best].New, cur[i].New = q.New, 0
+		} else {
+			cur[best].Old, cur[i].Old = q.Old, 0
+		}
+	}
+	return cur
+}
 
 // pairAlike pairs the rows removed with the rows added that are mostly
 // alike (at least half their cells the same, formulas by their pattern):
@@ -697,23 +781,12 @@ func (r *report) pairAlike(sa, sb *grid.Sheet, rows []diff.Pair, cols [][2]int) 
 	if len(olds) == 0 || len(news) == 0 || len(olds)*len(news) > alikeLimit*alikeLimit {
 		return rows
 	}
-	key := func(wb *grid.Workbook, s *grid.Sheet, row, col int) string {
-		c := s.At(row, col)
-		if c == nil || c.IsEmpty() {
-			return ""
-		}
-		if c.Formula != "" {
-			k, _ := formula.Pattern(folded(c.Formula), row, col)
-			return "=" + k
-		}
-		return value(wb, s, row, col).text
-	}
 	keys := func(wb *grid.Workbook, s *grid.Sheet, rows []int, pick int) map[int][]string {
 		out := make(map[int][]string, len(rows))
 		for _, row := range rows {
 			ks := make([]string, len(cols))
 			for i, c := range cols {
-				ks[i] = key(wb, s, row, c[pick])
+				ks[i] = alikeKey(wb, s, row, c[pick])
 			}
 			out[row] = ks
 		}
@@ -1409,6 +1482,9 @@ func (r *report) prepare(p diff.SheetPair) *job {
 		case !inBlock[c.Old]:
 			j.cols = append(j.cols, [2]int{c.Old, c.New})
 		}
+	}
+	if len(p.Moved) == 0 && len(p.Blocks) == 0 {
+		p.Rows = r.reseat(sa, sb, p.Rows, j.held())
 	}
 	if len(p.Moved) > 0 {
 		// Rows sorted and changed too: alike, they moved. Of all the rows

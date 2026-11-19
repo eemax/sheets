@@ -809,3 +809,46 @@ func TestAgainstCausesLibreOfficeSpelling(t *testing.T) {
 		t.Errorf("TRUE to =FALSE(): %+v", r.Changed)
 	}
 }
+
+// A row deleted, then a cell set in the row that moved into its place, on
+// the pool's files from other producers (f1.2): the row deleted is the one
+// removed, whichever rows beside it hold formulas of the same pattern or
+// nothing at all (a blank row below the last of the data), one input is
+// changed, and Excel's own rewrite of a formula is no change and no mistake.
+func TestAgainstCausesDeleteSetNeighbour(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	for _, c := range []struct {
+		file string
+		row  int
+	}{
+		{"openpyxl-32", 3}, {"xlsxwriter-39", 3}, {"xlsxwriter-35", 5}, {"xlsxwriter-09", 6}, {"xlsxwriter-15", 6},
+		{"xlsxwriter-31", 6}, {"openpyxl-14", 7}, {"xlsxwriter-29", 7},
+	} {
+		before := filepath.Join(dir, c.file+".xlsx")
+		if err := os.WriteFile(before, mustRead(t, filepath.Join("..", "fuzz", "testdata", "pool", c.file+".xlsx")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, col := range []string{"B", "C", "D"} {
+			cell := fmt.Sprintf("Data!%s%d", col, c.row)
+			after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", fmt.Sprintf("Data!%d", c.row)}, []string{"set", cell, "77"})
+			r, _ := against(t, after, before) // the exit code counts the file's own errors too
+			s := r.Summary
+			if s.Inputs != 1 || s.Formulas != 0 || s.Flagged != 0 || s.Unexplained != 0 || s.FeaturesLost != 0 {
+				t.Errorf("%s: %s: %+v, changed %+v", c.file, cell, s, r.Changed)
+			}
+			var rows []string
+			for _, e := range r.Structure {
+				if strings.HasPrefix(e.Change, "row") {
+					rows = append(rows, e.Change+" "+strings.SplitN(e.Where, " in ", 2)[0])
+				}
+			}
+			if want := fmt.Sprintf("row removed Data!%d", c.row); len(rows) != 1 || rows[0] != want {
+				t.Errorf("%s: %s: structure %q, want %q", c.file, cell, rows, want)
+			}
+			if len(r.Changed) == 1 && r.Changed[0].Cell != cell {
+				t.Errorf("%s: %s: changed %+v", c.file, cell, r.Changed)
+			}
+		}
+	}
+}
