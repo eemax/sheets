@@ -242,6 +242,31 @@ func TestAgainstCausesSortUnexplained(t *testing.T) {
 	}
 }
 
+// A sort of some of a table's columns that moved some rows and left others
+// that shifted (openpyxl's pool file, a table sorted whole by its second
+// column; the formulas of columns beside it stay where they are): what reads
+// a row displaced by the rows that moved, by position, moved for the sort,
+// whichever rows moved (f3.5, f5.1, f5.2): nothing is unexplained.
+func TestAgainstCausesSortDisplaced(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before := filepath.Join(dir, "b.xlsx")
+	if err := os.WriteFile(before, mustRead(t, filepath.Join("..", "fuzz", "testdata", "pool", "openpyxl-04.xlsx")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"sort", "Data!A1:F12", "B"})
+	r, _ := against(t, after, before) // the exit code counts the file's own errors too
+	if len(r.Unexplained) != 0 {
+		t.Errorf("unexplained %+v", r.Unexplained)
+	}
+	m := causes(r)
+	for _, c := range []string{"Data!L9", "Data!L10", "Data!L11", "Data!P11"} {
+		if !strings.Contains(m[c], "rows moved: ") {
+			t.Errorf("%s: cause %q, want the sort", c, m[c])
+		}
+	}
+}
+
 // A column of running totals (=SUM($B$2:Bn), each a SUM of its own range) after
 // a row deleted or inserted inside it costs no more than after a cell set
 // (f3.4): whether the lines could have moved each total is told without

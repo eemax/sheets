@@ -1747,7 +1747,7 @@ func (r *report) record(j *job) []removal {
 	// another row's now). A formula reading the whole span as a set (a
 	// total over the rows sorted) does not follow: the rows moved among
 	// themselves.
-	moves := func(ms []diff.Moved, c1, c2, dc int, pasted bool) {
+	moves := func(ms []diff.Moved, rows []diff.Pair, c1, c2, dc int, pasted bool) {
 		// The span the rows moved within, as numbered now (formulas read it so):
 		// from where they were to where they went, every row between them
 		// holding another's now. Rows added above or removed inside the sorted
@@ -1763,6 +1763,15 @@ func (r *report) record(j *job) []removal {
 		}
 		if lo == 0 {
 			return
+		}
+		// A row paired with another number than the lines added and removed
+		// give it kept its rank but was displaced by the rows that moved (a
+		// sort that moved some rows and left others that shifted, beyond the
+		// span of those that moved): it holds another's place now too.
+		for _, q := range rows {
+			if q.Old > 0 && q.New > 0 && q.New != where(q.Old) {
+				lo, hi = min(lo, q.New, where(q.Old)), max(hi, q.New, where(q.Old))
+			}
 		}
 		span := grid.Range{R1: lo, C1: max(min(c1, c1-dc), 1), R2: hi, C2: map[bool]int{true: grid.MaxCols, false: max(c2, c2-dc)}[c1 == 0]}
 		var carried []grid.Range
@@ -1803,11 +1812,11 @@ func (r *report) record(j *job) []removal {
 		}
 		moved(span, "rows moved: "+movedRange(sb.Name, lo, hi, min(c1, c1-dc), max(c2, c2-dc)), spanCarried)
 	}
-	moves(j.moved, 0, 0, 0, false)
+	moves(j.moved, j.rows, 0, 0, 0, false)
 	for _, b := range j.blocks {
-		moves(b.moved, b.c1, b.c2, 0, false)
+		moves(b.moved, b.rows, b.c1, b.c2, 0, false)
 	}
-	moves(j.pasted, j.pasteC1, j.pasteC2, j.pasteDC, true)
+	moves(j.pasted, nil, j.pasteC1, j.pasteC2, j.pasteDC, true)
 	return removals
 }
 
