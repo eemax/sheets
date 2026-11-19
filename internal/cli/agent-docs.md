@@ -460,7 +460,9 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     rows were added, removed or moved around it: a structure change that
     reaches the value comes first, the inputs after it (a row inserted and
     typed in, and an input in the same column changed:
-    `rows added: Data!4, input Data!B2`). Rows a sort moved
+    `rows added: Data!4, input Data!B2`), and so do rows removed and rows
+    added that both moved it (`rows removed: Data!3 in a.xlsx, rows added: Data!5`).
+    Rows a sort moved
     are a cause only of what reads them by position (a lookup, `=Data!B2`,
     a sum of some of them, an array formula over several rows of them, a
     weight beside them that stays: `SUMPRODUCT(B2:B9,{1;2;3;4;5;6;7;8})`): a
@@ -478,7 +480,11 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     COUNT that rose, a SUM that fell though they held 0 or less (or by
     more than they held), or a total that moved for an empty row inserted
     in its range, did not move for them, and stays `unexplained` unless
-    something else moved it. Nor did a formula that moved with its row, or
+    something else moved it. That holds when they alone changed what the
+    formula reads: with a changed input reaching it, or lines of the other
+    kind, the net move is no telling of what they did, and they are named
+    when they held something (a row of 7 removed, and an input raised by 45
+    in the same column: the total rose, for both). Nor did a formula that moved with its row, or
     that rows added or removed above it moved, and reads the cells it read
     (`=B2*C2` in a sorted row): a wrong result stored for it stays
     `unexplained`, and so does a total over it. A structure change is a

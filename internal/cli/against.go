@@ -513,6 +513,87 @@ type report struct {
 	// notTyped are the sheets (old names, lower-cased) whose last rows are not
 	// taken as removed with cells typed in where they were (typedRemoved).
 	notTyped map[string]bool
+	// inReach is what the cells changed reach (inputReach); lineTouch the
+	// lines added and removed that formulas read, by where the formula is now
+	// (linesTouching).
+	inReach   map[xlsx.At]xlsx.Reach
+	lineTouch map[xlsx.At][]lineKey
+}
+
+// lineKey is a kind of lines changed: the rows (or columns) removed from a
+// sheet (as the old version names it) or added to it (as now).
+type lineKey struct {
+	removed bool
+	sheet   string // lower-cased
+	cols    bool
+}
+
+// inputReach is the cells changed that reach each formula (the first few),
+// through formulas whose values moved.
+func (r *report) inputReach() map[xlsx.At]xlsx.Reach {
+	if r.inReach == nil {
+		r.inReach = map[xlsx.At]xlsx.Reach{}
+		if r.cells > 0 {
+			r.inReach = r.tracerB().SpreadAllUnless(r.sources[:r.cells], causeListed, func(at xlsx.At) bool { return r.heldAt[at] })
+		}
+	}
+	return r.inReach
+}
+
+// linesTouching tells, for each formula of the new version (by where it is),
+// the lines added and removed that it reads directly: the removed ones by the
+// old formula, as the old version had it.
+func (r *report) linesTouching() map[xlsx.At][]lineKey {
+	if r.lineTouch != nil {
+		return r.lineTouch
+	}
+	r.lineTouch = map[xlsx.At][]lineKey{}
+	for _, e := range r.edits {
+		old := e.sheet
+		for was, now := range r.renamed {
+			if strings.EqualFold(now, e.sheet) {
+				old = r.A.wb.Sheet(was).Name
+				break
+			}
+		}
+		for _, cols := range []bool{false, true} {
+			gone, added := e.rowsRemoved, e.rowsAdded
+			if cols {
+				gone, added = e.colsRemoved, e.colsAdded
+			}
+			key := lineKey{true, strings.ToLower(old), cols}
+			for at := range r.tracerA().Touching(old, gone, cols) {
+				if m := r.lines[strings.ToLower(at.Sheet)]; m != nil && m.rowOf(at.Row, at.Col) > 0 && m.col[at.Col] > 0 {
+					here := xlsx.At{Sheet: m.sheet, Row: m.rowOf(at.Row, at.Col), Col: m.col[at.Col]}
+					r.lineTouch[here] = append(r.lineTouch[here], key)
+				}
+			}
+			key = lineKey{false, strings.ToLower(e.sheet), cols}
+			for at := range r.tracerB().Touching(e.sheet, added, cols) {
+				r.lineTouch[at] = append(r.lineTouch[at], key)
+			}
+		}
+	}
+	return r.lineTouch
+}
+
+// alongside tells whether something else than the lines of a kind changed
+// what a value reads: a cell changed that reaches it, or lines of another
+// kind that it reads. The value's net move is then no telling of what these
+// lines did to it.
+func (r *report) alongside(c *candidate, own lineKey) bool {
+	if c.cause != "" || r.out.ValuesOnly {
+		return false
+	}
+	if _, ok := r.inputReach()[c.at]; ok {
+		return true
+	}
+	for _, k := range r.linesTouching()[c.at] {
+		if k != own {
+			return true
+		}
+	}
+	return false
 }
 
 // tracerA follows what the old version's formulas read.
@@ -2461,6 +2542,7 @@ func (r *report) linesMove(removed bool, home *grid.Sheet, at xlsx.At, sheet str
 	// totals reads n²/2 cells), and only for a value the lines could have moved.
 	direction := func() bool {
 		d, was := c.after.num-c.before.num, c.before.num
+		raw := 0.0
 		if call.Func == "MAX" || call.Func == "MIN" {
 			// Compared with what the lines held, as the file stores it: across two
 			// date systems that is not told.
@@ -2468,6 +2550,39 @@ func (r *report) linesMove(removed bool, home *grid.Sheet, at xlsx.At, sheet str
 				return true
 			}
 			d, was = c.after.cell.Num-c.before.cell.Num, c.before.cell.Num
+			raw = c.after.cell.Num
+		}
+		// With a cell changed that reaches the value, or lines of another kind
+		// that it reads, its net move is no telling of what these lines did to
+		// it (a row removed that took 7 off a total and a cell raised by 45:
+		// the total rose). They moved it when it is not what it would be with
+		// them left as they were: the rows removed kept, or the rows added not
+		// there.
+		if r.alongside(c, lineKey{removed, strings.ToLower(sheet), cols}) {
+			if removed {
+				switch call.Func {
+				case "MAX":
+					return h.numbers > 0 && h.hi > raw
+				case "MIN":
+					return h.numbers > 0 && h.lo < raw
+				case "COUNT", "AVERAGE":
+					return h.numbers > 0
+				case "COUNTA":
+					return h.filled > 0
+				}
+				return h.sum != 0
+			}
+			switch call.Func {
+			case "MAX":
+				return h.numbers > 0 && h.hi >= raw
+			case "MIN":
+				return h.numbers > 0 && h.lo <= raw
+			case "COUNT", "AVERAGE":
+				return h.numbers > 0
+			case "COUNTA":
+				return h.filled > 0
+			}
+			return h.sum != 0
 		}
 		if removed {
 			switch call.Func {
@@ -3188,9 +3303,6 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	// for what changed upstream of it.
 	holds := func(at xlsx.At) bool { return r.heldAt[at] }
 	causeOf := tr.SpreadUnless(r.sources, holds)
-	// A value that cells changed moved is the work of all of them that reach
-	// it, not only the nearest.
-	var allOf map[xlsx.At]xlsx.Reach
 	// What rows moved reach alone (sorted: the sources they are), for a
 	// value a cell changed reaches first.
 	var lineOf map[xlsx.At]int
@@ -3218,11 +3330,10 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	}
 	// inputsOf gives the cells changed that reach a value (the first few).
 	inputsOf := func(c candidate) xlsx.Reach {
-		if allOf == nil && r.cells > 0 {
-			allOf = tr.SpreadAllUnless(r.sources[:r.cells], causeListed, holds)
-		}
+		// A value that cells changed moved is the work of all of them that
+		// reach it, not only the nearest.
 		for _, at := range places(c) {
-			if g, ok := allOf[at]; ok {
+			if g, ok := r.inputReach()[at]; ok {
 				return g
 			}
 		}
@@ -3432,11 +3543,27 @@ func (r *report) trace(tr *xlsx.Tracer) {
 		var labels []string
 		if k >= r.cells {
 			labels = append(labels, r.causes[k])
+			// The nearest is a structure change: others that reach the value
+			// moved it too (rows removed and rows added, each as it can).
+			for _, n := range structureOf(c) {
+				if n != k {
+					labels = append(labels, r.causes[n])
+				}
+			}
 		} else {
 			for _, n := range structureOf(c) {
 				labels = append(labels, r.causes[n])
 			}
 		}
+		// Each cell that read lines removed is a source of its own, with the
+		// label of the lines: said once.
+		once := labels[:0:0]
+		for _, l := range labels {
+			if !slices.Contains(once, l) {
+				once = append(once, l)
+			}
+		}
+		labels = once
 		for _, n := range got.Sources {
 			labels = append(labels, r.causes[n])
 		}

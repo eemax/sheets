@@ -227,3 +227,62 @@ func TestAgainstRegressSortWeighted(t *testing.T) {
 		t.Errorf("exit %d, unexplained %+v", code, r.Unexplained)
 	}
 }
+
+// A structure change is named beside the changed input whichever way the input
+// moved the value by more, and beside a structure change of the other kind: the
+// report's sum adds up (f0.1 of the last audit). Rows removed that took 7 off a
+// total that an input raised by 45 are named with it, as with an input raised
+// by 1; rows inserted and typed in that added 3 to a total an input lowered by
+// 5, likewise; a row deleted and another inserted and typed in name both for the
+// total they both moved, each the ones it alone moved. A MAX is named for the
+// rows only when they held what it is (or was).
+func TestAgainstRegressStructureAndInput(t *testing.T) {
+	dir, before := causesFixture(t)
+	for _, b2 := range []string{"6", "50"} {
+		after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", "Data!3"}, []string{"set", "Data!B2", b2})
+		r, code := against(t, after, before)
+		m := causes(r)
+		want := "rows removed: Data!3 in " + before + ", input Data!B2"
+		for _, cell := range []string{"Summary!B2", "Data!B6"} {
+			if m[cell] != want {
+				t.Errorf("a row removed, B2 set to %s: %s: cause %q, want %q", b2, cell, m[cell], want)
+			}
+		}
+		if m["Summary!B6"] != "input Data!B2" && b2 == "50" {
+			t.Errorf("a row removed, B2 set to 50: MAX: cause %q", m["Summary!B6"])
+		}
+		if code != 0 || len(r.Unexplained) != 0 {
+			t.Errorf("a row removed, B2 set to %s: exit %d, unexplained %+v", b2, code, r.Unexplained)
+		}
+	}
+	// A row inserted and typed in, an input lowered by more than the row added.
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "insert", "Data!4"},
+		[]string{"set", "Data!A4", "Zed", "Data!B4", "3"}, []string{"set", "Data!B2", "0"})
+	r, code := against(t, after, before)
+	m := causes(r)
+	for _, cell := range []string{"Summary!B2", "Data!B8"} {
+		if m[cell] != "rows added: Data!4, input Data!B2" {
+			t.Errorf("a row added, B2 set to 0: %s: cause %q", cell, m[cell])
+		}
+	}
+	if _, moved := m["Summary!B6"]; moved || code != 0 || len(r.Unexplained) != 0 {
+		t.Errorf("a row added, B2 set to 0: the MAX (9 still) moved, cause %q, exit %d, unexplained %+v", m["Summary!B6"], code, r.Unexplained)
+	}
+	// A row deleted, another inserted and typed in, no input changed.
+	after = edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", "Data!3"}, []string{"rows", "insert", "Data!5"},
+		[]string{"set", "Data!A5", "Zed", "Data!B5", "10", "Data!C5", "1"})
+	r, code = against(t, after, before)
+	m = causes(r)
+	both := "rows removed: Data!3 in " + before + ", rows added: Data!5"
+	for _, cell := range []string{"Summary!B2", "Data!B7"} {
+		if m[cell] != both {
+			t.Errorf("a row removed and one added: %s: cause %q, want %q", cell, m[cell], both)
+		}
+	}
+	if want := "rows removed: Data!3 in " + before; m["Summary!B3"] != want || m["Data!D7"] != want {
+		t.Errorf("a row removed and one added: revenue: causes %q, %q, want %q", m["Summary!B3"], m["Data!D7"], want)
+	}
+	if m["Summary!B6"] != "rows added: Data!5" || code != 0 || len(r.Unexplained) != 0 {
+		t.Errorf("a row removed and one added: MAX cause %q, exit %d, unexplained %+v", m["Summary!B6"], code, r.Unexplained)
+	}
+}
