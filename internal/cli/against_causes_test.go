@@ -453,7 +453,7 @@ func TestAgainstCausesRemovedFall(t *testing.T) {
 // load, as a file another tool wrote and Excel calculated.
 func stored(t *testing.T, src, dst, cell, value string) {
 	t.Helper()
-	re := regexp.MustCompile(`(<c r="` + cell + `"[^>]*><f>[^<]*</f>)<v>[^<]*</v>`)
+	re := regexp.MustCompile(`(<c r="` + cell + `"[^>]*><f[^>]*>[^<]*</f>)<v>[^<]*</v>`)
 	rewriteParts(t, src, dst, func(name string, b []byte) []byte {
 		switch name {
 		case "xl/workbook.xml":
@@ -774,7 +774,7 @@ func TestAgainstCausesFeatureReplaced(t *testing.T) {
 	}
 	out, _ := runCLI("", "fmt", after)
 	lostOnly("fmt's banding", after, before, "conditional_format", "Data!A2:D6", out)
-	if !strings.Contains(out, "conditional format Data!A2:D6 (formula rule)") {
+	if !strings.Contains(out, "conditional format Data!A2:D6 (formula rule: expression $B2>6)") {
 		t.Errorf("fmt's report:\n%s", out)
 	}
 
@@ -1534,5 +1534,201 @@ func TestAgainstCausesSortSpanBetween(t *testing.T) {
 		if len(r.Unexplained) != 0 {
 			t.Errorf("%s: unexplained %+v", c.name, r.Unexplained)
 		}
+	}
+}
+
+// Two tables on one sheet, each sorted apart (two sort commands, or a batch
+// with two): each run of rows moved is a span of its own, so a total over the
+// first table is a total over all of the rows it moved, and a result stored
+// wrong for it stays unexplained as it does after one sort (f4.1); an input
+// set after the sorts is named alone.
+func TestAgainstCausesSortApart(t *testing.T) {
+	dir, fixture := causesFixture(t)
+	before := edited(t, fixture, filepath.Join(dir, "two.xlsx"), []string{"set", "Data!A9", "Item", "Data!B9", "Stock", "Data!A10", "Pens", "Data!B10", "12",
+		"Data!A11", "Ink", "Data!B11", "2", "Data!A12", "Paper", "Data!B12", "30", "Data!A13", "Tape", "Data!B13", "6",
+		"Summary!C1", "=SUM(Data!B10:B13)", "Summary!C2", "=MAX(Data!B10:B13)"})
+	sorted := edited(t, before, filepath.Join(dir, "s.xlsx"), []string{"sort", "Data!A1:D6", "Units:desc"}, []string{"sort", "Data!A9:B13", "Stock:desc"})
+	r, code := against(t, sorted, before)
+	if r.Summary.MovedRows < 2 || code != 0 || len(r.Unexplained) != 0 {
+		t.Errorf("both sorted: exit %d, %+v, unexplained %+v", code, r.Summary, r.Unexplained)
+	}
+	for _, c := range []string{"Summary!B2", "Summary!B6", "Summary!C1", "Summary!C2"} {
+		if m, ok := causes(r)[c]; ok {
+			t.Errorf("both sorted: %s (a total) moved: %q", c, m)
+		}
+	}
+	// A total over either table stored wrong, with one sort or both: unexplained.
+	one := edited(t, before, filepath.Join(dir, "one.xlsx"), []string{"sort", "Data!A1:D6", "Units:desc"})
+	for _, src := range []string{one, sorted} {
+		for _, cell := range []string{"B2", "B6", "C1", "C2"} {
+			after := filepath.Join(dir, "a.xlsx")
+			stored(t, src, after, cell, "999")
+			r, code := against(t, after, before)
+			if m := causes(r)["Summary!"+cell]; !unexplainedAt(r, "Summary!"+cell) || m != "" || code != 1 {
+				t.Errorf("%s stored as 999 (%s): exit %d, cause %q, unexplained %+v", cell, filepath.Base(src), code, m, r.Unexplained)
+			}
+		}
+	}
+	// An input set in the first table after both sorts: the totals over it name
+	// the input, not the sorts; those over the second are as they were.
+	set := edited(t, before, filepath.Join(dir, "set.xlsx"), []string{"sort", "Data!A1:D6", "Units:desc"}, []string{"sort", "Data!A9:B13", "Stock:desc"}, []string{"set", "Data!B3", "11"})
+	r, code = against(t, set, before)
+	m := causes(r)
+	for _, c := range []string{"Summary!B2", "Summary!B3", "Summary!B6"} {
+		if m[c] != "input Data!B3" {
+			t.Errorf("an input set after two sorts: %s: cause %q, want input Data!B3", c, m[c])
+		}
+	}
+	for _, c := range []string{"Summary!C1", "Summary!C2"} {
+		if _, ok := m[c]; ok {
+			t.Errorf("an input set after two sorts: %s moved: %q", c, m[c])
+		}
+	}
+	if code != 0 || len(r.Unexplained) != 0 {
+		t.Errorf("an input set after two sorts: exit %d, unexplained %+v", code, r.Unexplained)
+	}
+	// The same two sorts in one batch.
+	batch := filepath.Join(dir, "batch.xlsx")
+	if err := os.WriteFile(batch, mustRead(t, before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := runCLI("sort Data!A1:D6 Units:desc\nsort Data!A9:B13 Stock:desc\n", "do", batch); code != 0 {
+		t.Fatalf("do: %s", out)
+	}
+	after := filepath.Join(dir, "a.xlsx")
+	stored(t, batch, after, "B2", "999")
+	if r, code := against(t, after, before); !unexplainedAt(r, "Summary!B2") || code != 1 {
+		t.Errorf("batch: exit %d, unexplained %+v, moved %+v", code, r.Unexplained, r.Moved)
+	}
+}
+
+// A total over sorted rows written as arithmetic over ranges inside the
+// function that adds them up (the common conditional sums: SUMPRODUCT((A2:A6=
+// "North")*B2:B6), SUMPRODUCT(B2:B6*C2:C6), SUM(B2:B6*C2:C6)) is no work of the
+// sort either: no reordering of whole rows moves it (f4.2). Stored wrong it is
+// unexplained; with an input set among the rows, the input is its cause alone.
+func TestAgainstCausesSortElementwise(t *testing.T) {
+	dir, fixture := causesFixture(t)
+	forms := map[string]string{
+		"F1": `=SUMPRODUCT((Data!A2:A6="North")*Data!B2:B6)`,
+		"F2": `=SUMPRODUCT(Data!B2:B6*Data!C2:C6)`,
+		"F3": `=SUM(Data!B2:B6*Data!C2:C6)`,
+		"F4": `=SUMPRODUCT(--(Data!B2:B6>6),Data!C2:C6)`,
+		"F5": `=SUMPRODUCT((Data!B2:B6>6)*Data!C2:C6*Summary!$B$1)`,
+		"F6": `=MAX(Data!B2:B6*2)`,
+	}
+	var cmd []string
+	cmd = append(cmd, "set")
+	for _, c := range []string{"F1", "F2", "F3", "F4", "F5", "F6"} {
+		cmd = append(cmd, "Summary!"+c, forms[c])
+	}
+	before := edited(t, fixture, filepath.Join(dir, "forms.xlsx"), cmd)
+	sorted := edited(t, before, filepath.Join(dir, "s.xlsx"), []string{"sort", "Data!A1:D6", "Units:desc"})
+	r, code := against(t, sorted, before)
+	for c := range forms {
+		if m, ok := causes(r)["Summary!"+c]; ok {
+			t.Errorf("sorted: %s moved: %q", c, m)
+		}
+	}
+	if code != 0 || len(r.Unexplained) != 0 || r.Summary.MovedRows == 0 {
+		t.Errorf("sorted: exit %d, %+v, unexplained %+v", code, r.Summary, r.Unexplained)
+	}
+	for c := range forms {
+		after := filepath.Join(dir, "a.xlsx")
+		stored(t, sorted, after, c, "999")
+		r, code := against(t, after, before)
+		if m := causes(r)["Summary!"+c]; !unexplainedAt(r, "Summary!"+c) || m != "" || code != 1 {
+			t.Errorf("%s (%s) stored as 999: exit %d, cause %q, unexplained %+v", c, forms[c], code, m, r.Unexplained)
+		}
+	}
+	set := edited(t, before, filepath.Join(dir, "set.xlsx"), []string{"sort", "Data!A1:D6", "Units:desc"}, []string{"set", "Data!B4", "11"})
+	r, code = against(t, set, before)
+	for c := range forms {
+		if m := causes(r)["Summary!"+c]; m != "input Data!B4" {
+			t.Errorf("%s (%s) with an input set: cause %q, want input Data!B4", c, forms[c], m)
+		}
+	}
+	if code != 0 || len(r.Unexplained) != 0 {
+		t.Errorf("an input set: exit %d, unexplained %+v", code, r.Unexplained)
+	}
+	// A range read by position among them is still the sort's: the first row of
+	// a column multiplied, not the column as a set.
+	pos := edited(t, before, filepath.Join(dir, "pos.xlsx"), []string{"set", "Summary!G1", "=SUMPRODUCT(Data!B2:B6*Data!C3:C7)", "Summary!G2", "=SUMPRODUCT(Data!B2:B6*Data!C2)"})
+	posSorted := edited(t, pos, filepath.Join(dir, "ps.xlsx"), []string{"sort", "Data!A1:D6", "Units:desc"})
+	r, _ = against(t, posSorted, pos)
+	for _, c := range []string{"Summary!G1", "Summary!G2"} {
+		if m := causes(r)[c]; !strings.HasPrefix(m, "rows moved: ") {
+			t.Errorf("%s: cause %q, want the sort", c, m)
+		}
+	}
+}
+
+// A dropdown lost from one range and another added on other cells (the classic
+// slip of a script that replaces the sheet's validations while adding one) is
+// one lost and one added, not the old one edited (f4.4): a rule is changed
+// only on the cells it covered. A highlight the same.
+func TestAgainstCausesFeaturesLostElsewhere(t *testing.T) {
+	dir, fixture := causesFixture(t)
+	before := edited(t, fixture, filepath.Join(dir, "lists.xlsx"), []string{"set", "Data!H2", "North", "Data!H3", "South", "Data!J2", "Open", "Data!J3", "Closed"},
+		[]string{"validate", "Data!A2:A6", "list", "=$H$2:$H$3"})
+	cleared := edited(t, before, filepath.Join(dir, "cleared.xlsx"))
+	out, code := runCLI("", "validate", cleared, "Data!A2:A6", "--clear")
+	if code != 0 || !strings.Contains(head(t, out), ", 1 feature lost") {
+		t.Fatalf("the clear alone: exit %d:\n%s", code, out)
+	}
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"validate", "Data!A2:A6", "--clear"}, []string{"validate", "Data!E2:E6", "list", "=$J$2:$J$3"})
+	r, code := against(t, after, before)
+	if len(r.FeaturesLost) != 1 || r.FeaturesLost[0].Where != "Data!A2:A6" || len(r.FeaturesChanged) != 0 || r.Summary.FeaturesLost != 1 || code != 1 {
+		t.Errorf("a dropdown cleared, another added: exit %d, lost %+v, changed %+v", code, r.FeaturesLost, r.FeaturesChanged)
+	}
+	if text, _ := runCLI("", "check", after, "--against", before); !strings.Contains(text, "1 feature lost") || strings.Contains(text, "features changed") {
+		t.Errorf("text:\n%s", text)
+	}
+	// A highlight cleared on some cells and the same kind added on others.
+	hi := func(sqref, f string) func([]byte) []byte {
+		return func(b []byte) []byte {
+			return bytes.Replace(b, []byte("</conditionalFormatting>"), []byte(`</conditionalFormatting><conditionalFormatting sqref="`+sqref+`"><cfRule type="expression" dxfId="0" priority="2"><formula>`+f+`</formula></cfRule></conditionalFormatting>`), 1)
+		}
+	}
+	had := filepath.Join(dir, "had.xlsx")
+	rewriteSheet(t, fixture, had, hi("A2:C6", "$B2&gt;6"))
+	now := filepath.Join(dir, "now.xlsx")
+	rewriteSheet(t, fixture, now, hi("F2:H6", "$G2&gt;6"))
+	r, code = against(t, now, had)
+	if len(r.FeaturesLost) != 1 || r.FeaturesLost[0].Where != "Data!A2:C6" || len(r.FeaturesChanged) != 0 || code != 1 {
+		t.Errorf("a highlight on other cells: exit %d, lost %+v, changed %+v", code, r.FeaturesLost, r.FeaturesChanged)
+	}
+	// An edit on the same cells is still an edit.
+	same := filepath.Join(dir, "same.xlsx")
+	rewriteSheet(t, fixture, same, hi("A2:C6", "$C2&gt;6"))
+	changedOK(t, "highlight on the same cells", same, had)
+}
+
+// Several rules of a kind on the same cells, some cleared and one edited: the
+// edit is paired with the rule it resembles, and the one lost is named by its
+// operator and value (f4.5).
+func TestAgainstCausesFeaturesClosestRule(t *testing.T) {
+	dir, fixture := causesFixture(t)
+	before := edited(t, fixture, filepath.Join(dir, "two.xlsx"), []string{"cond", "Data!B2:B6", "> 6"}, []string{"cond", "Data!B2:B6", "< 4", "fill=lightgreen"})
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"cond", "Data!B2:B6", "--clear"}, []string{"cond", "Data!B2:B6", "< 5", "fill=lightgreen"})
+	r, code := against(t, after, before)
+	if len(r.FeaturesChanged) != 1 || r.FeaturesChanged[0].Before != "cellIs lessThan 4" || r.FeaturesChanged[0].After != "cellIs lessThan 5" {
+		t.Errorf("changed %+v", r.FeaturesChanged)
+	}
+	if len(r.FeaturesLost) != 1 || !strings.Contains(r.FeaturesLost[0].What, "cellIs greaterThan 6") || code != 1 {
+		t.Errorf("exit %d, lost %+v", code, r.FeaturesLost)
+	}
+	// The other way about: the greater-than edited, the lesser cleared.
+	after = edited(t, before, filepath.Join(dir, "b.xlsx"), []string{"cond", "Data!B2:B6", "--clear"}, []string{"cond", "Data!B2:B6", "> 7"})
+	r, code = against(t, after, before)
+	if len(r.FeaturesChanged) != 1 || r.FeaturesChanged[0].Before != "cellIs greaterThan 6" || r.FeaturesChanged[0].After != "cellIs greaterThan 7" {
+		t.Errorf("changed %+v", r.FeaturesChanged)
+	}
+	if len(r.FeaturesLost) != 1 || !strings.Contains(r.FeaturesLost[0].What, "cellIs lessThan 4") || code != 1 {
+		t.Errorf("exit %d, lost %+v", code, r.FeaturesLost)
+	}
+	text, _ := runCLI("", "check", after, "--against", before)
+	if !strings.Contains(text, "cell value rule: cellIs lessThan 4") {
+		t.Errorf("text:\n%s", text)
 	}
 }

@@ -17,7 +17,7 @@ cmp stdout input.out
 ! exec sheets check against_openpyxl.xlsx --against against_before.xlsx
 cmp stdout openpyxl.out
 ! exec sheets --json check against_openpyxl.xlsx --against against_before.xlsx
-stdout '"features_lost":\[\{"kind":"validation","where":"Data!A2:A6","what":"list validation"\},\{"kind":"chart","where":"Data!F2","what":"column chart"\},\{"kind":"shape","where":"Data!F2","what":"TextBox 2"\}\]'
+stdout '"features_lost":\[\{"kind":"validation","where":"Data!A2:A6","what":"list validation: list Summary!\$D\$2:\$D\$6"\},\{"kind":"chart","where":"Data!F2","what":"column chart"\},\{"kind":"shape","where":"Data!F2","what":"TextBox 2"\}\]'
 stdout '\{"cell":"Summary!B3","before":"630","after":"660","cause":"input Data!B2","note":"computed by sheets: the file stores no result"\}'
 stdout '"rule":"missing-result","severity":"error"'
 stdout '"unexplained":\[\],'
@@ -490,7 +490,7 @@ exec sheets rows insert novalid.xlsx Data!3
 exec sheets validate novalid.xlsx Data!B2:B7 --clear
 ! exec sheets check novalid.xlsx --against against_before.xlsx
 stdout ', 1 feature lost, '
-stdout '^  validation  Data!B2:B6  whole validation$'
+stdout '^  validation  Data!B2:B6  whole validation: whole between 0 1000$'
 
 # A feature lost is matched only with one of its kind and its identity (a
 # validation or conditional format's type and formula, a chart's type and
@@ -502,24 +502,24 @@ cp against_before.xlsx fmt.xlsx
 exec sheets fmt fmt.xlsx
 ! exec sheets check fmt.xlsx --against against_before.xlsx
 stdout ', 1 feature lost, '
-stdout '^  conditional_format  Data!D2:D6  cell value rule$'
+stdout '^  conditional_format  Data!D2:D6  cell value rule: cellIs greaterThan 140$'
 ! exec sheets --json check fmt.xlsx --against against_before.xlsx
-stdout '"features_lost":\[\{"kind":"conditional_format","where":"Data!D2:D6","what":"cell value rule"\}\]'
+stdout '"features_lost":\[\{"kind":"conditional_format","where":"Data!D2:D6","what":"cell value rule: cellIs greaterThan 140"\}\]'
 cp against_before.xlsx delcol.xlsx
 exec sheets cols delete delcol.xlsx Data!B
 ! exec sheets check delcol.xlsx --against against_before.xlsx
 stdout ', 1 feature lost, '
-stdout '^  validation  Data!B2:B6  whole validation$'
+stdout '^  validation  Data!B2:B6  whole validation: whole between 0 1000$'
 ! stdout 'decimal validation'
 ! exec sheets --json check delcol.xlsx --against against_before.xlsx
-stdout '"features_lost":\[\{"kind":"validation","where":"Data!B2:B6","what":"whole validation"\}\]'
+stdout '"features_lost":\[\{"kind":"validation","where":"Data!B2:B6","what":"whole validation: whole between 0 1000"\}\]'
 # openpyxl's round trip with a chart of other data and another list validation
 # added: the grouped chart, the text box and the list read from Summary are
 # lost all the same.
 fixture against_addchart.xlsx
 ! exec sheets check against_addchart.xlsx --against against_before.xlsx
 stdout ', 3 features lost, '
-stdout '^  validation  Data!A2:A6  list validation$'
+stdout '^  validation  Data!A2:A6  list validation: list Summary!\$D\$2:\$D\$6$'
 stdout '^  chart       Data!F2     column chart$'
 stdout '^  shape       Data!F2     TextBox 2$'
 # Nothing lost when rows are inserted above all of them: the chart's data and
@@ -763,7 +763,7 @@ check of input.xlsx: no problems found
 -- openpyxl.out --
 against_openpyxl.xlsx against against_before.xlsx: 1 input changed, 0 formulas changed, 8 computed values moved (each with its cause), 0 unexplained, 3 features lost, 0 unknown
 features lost:
-  validation  Data!A2:A6  list validation
+  validation  Data!A2:A6  list validation: list Summary!$D$2:$D$6
   chart       Data!F2     column chart
   shape       Data!F2     TextBox 2
 changed:

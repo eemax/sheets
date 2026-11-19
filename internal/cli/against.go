@@ -1748,20 +1748,19 @@ func (r *report) record(j *job) []removal {
 	// total over the rows sorted) does not follow: the rows moved among
 	// themselves.
 	moves := func(ms []diff.Moved, rows []diff.Pair, c1, c2, dc int, pasted bool) {
-		// The span the rows moved within, as numbered now (formulas read it so):
-		// from where they were to where they went, every row between them
+		// The spans the rows moved within, as numbered now (formulas read them
+		// so): from where they were to where they went, every row between them
 		// holding another's now. Rows added above or removed inside the sorted
 		// rows number the old places otherwise than the old version did, so they
-		// are placed by where().
-		lo, hi := 0, 0
+		// are placed by where(). Each separate run of rows moved is a span of its
+		// own (two tables on a sheet sorted apart: a total over one is no total
+		// over the rows between them); moves whose spans share a row are one.
+		type extent struct{ lo, hi int }
+		var spans []extent
 		for _, m := range ms {
-			first, last := min(m.To, where(m.From)), max(m.To+m.Rows-1, where(m.From+m.Rows-1))
-			if lo == 0 || first < lo {
-				lo = first
-			}
-			hi = max(hi, last)
+			spans = append(spans, extent{min(m.To, where(m.From)), max(m.To+m.Rows-1, where(m.From+m.Rows-1))})
 		}
-		if lo == 0 {
+		if len(spans) == 0 {
 			return
 		}
 		// A row paired with another number than the lines added and removed
@@ -1770,10 +1769,31 @@ func (r *report) record(j *job) []removal {
 		// span of those that moved): it holds another's place now too.
 		for _, q := range rows {
 			if q.Old > 0 && q.New > 0 && q.New != where(q.Old) {
-				lo, hi = min(lo, q.New, where(q.Old)), max(hi, q.New, where(q.Old))
+				spans = append(spans, extent{min(q.New, where(q.Old)), max(q.New, where(q.Old))})
 			}
 		}
-		span := grid.Range{R1: lo, C1: max(min(c1, c1-dc), 1), R2: hi, C2: map[bool]int{true: grid.MaxCols, false: max(c2, c2-dc)}[c1 == 0]}
+		sort.Slice(spans, func(a, b int) bool { return spans[a].lo < spans[b].lo })
+		merged := []extent{spans[0]}
+		for _, sp := range spans[1:] {
+			if last := &merged[len(merged)-1]; sp.lo <= last.hi {
+				last.hi = max(last.hi, sp.hi)
+			} else {
+				merged = append(merged, sp)
+			}
+		}
+		ranged := func(sp extent) grid.Range {
+			return grid.Range{R1: sp.lo, C1: max(min(c1, c1-dc), 1), R2: sp.hi, C2: map[bool]int{true: grid.MaxCols, false: max(c2, c2-dc)}[c1 == 0]}
+		}
+		// spanOf gives the span of the run of rows moved that holds a row (as now
+		// numbered).
+		spanOf := func(row int) grid.Range {
+			for _, sp := range merged {
+				if row >= sp.lo && row <= sp.hi {
+					return ranged(sp)
+				}
+			}
+			return grid.Range{}
+		}
 		var carried []grid.Range
 		for _, m := range ms {
 			carried = append(carried, grid.Range{R1: m.To, C1: max(c1, 1), R2: m.To + m.Rows - 1, C2: map[bool]int{true: grid.MaxCols, false: c2}[c1 == 0]})
@@ -1781,7 +1801,7 @@ func (r *report) record(j *job) []removal {
 		// The formulas in the rows that moved moved with them; those the span
 		// takes in besides read rows that held (what moved them is told by
 		// the rows they read).
-		moved := func(rg grid.Range, label string, carried []grid.Range) {
+		moved := func(rg, span grid.Range, label string, carried []grid.Range) {
 			r.lineSources = append(r.lineSources, xlsx.Source{Sheet: sb.Name, Range: rg, Readers: true, Reordered: span, Across: dc != 0, Carried: carried})
 			r.lineCauses = append(r.lineCauses, label)
 		}
@@ -1800,17 +1820,20 @@ func (r *report) record(j *job) []removal {
 				was = " (were " + movedRange(sa.Name, m.From, m.From+m.Rows-1, c1-dc, c2-dc) + ")"
 			}
 			moved(grid.Range{R1: m.To, C1: max(c1, 1), R2: m.To + m.Rows - 1, C2: map[bool]int{true: grid.MaxCols, false: c2}[c1 == 0]},
-				"rows moved: "+movedRange(sb.Name, m.To, m.To+m.Rows-1, c1, c2)+was, carried)
+				spanOf(min(m.To, where(m.From))), "rows moved: "+movedRange(sb.Name, m.To, m.To+m.Rows-1, c1, c2)+was, carried)
 		}
 		// A sort's span holds the rows that stayed too, whose formulas read their
 		// own row: none of them follows the span. Cells cut and pasted leave
 		// the rows between where they were, a total among them reading cells the
 		// move emptied: only the cells that arrived are carried.
-		spanCarried := []grid.Range{span}
-		if pasted {
-			spanCarried = carried
+		for _, sp := range merged {
+			rg := ranged(sp)
+			spanCarried := []grid.Range{rg}
+			if pasted {
+				spanCarried = carried
+			}
+			moved(rg, rg, "rows moved: "+movedRange(sb.Name, sp.lo, sp.hi, min(c1, c1-dc), max(c2, c2-dc)), spanCarried)
 		}
-		moved(span, "rows moved: "+movedRange(sb.Name, lo, hi, min(c1, c1-dc), max(c2, c2-dc)), spanCarried)
 	}
 	moves(j.moved, j.rows, 0, 0, 0, false)
 	for _, b := range j.blocks {

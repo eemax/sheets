@@ -186,3 +186,19 @@ func TestFeedbackFeaturesAcross(t *testing.T) {
 		t.Errorf("two rules, one left: %+v", lost)
 	}
 }
+
+// A dropdown cleared and another added on other cells in one batch: the
+// command's own report says the one lost (f4.4), not that it was edited.
+func TestFeedbackFeaturesLostElsewhere(t *testing.T) {
+	for _, stream := range []string{"never", "always"} {
+		t.Setenv("SHEETS_STREAM", stream)
+		_, path := feedbackBook(t)
+		if out, code := runCLI("", "validate", path, "Data!A2:A3", "list", "=$D$2:$D$3"); code != 0 {
+			t.Fatal(out)
+		}
+		out, code := runCLI("validate Data!A2:A3 --clear\nvalidate Data!C2:C3 list =$E$2:$E$3\n", "do", path)
+		if code != 0 || !strings.Contains(head(t, out), ", 1 feature lost") || strings.Contains(out, "changed: validation") {
+			t.Errorf("%s: batch: exit %d:\n%s", stream, code, out)
+		}
+	}
+}

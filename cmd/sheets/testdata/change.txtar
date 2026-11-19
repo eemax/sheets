@@ -49,7 +49,7 @@ exec sheets cols insert book.xlsx Data!A
 stdout ', 0 features lost, '
 exec sheets rows delete book.xlsx Data!3:4
 stdout '^change: 0 cells written, 2 values moved, 1 new error, 0 new unknowns, 1 feature lost, lint \+1 error$'
-stdout '^lost: validation Data!F3:F4 \(list validation\)$'
+stdout '^lost: validation Data!F3:F4 \(list validation: list [^)]*\)$'
 stdout '^lint: broken-reference 0 → 1: '
 shortform 15
 exec sheets undo book.xlsx
@@ -64,7 +64,7 @@ exec sheets sheet add book.xlsx Spare
 exec sheets validate book.xlsx Spare!A1:A3 whole '>= 0'
 exec sheets sheet delete book.xlsx Spare
 stdout '^change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, 1 feature lost, lint as before$'
-stdout '^lost: validation Spare!A1:A3 \(whole validation\)$'
+stdout '^lost: validation Spare!A1:A3 \(whole validation: whole [^)]*\)$'
 
 # Range commands, a sort, a replace and a style each report.
 exec sheets sort book.xlsx Facts Qty:desc

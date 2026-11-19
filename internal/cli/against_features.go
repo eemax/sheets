@@ -255,9 +255,11 @@ func compareFeaturesAcross(before, after []xlsx.Feature, renamed, tables map[str
 	// sheet (it moved or grew). Of a validation or conditional format the
 	// passes 0 and 1 find the same rule only, the cells it reads as the rows
 	// and columns added and removed put them (rules are not what they read
-	// alone); passes 2 and 3 are as 0 and 1 and take one that reads others
-	// (a dropdown pointed at another list, a formula testing another column):
-	// its rule edited.
+	// alone); pass 2 is as 0 and takes one that reads others (a dropdown pointed
+	// at another list, a formula testing another column) on the cells it was
+	// on: its rule edited. A rule that moved or grew is not paired with one
+	// that reads other cells (pass 3 is for what is no rule): another dropdown
+	// on other cells is no edit of the one that was, which is lost.
 	type bucket struct {
 		idx  []int
 		head int
@@ -305,8 +307,8 @@ func compareFeaturesAcross(before, after []xlsx.Feature, renamed, tables map[str
 	ruled := func(k xlsx.Feature) bool { return k.Kind == xlsx.FeatureValidation || k.Kind == xlsx.FeatureCond }
 	// afterKey is the key of a feature of the new version.
 	afterKey := func(g xlsx.Feature, pass int) string {
-		if pass < 2 && !ruled(g) {
-			return "" // only rules are told by the cells they read
+		if pass < 2 && !ruled(g) || pass == 3 && ruled(g) {
+			return "" // only rules are told by the cells they read, and an edit stays where it was
 		}
 		sheet, strict := strings.ToLower(g.Sheet), pass < 2
 		pass %= 2
@@ -341,7 +343,7 @@ func compareFeaturesAcross(before, after []xlsx.Feature, renamed, tables map[str
 	// beforeKey is the key an old feature looks for, and what else must hold
 	// of the one it finds (nil: nothing).
 	beforeKey := func(f xlsx.Feature, home string, pass int) (string, func(xlsx.Feature) bool, bool) {
-		if pass < 2 && !ruled(f) {
+		if pass < 2 && !ruled(f) || pass == 3 && ruled(f) {
 			return "", nil, false
 		}
 		sheet, strict := strings.ToLower(home), pass < 2
@@ -451,7 +453,9 @@ func compareFeaturesAcross(before, after []xlsx.Feature, renamed, tables map[str
 		}
 	}
 	// A rule not kept whose cells hold another of its kind now was edited:
-	// changed, the other of its type first.
+	// changed, the other of its type first, and of those the one whose text is
+	// the closest to its own (of two highlights on the same cells, one cleared
+	// and the other's threshold edited, the edit is the one it resembles).
 	byPlace := map[string][]int{}
 	for i, g := range after {
 		if !used[i] && (g.Kind == xlsx.FeatureValidation || g.Kind == xlsx.FeatureCond) {
@@ -459,7 +463,12 @@ func compareFeaturesAcross(before, after []xlsx.Feature, renamed, tables map[str
 			byPlace[k] = append(byPlace[k], i)
 		}
 	}
+	edit := func(f, g xlsx.Feature) {
+		changed = append(changed, changedFeature{Kind: f.Kind, Where: grid.QuoteSheet(g.Sheet) + "!" + g.Where, What: g.What, Before: ruleText(f), After: ruleText(g)})
+	}
 	for _, sameType := range []bool{true, false} {
+		type pair struct{ i, j, apart int }
+		var pairs []pair
 		for i, f := range before {
 			if kept[i] || f.Kind != xlsx.FeatureValidation && f.Kind != xlsx.FeatureCond {
 				continue
@@ -469,15 +478,28 @@ func compareFeaturesAcross(before, after []xlsx.Feature, renamed, tables map[str
 			if !ok || p == "" {
 				continue
 			}
-			for _, j := range byPlace[f.Kind+"\x00"+on+"\x00"+p] {
+			here := byPlace[f.Kind+"\x00"+on+"\x00"+p]
+			for _, j := range here {
 				g := after[j]
 				if used[j] || !ruleEdited(f, g, sameType) {
 					continue
 				}
-				used[j], kept[i] = true, true
-				changed = append(changed, changedFeature{Kind: f.Kind, Where: grid.QuoteSheet(g.Sheet) + "!" + g.Where, What: g.What, Before: ruleText(f), After: ruleText(g)})
-				break
+				if len(here) > closestMax {
+					// Too many on the cells to tell the closest of each: the first.
+					used[j], kept[i] = true, true
+					edit(f, g)
+					break
+				}
+				pairs = append(pairs, pair{i, j, textApart(ruleText(f), ruleText(g))})
 			}
+		}
+		sort.SliceStable(pairs, func(a, b int) bool { return pairs[a].apart < pairs[b].apart })
+		for _, q := range pairs {
+			if kept[q.i] || used[q.j] {
+				continue
+			}
+			used[q.j], kept[q.i] = true, true
+			edit(before[q.i], after[q.j])
 		}
 	}
 	if changed == nil {
@@ -513,12 +535,48 @@ func compareFeaturesAcross(before, after []xlsx.Feature, renamed, tables map[str
 		if f.Chartsheet {
 			where, what = grid.QuoteSheet(f.Sheet), strings.TrimSpace(what+" on a chart sheet")
 		}
+		if f.Kind == xlsx.FeatureValidation || f.Kind == xlsx.FeatureCond {
+			// Which rule it was (its operator and values), where several of a kind
+			// were on the cells.
+			what = strings.TrimSpace(what + ": " + ruleText(f))
+		}
 		out = append(out, lostFeature{Kind: f.Kind, Where: where, What: what})
 	}
 	if out == nil {
 		out = []lostFeature{}
 	}
 	return out, changed
+}
+
+// closestMax is how many rules of one kind on the same cells compareFeatures
+// tells the closest pairs of; with more, an edited rule is paired with the
+// first of them it could be.
+const closestMax = 12
+
+// textApart is how far two texts are from each other: the edits (a letter
+// added, removed or changed) it takes to write one as the other, of their
+// first 200 letters.
+func textApart(a, b string) int {
+	x, y := []rune(a), []rune(b)
+	x, y = x[:min(len(x), 200)], y[:min(len(y), 200)]
+	row := make([]int, len(y)+1)
+	for j := range row {
+		row[j] = j
+	}
+	for i := 1; i <= len(x); i++ {
+		prev := row[0]
+		row[0] = i
+		for j := 1; j <= len(y); j++ {
+			cur := row[j]
+			if x[i-1] == y[j-1] {
+				row[j] = prev
+			} else {
+				row[j] = 1 + min(prev, row[j], row[j-1])
+			}
+			prev = cur
+		}
+	}
+	return row[len(y)]
 }
 
 // ruleEdited tells whether a rule of the new version, on the cells of one of

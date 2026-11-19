@@ -64,11 +64,83 @@ func OrderReads(text string, name func(sheet, n string) (RefArg, bool)) ([]Order
 		return false
 	}
 	var walk func(n *node)
-	// arg walks an argument: a reference alone is read as set says.
-	arg := func(a *node, set bool, g int) {
-		if !ref(a, set, g) {
-			walk(a)
+	// elementwise tells whether a node computes cell by cell over the ranges it
+	// holds (arithmetic, a comparison or & of them, a negation), whatever the
+	// ranges are: its leaves are references, names, numbers, texts and
+	// booleans, and at least one reference is a range of several cells.
+	var elementwise func(n *node, ranged *bool) bool
+	elementwise = func(n *node, ranged *bool) bool {
+		switch n.kind {
+		case nNum, nStr, nBool:
+			return true
+		case nRef:
+			*ranged = *ranged || n.area.R1 != n.area.R2 || n.area.C1 != n.area.C2
+			return true
+		case nName:
+			if r, found := name(n.sheet, n.str); found {
+				*ranged = *ranged || r.Area.R1 != r.Area.R2 || r.Area.C1 != r.Area.C2
+				return true
+			}
+			return false
+		case nUnary, nPercent:
+			return elementwise(n.args[0], ranged)
+		case nBinary:
+			switch n.str {
+			case "*", "/", "+", "-", "^", "&", "=", "<>", "<", ">", "<=", ">=":
+				return elementwise(n.args[0], ranged) && elementwise(n.args[1], ranged)
+			case ":":
+				_, isRef := refArg(n)
+				if isRef {
+					*ranged = true
+				}
+				return isRef
+			}
 		}
+		return false
+	}
+	// cells records the references of an elementwise expression, read as set
+	// says, those of several cells in group g: a single cell is a value every
+	// row is computed with (a criterion, a rate), read by position as it is.
+	var cells func(n *node, set bool, g int)
+	cells = func(n *node, set bool, g int) {
+		if r, isRef := refArg(n); isRef {
+			if r.Area.R1 == r.Area.R2 && r.Area.C1 == r.Area.C2 {
+				out = append(out, OrderRead{Sheet: r.Sheet, Area: r.Area})
+			} else {
+				out = append(out, OrderRead{Sheet: r.Sheet, Area: r.Area, Set: set, Group: g})
+			}
+			return
+		}
+		if n.kind == nName {
+			r, _ := name(n.sheet, n.str)
+			if r.Area.R1 == r.Area.R2 && r.Area.C1 == r.Area.C2 {
+				out = append(out, OrderRead{Sheet: r.Sheet, Area: r.Area, Name: n.str})
+			} else {
+				out = append(out, OrderRead{Sheet: r.Sheet, Area: r.Area, Name: n.str, Set: set, Group: g})
+			}
+			return
+		}
+		for _, a := range n.args {
+			cells(a, set, g)
+		}
+	}
+	// arg walks an argument: a reference alone is read as set says; so are the
+	// ranges a function reading its argument as a set (set) is given cell by
+	// cell (SUMPRODUCT((A2:A9="East")*B2:B9), SUM(B2:B9*C2:C9)): they are a set
+	// only together, in group g (0: a group of their own).
+	arg := func(a *node, set bool, g int) {
+		if ref(a, set, g) {
+			return
+		}
+		if ranged := false; set && elementwise(a, &ranged) && ranged {
+			if g == 0 {
+				groups++
+				g = groups
+			}
+			cells(a, set, g)
+			return
+		}
+		walk(a)
 	}
 	walk = func(n *node) {
 		switch n.kind {
