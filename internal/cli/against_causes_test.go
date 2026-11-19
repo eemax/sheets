@@ -491,6 +491,66 @@ func TestAgainstCausesFeaturesChanged(t *testing.T) {
 	}
 }
 
+// A validation or conditional format edited only in the cells it refers to is
+// a feature changed, as one whose items or bound changed is (f3.3, f5.6): a
+// dropdown re-pointed at another range (the guide's own range form), a formula
+// highlight testing another column, a threshold given as a cell, in
+// check --against and in the command's own report. The same rule where rows
+// inserted above it moved what it reads, as Excel rewrites it, is the same
+// rule; where a tool left it as it was, it is changed, with what Excel
+// writes.
+func TestAgainstCausesFeaturesRepointed(t *testing.T) {
+	dir, fixture := causesFixture(t)
+	listed := edited(t, fixture, filepath.Join(dir, "listed.xlsx"), []string{"validate", "Data!A2:A6", "list", "=Summary!$D$2:$D$4"})
+	after := filepath.Join(dir, "repointed.xlsx")
+	if err := os.WriteFile(after, mustRead(t, listed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runCLI("", "validate", after, "Data!A2:A6", "list", "=Summary!$D$2:$D$6")
+	if code != 0 || !strings.Contains(head(t, out), ", 0 features lost (1 changed)") || !strings.Contains(out, "\nchanged: validation Data!A2:A6") {
+		t.Errorf("re-pointed dropdown: the command's report (exit %d):\n%s", code, out)
+	}
+	changedOK(t, "re-pointed dropdown", after, listed)
+
+	// A threshold that is a cell, another cell.
+	bound := edited(t, fixture, filepath.Join(dir, "bound.xlsx"), []string{"validate", "Data!B2:B6", "whole", ">=", "=Summary!$B$1"})
+	moved := edited(t, bound, filepath.Join(dir, "bound2.xlsx"), []string{"validate", "Data!B2:B6", "whole", ">=", "=Summary!$B$2"})
+	changedOK(t, "threshold cell", moved, bound)
+
+	// A highlight testing another column: formula rules written by another
+	// tool, one cell apart.
+	rule := func(f string) func([]byte) []byte {
+		return func(b []byte) []byte {
+			return bytes.Replace(b, []byte("</conditionalFormatting>"), []byte(`</conditionalFormatting><conditionalFormatting sqref="A2:C6"><cfRule type="expression" dxfId="0" priority="2"><formula>`+f+`</formula></cfRule></conditionalFormatting>`), 1)
+		}
+	}
+	hi := filepath.Join(dir, "hi.xlsx")
+	rewriteSheet(t, fixture, hi, rule("$B2&gt;6"))
+	hi2 := filepath.Join(dir, "hi2.xlsx")
+	rewriteSheet(t, fixture, hi2, rule("$C2&gt;6"))
+	changedOK(t, "highlight testing another column", hi2, hi)
+
+	// Rows inserted above the list, rewritten as Excel does (sheets does the
+	// same): the dropdown is as it was.
+	inserted := edited(t, listed, filepath.Join(dir, "inserted.xlsx"), []string{"rows", "insert", "Summary!2"})
+	if r, code := against(t, inserted, listed); len(r.FeaturesLost) != 0 || len(r.FeaturesChanged) != 0 || code != 0 {
+		t.Errorf("rows inserted above what the list reads: exit %d, lost %+v, changed %+v", code, r.FeaturesLost, r.FeaturesChanged)
+	}
+	// The same rows inserted by a tool that leaves the rule as it was: changed,
+	// what Excel writes said.
+	stale := filepath.Join(dir, "stale.xlsx")
+	rewriteParts(t, inserted, stale, func(name string, b []byte) []byte {
+		if name == "xl/worksheets/sheet1.xml" {
+			return bytes.ReplaceAll(b, []byte("$D$3:$D$5"), []byte("$D$2:$D$4"))
+		}
+		return b
+	})
+	r, code := against(t, stale, listed)
+	if len(r.FeaturesLost) != 0 || len(r.FeaturesChanged) != 1 || code != 0 || !strings.Contains(r.FeaturesChanged[0].After, "Excel writes") {
+		t.Errorf("rule left as it was: exit %d, lost %+v, changed %+v", code, r.FeaturesLost, r.FeaturesChanged)
+	}
+}
+
 // A rule another replaced on the same cells is the old one lost, not an edit
 // of it (f0.2): the banding sheets fmt writes over a highlight of another
 // tool, a list a move pasted a whole-number rule over, a highlight cleared
