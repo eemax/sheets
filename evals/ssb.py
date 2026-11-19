@@ -175,10 +175,12 @@ def done(out, t, arm):
     return not unstarted(d) or os.path.exists(os.path.join(d, "meta.prev.json"))
 
 
-_NO_START = re.compile(r"rate.?limit|usage limit|limit reached|overloaded|API Error|authenticat|credit balance", re.I)
+_NO_START = re.compile(r"rate.?limit|usage limit|limit reached|hit your [^.\n]{0,40}limit|overloaded|API Error|authenticat|credit balance", re.I)
 
 
-_LIMIT = re.compile(r"rate.?limit|usage limit|limit reached|credit balance", re.I)
+# The claude CLI (2.1.322) says "You've hit your session limit · resets 3pm"
+# (any limit word, with or without the reset time).
+_LIMIT = re.compile(r"rate.?limit|usage limit|limit reached|hit your [^.\n]{0,40}limit|credit balance", re.I)
 
 
 def unstarted(d):
@@ -207,6 +209,9 @@ def prepare(out, data, tasks, arms, keep=False):
             if keep and os.path.exists(os.path.join(d, "meta.json")):
                 prev = open(os.path.join(d, "meta.json")).read()  # failed to start: run again once
                 print(f"{t['id']} / {arm}: failed to start, run again", file=sys.stderr)
+            elif keep and os.path.exists(os.path.join(d, "meta.prev.json")):
+                # Prepared for its rerun, then stopped before it ran: keep the first attempt's record.
+                prev = open(os.path.join(d, "meta.prev.json")).read()
             shutil.rmtree(d, ignore_errors=True)
             os.makedirs(work)
             if prev is not None:
