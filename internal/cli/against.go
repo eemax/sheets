@@ -1574,9 +1574,12 @@ type job struct {
 	// typed are the rows (as numbered now) whose cells were typed in where
 	// a row was removed: no row added, their cells changed from empty;
 	// typedOld the rows removed (as numbered before) whose places they took.
-	typed, typedOld []int
-	moved           []diff.Moved
-	blocks          []blockJob
+	// cleared are the last rows removed with none added or typed in (as
+	// numbered before): taken as removed, though cells cleared where they were
+	// look the same.
+	typed, typedOld, cleared []int
+	moved                    []diff.Moved
+	blocks                   []blockJob
 	// pasted is rows cut and pasted where nothing was (sheets move, Excel's
 	// cut and paste), the rows around them where they were: the run, the
 	// columns it spans (0 for whole rows), and the move as formulas follow
@@ -1690,6 +1693,10 @@ func (r *report) prepare(p diff.SheetPair) *job {
 		}
 		return false
 	})
+	// The last rows removed, with none added or typed in beside them, are
+	// rows cleared where they were when what reads them shows it
+	// (typedRemoved): their cells changed, the values cleared named.
+	p.Rows, j.cleared = r.pairCleared(p, j, typedFrom)
 	if len(p.Moved) == 0 && len(p.Blocks) == 0 {
 		p.Rows = r.reseat(sa, sb, p.Rows, j.held())
 	}
@@ -1760,17 +1767,66 @@ func (r *report) prepare(p diff.SheetPair) *job {
 	return j
 }
 
-// typedRemoved tells whether the rows prepare took as removed, with cells
-// typed in where they were (job.typed), were removed rather than cleared and
-// typed over where they are, which their values alike cannot tell: a formula,
-// a defined name or an Excel table of the old version that reads the sheet
-// from the first of them down reads now as Excel rewrites it for their
-// removal, and none reads as it would with the rows kept. With nothing to
-// show it (a CSV file, rows nothing reads), the rows were not removed: their
-// cells changed where they are, and the values cleared are among the changes.
-func (r *report) typedRemoved(j *job, jobs []*job) bool {
-	if len(j.typedOld) == 0 || r.out.ValuesOnly {
-		return false
+// pairCleared finds the last rows of a sheet removed alone (nothing kept,
+// added or typed in after them, a sort or a column added or removed beside
+// them none): taken as removed, they are given (as numbered before). Where
+// nothing shows they were removed (notTyped names the sheets: typedRemoved),
+// they are paired with the rows they were cleared in, numbered as they would be
+// kept, and given none.
+func (r *report) pairCleared(p diff.SheetPair, j *job, typedFrom map[int]bool) ([]diff.Pair, []int) {
+	rows := p.Rows
+	if len(p.Blocks) > 0 || len(p.Moved) > 0 || len(j.colsAdded)+len(j.colsRemoved) > 0 || r.out.ValuesOnly {
+		return rows, nil
+	}
+	tail := len(rows)
+	for tail > 0 && rows[tail-1].New == 0 && rows[tail-1].Old != 0 && !typedFrom[rows[tail-1].Old] {
+		tail--
+	}
+	if tail == len(rows) {
+		return rows, nil
+	}
+	kept := tail - 1 // the last row kept
+	for kept >= 0 && (rows[kept].Old == 0 || rows[kept].New == 0) {
+		kept--
+	}
+	if kept < 0 {
+		return rows, nil
+	}
+	var olds []int
+	for _, q := range rows[tail:] {
+		held := false
+		for _, c := range j.held() {
+			held = held || alikeKey(r.A.wb, p.Old, q.Old, c[0]) != ""
+		}
+		if !held {
+			return rows, nil
+		}
+		olds = append(olds, q.Old)
+	}
+	if !r.notTyped[strings.ToLower(p.Old.Name)] {
+		return rows, olds
+	}
+	out := append([]diff.Pair{}, rows[:tail]...)
+	for _, o := range olds {
+		out = append(out, diff.Pair{Old: o, New: rows[kept].New + o - rows[kept].Old})
+	}
+	return out, nil
+}
+
+// typedRemoved tells whether something shows that the rows prepare took as
+// removed, with cells typed in where they were (job.typed) or the last rows
+// with nothing in their place (job.cleared), were removed (the first result) or
+// were cleared where they are (the second), which their values alike cannot tell: a
+// formula, a defined name or an Excel table of the old version that reads the
+// sheet from the first of them down reads now as Excel rewrites it for their
+// removal, or as it would with the rows kept. With nothing to show it (a CSV
+// file, rows nothing reads) neither is: the rows with cells typed in were not
+// removed (their cells changed where they are, and the values cleared are among
+// the changes), and the last rows with none were.
+func (r *report) typedRemoved(j *job, jobs []*job) (bool, bool) {
+	typedOld := append(append([]int{}, j.typedOld...), j.cleared...)
+	if len(typedOld) == 0 || r.out.ValuesOnly {
+		return false, false
 	}
 	told := r.edits
 	defer r.setEdits(told)
@@ -1778,7 +1834,7 @@ func (r *report) typedRemoved(j *job, jobs []*job) bool {
 	kept := append([]lineEdit{}, told...)
 	other := *j
 	gone := map[int]bool{}
-	for _, o := range j.typedOld {
+	for _, o := range typedOld {
 		gone[o] = true
 	}
 	other.rowsRemoved = nil
@@ -1816,7 +1872,7 @@ func (r *report) typedRemoved(j *job, jobs []*job) bool {
 		}
 		places[strings.ToLower(k.sa.Name)] = pl
 	}
-	lo := slices.Min(j.typedOld)
+	lo := slices.Min(typedOld)
 	for at := range r.tracerA().Touching(j.sa.Name, [][2]int{{lo, grid.MaxRows}}, false) {
 		pl := places[strings.ToLower(at.Sheet)]
 		if pl == nil {
@@ -1856,7 +1912,7 @@ func (r *report) typedRemoved(j *job, jobs []*job) bool {
 		ifRemoved[i] = rewrite(p)
 	}
 	r.setEdits(kept)
-	removed := 0
+	shown := 0
 	for i, p := range probes {
 		ifKept := rewrite(p)
 		if ifKept == ifRemoved[i] {
@@ -1864,12 +1920,12 @@ func (r *report) typedRemoved(j *job, jobs []*job) bool {
 		}
 		switch folded(p.now) {
 		case ifRemoved[i]:
-			removed++
+			shown++
 		case ifKept:
-			return false
+			return false, true
 		}
 	}
-	return removed > 0
+	return shown > 0, false
 }
 
 // edit gives the lines a job added and removed, with the span of the rows
@@ -2382,7 +2438,14 @@ func (r *report) align() (diff.Alignment, []*job) {
 	retyped := func() {
 		var redo []int
 		for i, j := range jobs {
-			if j != nil && len(j.typed) > 0 && !r.typedRemoved(j, jobs) {
+			if j == nil || len(j.typed)+len(j.cleared) == 0 {
+				continue
+			}
+			// Rows typed over were edited in place unless something shows they
+			// were removed; the last rows removed alone, removed unless
+			// something shows they were cleared.
+			removed, kept := r.typedRemoved(j, jobs)
+			if len(j.typed) > 0 && !removed || len(j.typed) == 0 && kept {
 				redo = append(redo, i)
 			}
 		}

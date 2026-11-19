@@ -578,7 +578,12 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   same as the row's cells cleared and typed over where they are, and that
   is what is reported, each cell changed, the cleared ones too: the last row
   edited in place, a CSV file, a sheet nothing reads, openpyxl's
-  `delete_rows` (which rewrites no formula).
+  `delete_rows` (which rewrites no formula). The last rows of a table with
+  nothing in their place (cleared with `sheets clear`, or deleted) are the
+  other way about: one row removed, unless a formula, a defined name or an
+  Excel table reading them reads them as it did (not rewritten for a
+  removal), when they were cleared where they are: each cell changed, the
+  values cleared named, what reads them moved for them, nothing flagged.
   Formulas Excel rewrites for rows or columns added or removed (a column
   inserted between the columns a formula reads too, or a row inserted on
   the sheet it reads), cells cut and pasted, a sheet renamed, or a sheet

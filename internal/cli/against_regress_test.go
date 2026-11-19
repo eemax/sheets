@@ -286,3 +286,64 @@ func TestAgainstRegressStructureAndInput(t *testing.T) {
 		t.Errorf("a row removed and one added: MAX cause %q, exit %d, unexplained %+v", m["Summary!B6"], code, r.Unexplained)
 	}
 }
+
+// The last row (or two) of a table cleared with nothing typed in its place and
+// no row deleted is its cells changed, the values cleared named, and no row
+// removed (f0.2 of the last audit): the formulas reading it, as they were,
+// show that no row was removed, and what they read moved for the cells cleared.
+// A row deleted, for the formulas Excel rewrote, is still one row removed; a
+// row nothing reads, the same file whichever it was, stays one removed.
+func TestAgainstRegressLastRowCleared(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before := regressBook(t, dir, "b.xlsx", regressTable,
+		[]string{"set", "Summary!A1", "=SUM(Data!B2:B6)", "Summary!A2", "=COUNTA(Data!A2:A6)"})
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"clear", "Data!A6:C6"})
+	r, code := against(t, after, before)
+	want := map[string][2]string{"Data!A6": {`"Mid"`, ""}, "Data!B6": {"4", ""}, "Data!C6": {"25", ""}}
+	if s := r.Summary; s.Inputs != 3 || s.Formulas != 0 || s.Flagged != 0 || len(r.Structure) != 0 || len(r.Unexplained) != 0 || code != 0 {
+		t.Errorf("cleared: exit %d, %+v, structure %+v, unexplained %+v", code, s, r.Structure, r.Unexplained)
+	}
+	if got := changedOf(r); len(got) != 3 || got["Data!A6"] != want["Data!A6"] || got["Data!B6"] != want["Data!B6"] || got["Data!C6"] != want["Data!C6"] {
+		t.Errorf("cleared: changed %+v", r.Changed)
+	}
+	if m := causes(r); m["Summary!A1"] != "input Data!B6" || m["Summary!A2"] != "input Data!A6" {
+		t.Errorf("cleared: causes %q", m)
+	}
+	// The last two rows cleared and a cell of the first set.
+	after = edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"clear", "Data!A5:C6"}, []string{"set", "Data!B2", "50"})
+	r, code = against(t, after, before)
+	if s := r.Summary; s.Inputs != 7 || s.Flagged != 0 || len(r.Structure) != 0 || len(r.Unexplained) != 0 || code != 0 {
+		t.Errorf("two rows cleared and a cell set: exit %d, %+v, structure %+v, unexplained %+v", code, s, r.Structure, r.Unexplained)
+	}
+	if m := causes(r); m["Summary!A1"] != "input Data!B2, input Data!B5, input Data!B6" {
+		t.Errorf("two rows cleared and a cell set: causes %q", m)
+	}
+	// The row deleted, which Excel rewrote the totals for: one row removed.
+	after = edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", "Data!6"})
+	r, code = against(t, after, before)
+	if s := r.Summary; s.Inputs != 0 || s.Flagged != 0 || len(r.Structure) != 1 || r.Structure[0].Change != "row removed" || len(r.Unexplained) != 0 || code != 0 {
+		t.Errorf("deleted: exit %d, %+v, structure %+v", code, s, r.Structure)
+	}
+	if m := causes(r); !strings.HasPrefix(m["Summary!A1"], "rows removed: Data!6") {
+		t.Errorf("deleted: causes %q", m)
+	}
+	// A sheet nothing reads: cleared or deleted cannot be told.
+	bare := regressBook(t, dir, "bare.xlsx", regressTable)
+	after = edited(t, bare, filepath.Join(dir, "a.xlsx"), []string{"clear", "Data!A6:C6"})
+	r, code = against(t, after, bare)
+	if s := r.Summary; s.Inputs != 0 || len(r.Structure) != 1 || r.Structure[0].Change != "row removed" || code != 0 {
+		t.Errorf("nothing reads it: exit %d, %+v, structure %+v", code, s, r.Structure)
+	}
+	// The fuzz pool's openpyxl file, whose last row a defined name, an Excel
+	// table and a total read, as they were: the row cleared, and no more.
+	pool := filepath.Join(dir, "pool.xlsx")
+	if err := os.WriteFile(pool, mustRead(t, filepath.Join("..", "fuzz", "testdata", "pool", "openpyxl-02.xlsx")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after = edited(t, pool, filepath.Join(dir, "a.xlsx"), []string{"clear", "Data!A7:P7"})
+	r, _ = against(t, after, pool) // the exit code counts the file's own errors too
+	if s := r.Summary; s.Inputs != 6 || s.Formulas != 3 || len(r.Structure) != 0 || changedOf(r)["Data!B7"] != [2]string{"40", ""} {
+		t.Errorf("pool file: %+v, structure %+v, changed %+v", s, r.Structure, r.Changed)
+	}
+}
