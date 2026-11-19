@@ -242,6 +242,135 @@ func TestAgainstCausesSortUnexplained(t *testing.T) {
 	}
 }
 
+// A column of running totals (=SUM($B$2:Bn), each a SUM of its own range) after
+// a row deleted or inserted inside it costs no more than after a cell set
+// (f3.4): whether the lines could have moved each total is told without
+// reading its whole range again for each (n²/2 cells), and an empty row
+// inserted before any range is read. Counted in the cells read, not in time.
+func TestAgainstCausesRunningTotalsFast(t *testing.T) {
+	rows := 3000
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	var b strings.Builder
+	b.WriteString("Item\tUnits\tRunning\n")
+	for i := 1; i <= rows; i++ {
+		fmt.Fprintf(&b, "I%d\t%d\t=SUM($B$2:B%d)\n", i, (i*37)%101+1, i+1)
+	}
+	before := filepath.Join(dir, "b.xlsx")
+	if out, code := runCLI(b.String(), "write", before, "Data!A1"); code != 0 {
+		t.Fatalf("write: %s", out)
+	}
+	for _, c := range []struct {
+		name  string
+		moved int // the totals that moved
+		cmd   []string
+	}{
+		{"delete", rows - 10, []string{"rows", "delete", "Data!5"}},
+		{"insert", 0, []string{"rows", "insert", "Data!5"}},
+		{"insert two", 0, []string{"rows", "insert", "Data!5", "-n", "2"}},
+	} {
+		after := edited(t, before, filepath.Join(dir, "a.xlsx"), c.cmd)
+		rangeReads = 0
+		r, _ := against(t, after, before)
+		if len(r.Unexplained) != 0 || r.Summary.Moved < c.moved {
+			t.Errorf("%s: %+v", c.name, r.Summary)
+		}
+		if rangeReads > 20*rows {
+			t.Errorf("%s: %d cells read one by one to tell what the totals give: not linear in the %d rows (n²/2 is %d)", c.name, rangeReads, rows, rows*rows/2)
+		}
+	}
+}
+
+// storeAt rewrites the results a workbook stores for formula cells, by sheet
+// part (sheet1 is Data, sheet2 Summary of the fixture), results trusted: no
+// full calculation on load.
+func storeAt(t *testing.T, src, dst string, parts map[string]map[string]string) {
+	t.Helper()
+	rewriteParts(t, src, dst, func(name string, b []byte) []byte {
+		if name == "xl/workbook.xml" {
+			return regexp.MustCompile(` fullCalcOnLoad="(true|1)"`).ReplaceAll(b, nil)
+		}
+		for part, cells := range parts {
+			if name != "xl/worksheets/"+part+".xml" {
+				continue
+			}
+			for cell, v := range cells {
+				re := regexp.MustCompile(`(<c r="` + cell + `"[^>]*><f>[^<]*</f>)<v>[^<]*</v>`)
+				was := b
+				if b = re.ReplaceAll(b, []byte("${1}<v>"+v+"</v>")); bytes.Equal(b, was) {
+					t.Fatalf("no result of %s in %s", cell, part)
+				}
+			}
+		}
+		return b
+	})
+}
+
+// A formula carried with its row by a sort, or moved by rows added or removed
+// above it, reads what it read: a wrong result stored for it is no work of the
+// sort or the lines, and the totals reading it follow it, not the move (f3.2,
+// f5.1, f5.2). A formula that reads where it stands (a ROW) moved for the
+// sort.
+func TestAgainstCausesCarriedRow(t *testing.T) {
+	dir, before := causesFixture(t)
+	only := func(name string, r causesResult, code int, cell string, follows ...string) {
+		t.Helper()
+		if len(r.Unexplained) != 1 || !strings.HasPrefix(r.Unexplained[0].Cell, cell) || code != 1 {
+			t.Fatalf("%s: exit %d, unexplained %+v, moved %+v", name, code, r.Unexplained, r.Moved)
+		}
+		m := causes(r)
+		for _, f := range follows {
+			if want := cell + ", which moved with nothing upstream changed"; m[f] != want {
+				t.Errorf("%s: %s: cause %q, want %q", name, f, m[f], want)
+			}
+		}
+	}
+
+	// Sorted, a result stored for the cell that was D5 (9 x 10 = 90) and for
+	// the totals reading it.
+	sorted := edited(t, before, filepath.Join(dir, "s.xlsx"), []string{"sort", "Data!A1:D6", "Units:desc"})
+	after := filepath.Join(dir, "a.xlsx")
+	storeAt(t, sorted, after, map[string]map[string]string{"sheet1": {"D2": "999", "D7": "1539"}, "sheet2": {"B3": "1539"}})
+	r, code := against(t, after, before)
+	only("sorted", r, code, "Data!D2", "Data!D7", "Summary!B3")
+	if r.Unexplained[0].Was != "D5" {
+		t.Errorf("sorted: %+v", r.Unexplained[0])
+	}
+
+	// An empty row inserted above it: it moves nothing.
+	inserted := edited(t, before, filepath.Join(dir, "i.xlsx"), []string{"rows", "insert", "Data!3"})
+	storeAt(t, inserted, after, map[string]map[string]string{"sheet1": {"D6": "999"}})
+	r, code = against(t, after, before)
+	only("inserted", r, code, "Data!D6")
+
+	// A row removed above it: the formula's own row is as it was.
+	deleted := edited(t, before, filepath.Join(dir, "d.xlsx"), []string{"rows", "delete", "Data!2"})
+	storeAt(t, deleted, after, map[string]map[string]string{"sheet1": {"D5": "999"}})
+	r, code = against(t, after, before)
+	only("deleted", r, code, "Data!D5")
+
+	// The same sort and no wrong result: nothing unexplained, as before.
+	r, code = against(t, sorted, before)
+	if len(r.Unexplained) != 0 || code != 0 {
+		t.Errorf("sorted alone: exit %d, unexplained %+v", code, r.Unexplained)
+	}
+
+	// A formula that reads where it stands moves with the rows: ROW() went
+	// with its row, and gives another number.
+	rowed := edited(t, before, filepath.Join(dir, "rowed.xlsx"), []string{"set", "Data!E2", "=ROW()", "Data!E3", "=ROW()", "Data!E4", "=ROW()", "Data!E5", "=ROW()", "Data!E6", "=ROW()"})
+	after = edited(t, rowed, filepath.Join(dir, "rowed-s.xlsx"), []string{"sort", "Data!A1:E6", "Units:desc"})
+	r, code = against(t, after, rowed)
+	moved := 0
+	for _, m := range r.Moved {
+		if strings.HasPrefix(m.Cell, "Data!E") && strings.Contains(m.Cause, "rows moved") {
+			moved++
+		}
+	}
+	if moved == 0 || len(r.Unexplained) != 0 || code != 0 {
+		t.Errorf("ROW() in sorted rows: exit %d, unexplained %+v, moved %+v", code, r.Unexplained, r.Moved)
+	}
+}
+
 // A row removed and an input changed in the same column: the MAX that rose,
 // and the totals, moved for the input (f5.3); the cell that read the row
 // removed moved for the removal.

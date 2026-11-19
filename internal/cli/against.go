@@ -199,6 +199,26 @@ func value(wb *grid.Workbook, s *grid.Sheet, row, col int) valueOf {
 	return valueFrom(wb, c)
 }
 
+// bare reads a cell's value as value does, without the text it shows: what
+// a total over many cells counts (a number, its kind, whether it is known).
+func bare(wb *grid.Workbook, s *grid.Sheet, row, col int) valueOf {
+	c := wb.Value(s, row, col)
+	if c == nil {
+		return valueOf{known: true}
+	}
+	if c.Pending {
+		return valueOf{}
+	}
+	v := valueOf{cell: *c, num: c.Num, known: true}
+	if c.Kind == grid.Number && wb.Date1904 {
+		if f := wb.FormatOf(c); f.Kind == grid.Date || f.Kind == grid.DateTime {
+			v.num += epochDays
+			v.shift = epochDays
+		}
+	}
+	return v
+}
+
 // valueFrom reads a cell that holds a value.
 func valueFrom(wb *grid.Workbook, c *grid.Cell) valueOf {
 	v := valueOf{text: valueText(wb, c), cell: *c, num: c.Num, known: true}
@@ -393,6 +413,7 @@ func (a *app) against(path, before string, res *checkResult, cr *xlsx.CheckResul
 		}
 	}
 	r.compare()
+	rangeReads = r.reads
 	out.sides, out.renamed = [2]*sideOf{A, B}, r.renamed
 	if !out.ValuesOnly {
 		out.FeaturesLost, out.FeaturesChanged = compareFeatures(r.fa, r.fb, r.renamed, r.tables, r.shiftRef)
@@ -415,6 +436,11 @@ func (a *app) against(path, before string, res *checkResult, cr *xlsx.CheckResul
 	}
 	return out, nil
 }
+
+// rangeReads is how many cells the last check --against read one by one to
+// tell what a total over them gives (for a test: a column of running totals
+// must read each cell once, not once for each total).
+var rangeReads int
 
 // report works out an againstResult.
 type report struct {
@@ -472,6 +498,13 @@ type report struct {
 	// for); resultOK remembers resultHolds by cell.
 	trA, trB *xlsx.Tracer
 	resultOK map[xlsx.At]bool
+	// totals are the running totals of each column of the new version that a
+	// total over it was asked of (see readRange), used each sheet's used range.
+	totals map[totalsKey]*colTotals
+	used   map[*grid.Sheet]grid.Range
+	// reads counts the cells read one by one to tell what a total over them
+	// should give (readRange).
+	reads int
 }
 
 // tracerA follows what the old version's formulas read.
@@ -1451,9 +1484,9 @@ type job struct {
 	rowsAdded, rowsRemoved, colsAdded, colsRemoved []int
 	// typed are the rows (as numbered now) whose cells were typed in where
 	// a row was removed: no row added, their cells changed from empty.
-	typed []int
-	moved                                          []diff.Moved
-	blocks                                         []blockJob
+	typed  []int
+	moved  []diff.Moved
+	blocks []blockJob
 	// pasted is rows cut and pasted where nothing was (sheets move, Excel's
 	// cut and paste), the rows around them where they were: the run, the
 	// columns it spans (0 for whole rows), and the move as formulas follow
@@ -2238,46 +2271,50 @@ func (r *report) linesMove(removed bool, home *grid.Sheet, at xlsx.At, sheet str
 	if !known {
 		return true
 	}
-	if !r.resultHolds(c) {
-		return false
-	}
-	d, was := c.after.num-c.before.num, c.before.num
-	if call.Func == "MAX" || call.Func == "MIN" {
-		// Compared with what the lines held, as the file stores it: across two
-		// date systems that is not told.
-		if r.A.wb.Date1904 != r.B.wb.Date1904 {
-			return true
+	// What the lines held moves the formula the way it moved; and the result
+	// the new version stores is what the call gives over what it reads, which
+	// is told last: it reads the whole of every range (a column of running
+	// totals reads n²/2 cells), and only for a value the lines could have moved.
+	direction := func() bool {
+		d, was := c.after.num-c.before.num, c.before.num
+		if call.Func == "MAX" || call.Func == "MIN" {
+			// Compared with what the lines held, as the file stores it: across two
+			// date systems that is not told.
+			if r.A.wb.Date1904 != r.B.wb.Date1904 {
+				return true
+			}
+			d, was = c.after.cell.Num-c.before.cell.Num, c.before.cell.Num
 		}
-		d, was = c.after.cell.Num-c.before.cell.Num, c.before.cell.Num
-	}
-	if removed {
+		if removed {
+			switch call.Func {
+			case "MAX":
+				return d < 0 && h.numbers > 0 && h.hi >= was
+			case "MIN":
+				return d > 0 && h.numbers > 0 && h.lo <= was
+			case "COUNT":
+				return d < 0 && h.numbers > 0
+			case "COUNTA":
+				return d < 0 && h.filled > 0
+			case "AVERAGE":
+				return h.numbers > 0
+			}
+			return h.sum > 0 && d < 0 || h.sum < 0 && d > 0
+		}
 		switch call.Func {
 		case "MAX":
-			return d < 0 && h.numbers > 0 && h.hi >= was
+			return d > 0 && h.numbers > 0 && h.hi > was
 		case "MIN":
-			return d > 0 && h.numbers > 0 && h.lo <= was
+			return d < 0 && h.numbers > 0 && h.lo < was
 		case "COUNT":
-			return d < 0 && h.numbers > 0
+			return d > 0 && h.numbers > 0
 		case "COUNTA":
-			return d < 0 && h.filled > 0
+			return d > 0 && h.filled > 0
 		case "AVERAGE":
 			return h.numbers > 0
 		}
-		return h.sum > 0 && d < 0 || h.sum < 0 && d > 0
+		return h.sum > 0 && d > 0 || h.sum < 0 && d < 0
 	}
-	switch call.Func {
-	case "MAX":
-		return d > 0 && h.numbers > 0 && h.hi > was
-	case "MIN":
-		return d < 0 && h.numbers > 0 && h.lo < was
-	case "COUNT":
-		return d > 0 && h.numbers > 0
-	case "COUNTA":
-		return d > 0 && h.filled > 0
-	case "AVERAGE":
-		return h.numbers > 0
-	}
-	return h.sum > 0 && d > 0 || h.sum < 0 && d < 0
+	return direction() && r.resultHolds(c)
 }
 
 // resultHolds tells whether the result the new version stores for a formula
@@ -2305,6 +2342,10 @@ func (r *report) resultHeld(c *candidate) bool {
 		return true
 	}
 	var h held
+	// A sum, a count or an average over a range that starts where its column
+	// does is told from the column's running totals (running totals over a
+	// column read n²/2 cells otherwise).
+	fast := call.Func == "SUM" || call.Func == "COUNT" || call.Func == "COUNTA" || call.Func == "AVERAGE"
 	for _, ref := range call.Refs {
 		on := ref.Sheet
 		if on == "" {
@@ -2314,16 +2355,7 @@ func (r *report) resultHeld(c *candidate) bool {
 		if ws == nil {
 			return true
 		}
-		unknown := false
-		ws.Each(grid.Range{R1: ref.Area.R1, C1: ref.Area.C1, R2: ref.Area.R2, C2: ref.Area.C2}, func(row, col int, cell *grid.Cell) {
-			if cell.Formula != "" && len(r.B.differ) > 0 {
-				if _, differs := r.B.differ[strings.ToLower(cellAt(ws.Name, row, col))]; differs {
-					unknown = true
-				}
-			}
-			h.add(value(r.B.wb, ws, row, col))
-		})
-		if unknown || h.unknown {
+		if r.readRange(ws, grid.Range{R1: ref.Area.R1, C1: ref.Area.C1, R2: ref.Area.R2, C2: ref.Area.C2}, fast, &h) || h.unknown {
 			return true
 		}
 	}
@@ -2355,6 +2387,112 @@ func (r *report) resultHeld(c *candidate) bool {
 		got = c.after.cell.Num // the number the file stores, as hi and lo are
 	}
 	return math.Abs(got-want) <= 1e-9*math.Max(1, math.Max(math.Abs(got), math.Abs(want)))
+}
+
+// totalsKey is a column of a sheet of the new version.
+type totalsKey struct {
+	ws  *grid.Sheet
+	col int
+}
+
+// colTotals is what the rows 1 to n of a column hold (by n): its numbers'
+// sum, how many numbers and cells are filled, and how many values are
+// unknown or dates counted in the 1900 system for a 1904 workbook.
+type colTotals struct {
+	sum                               []float64
+	numbers, filled, unknown, shifted []int
+}
+
+// usedOf gives what a sheet of the new version uses, kept.
+func (r *report) usedOf(ws *grid.Sheet) grid.Range {
+	if u, ok := r.used[ws]; ok {
+		return u
+	}
+	if r.used == nil {
+		r.used = map[*grid.Sheet]grid.Range{}
+	}
+	r.used[ws] = ws.Used()
+	return r.used[ws]
+}
+
+// columnTotals works out a column's running totals.
+func (r *report) columnTotals(ws *grid.Sheet, col int) *colTotals {
+	k := totalsKey{ws, col}
+	if t := r.totals[k]; t != nil {
+		return t
+	}
+	n := r.usedOf(ws).R2
+	t := &colTotals{sum: make([]float64, n+1), numbers: make([]int, n+1), filled: make([]int, n+1), unknown: make([]int, n+1), shifted: make([]int, n+1)}
+	ws.Each(grid.Range{R1: 1, C1: col, R2: n, C2: col}, func(row, _ int, cell *grid.Cell) {
+		var h held
+		h.add(bare(r.B.wb, ws, row, col))
+		t.sum[row] += h.sum
+		t.numbers[row] += h.numbers
+		t.filled[row] += h.filled
+		if h.unknown {
+			t.unknown[row]++
+		}
+		if h.shifted {
+			t.shifted[row]++
+		}
+		if cell.Formula != "" && len(r.B.differ) > 0 {
+			if _, differs := r.B.differ[strings.ToLower(cellAt(ws.Name, row, col))]; differs {
+				t.unknown[row]++
+			}
+		}
+	})
+	for row := 1; row <= n; row++ {
+		t.sum[row] += t.sum[row-1]
+		t.numbers[row] += t.numbers[row-1]
+		t.filled[row] += t.filled[row-1]
+		t.unknown[row] += t.unknown[row-1]
+		t.shifted[row] += t.shifted[row-1]
+	}
+	if r.totals == nil {
+		r.totals = map[totalsKey]*colTotals{}
+	}
+	r.totals[k] = t
+	return t
+}
+
+// readRange counts what a range of a sheet of the new version holds into h,
+// and tells whether a result there is one the sheets calculator gets
+// otherwise (unknown). With fast (only a sum, a count of numbers or cells, which
+// need no more) a range with nothing above it in its columns is taken from
+// their running totals, exactly what reading each cell gives.
+func (r *report) readRange(ws *grid.Sheet, rg grid.Range, fast bool, h *held) bool {
+	if u := r.usedOf(ws); fast && rg.C2-rg.C1 < 64 && rg.R1 >= 1 {
+		cols := make([]*colTotals, 0, rg.C2-rg.C1+1)
+		ok := true
+		for col := max(rg.C1, 1); col <= min(rg.C2, u.C2) && ok; col++ {
+			t := r.columnTotals(ws, col)
+			ok = t.sum[min(rg.R1-1, u.R2)] == 0
+			cols = append(cols, t)
+		}
+		if ok {
+			to := min(rg.R2, u.R2)
+			unknown := false
+			for _, t := range cols {
+				h.sum += t.sum[to]
+				h.numbers += t.numbers[to] - t.numbers[min(rg.R1-1, u.R2)]
+				h.filled += t.filled[to] - t.filled[min(rg.R1-1, u.R2)]
+				unknown = unknown || t.unknown[to] > t.unknown[min(rg.R1-1, u.R2)]
+				h.shifted = h.shifted || t.shifted[to] > t.shifted[min(rg.R1-1, u.R2)]
+			}
+			return unknown
+		}
+	}
+	unknown := false
+	ws.Each(rg, func(row, col int, cell *grid.Cell) {
+		r.reads++
+		if cell.Formula != "" && len(r.B.differ) > 0 {
+			if _, differs := r.B.differ[strings.ToLower(cellAt(ws.Name, row, col))]; differs {
+				unknown = true
+			}
+		}
+		h.add(bare(r.B.wb, ws, row, col))
+	})
+	return unknown
 }
 
 // aggregates are the calls over references that lines removed or added
@@ -2412,7 +2550,7 @@ func heldIn(wb *grid.Workbook, home, ws *grid.Sheet, refs []engine.RefArg, runs 
 			if cols {
 				cut = grid.Range{R1: 1, C1: run[0], R2: grid.MaxRows, C2: run[1]}
 			}
-			ws.Each(rg.Intersect(cut), func(row, col int, _ *grid.Cell) { h.add(value(wb, ws, row, col)) })
+			ws.Each(rg.Intersect(cut), func(row, col int, _ *grid.Cell) { h.add(bare(wb, ws, row, col)) })
 			if h.unknown {
 				return h, false
 			}
@@ -3147,13 +3285,129 @@ func (r *report) followers(tr *xlsx.Tracer, unexplained []int, anchorOf func(can
 	return tr.Spread(sources(roots)), roots
 }
 
+// positional finds the calls that give where a formula stands.
+var positional = regexp.MustCompile(`(?i)(^|[^A-Z0-9_.])(ROW|COLUMN|CELL|OFFSET|INDIRECT|ADDRESS)\(`)
+
+// image gives where lines added and removed put the old cells lo..hi of a
+// dimension (rows, or columns with cols): ok is false when lines were removed
+// among them or added within them, which stretch or shrink what is read.
+func (e lineEdit) image(lo, hi int, cols bool) (int, int, bool) {
+	removed, added := e.rowsRemoved, e.rowsAdded
+	if cols {
+		removed, added = e.colsRemoved, e.colsAdded
+	}
+	for _, run := range removed {
+		if run[1] >= lo && run[0] <= hi {
+			return 0, 0, false
+		}
+	}
+	at := func(n int) int {
+		for _, run := range removed {
+			if run[1] < n {
+				n -= run[1] - run[0] + 1
+			}
+		}
+		for _, run := range added {
+			if run[0] <= n {
+				n += run[1] - run[0] + 1
+			}
+		}
+		return n
+	}
+	a, b := at(lo), at(hi)
+	for _, run := range added {
+		if run[1] >= a && run[0] <= b {
+			return 0, 0, false
+		}
+	}
+	return a, b, true
+}
+
+// readsAsBefore tells whether a formula that moved (a sort took its row,
+// lines were added or removed above it) reads, now, the very cells it read:
+// each cell as the cell it was (it moved along with it), each range as the
+// lines added and removed put it, and none by the place it stands in (a ROW,
+// a range read where one value goes, a formula that reads the rows around
+// it). What it reads is as it was, so what moved it is no work of the move:
+// a value of it that is not what it was is some other change's, or none.
+// False when that cannot be told: a name, a table, cells cut and pasted, or
+// what it reads not paired.
+func (r *report) readsAsBefore(c candidate) bool {
+	s := c.shift
+	home := r.B.wb.Sheet(c.at.Sheet)
+	if r.anyCut || home == nil || positional.MatchString(s.now) {
+		return false
+	}
+	if _, _, array := r.arrays.anchor(home, c.at.Row, c.at.Col); array {
+		return false // a result of an array formula: it reads rows besides its own
+	}
+	none := func(string, string) (engine.RefArg, bool) { return engine.RefArg{}, false }
+	was, okWas := engine.OrderReads(s.old, none)
+	now, okNow := engine.OrderReads(s.now, none)
+	if !okWas || !okNow || len(was) != len(now) {
+		return false
+	}
+	for i, x := range was {
+		y := now[i]
+		from, on := x.Sheet, y.Sheet
+		if from == "" {
+			from = s.sheet
+		}
+		if on == "" {
+			on = c.at.Sheet
+		}
+		m := r.lines[strings.ToLower(from)]
+		if m == nil || !strings.EqualFold(m.sheet, on) {
+			return false
+		}
+		if x.Area.R1 == x.Area.R2 && x.Area.C1 == x.Area.C2 {
+			// A cell: the cell it was.
+			row, col := m.rowOf(x.Area.R1, x.Area.C1), m.col[x.Area.C1]
+			if row == 0 || col == 0 || y.Area != (engine.Area{R1: row, C1: col, R2: row, C2: col}) {
+				return false
+			}
+			continue
+		}
+		// A range, as the lines added and removed put it, and not read by the
+		// place the formula stands in.
+		var e lineEdit
+		for _, ed := range r.edits {
+			if strings.EqualFold(ed.sheet, on) {
+				e = ed
+			}
+		}
+		r1, r2, okR := e.image(x.Area.R1, x.Area.R2, false)
+		c1, c2, okC := e.image(x.Area.C1, x.Area.C2, true)
+		if !okR || !okC || y.Area != (engine.Area{R1: r1, C1: c1, R2: r2, C2: c2}) {
+			return false
+		}
+		for _, span := range [][2]int{e.movedOld, e.movedNew} {
+			if span[0] > 0 && span[1] >= x.Area.R1 && span[0] <= x.Area.R2 {
+				return false // among rows a sort moved: read by position unless as a set
+			}
+		}
+		// A range read where one value goes gives the cell of it in the formula's
+		// own row (or column), on any sheet: another number or another range
+		// gives another value.
+		if !x.Set && (x.Area.R1 < x.Area.R2 && (s.row >= x.Area.R1 && s.row <= x.Area.R2 || c.at.Row >= y.Area.R1 && c.at.Row <= y.Area.R2) ||
+			x.Area.C1 < x.Area.C2 && (s.col >= x.Area.C1 && s.col <= x.Area.C2 || c.at.Col >= y.Area.C1 && c.at.Col <= y.Area.C2)) {
+			return false
+		}
+	}
+	return true
+}
+
 // shiftCause names what moved a formula a sort or lines added or removed
 // moved, or whose references Excel rewrote for them. It says false when lines
 // were added or removed there but could not have moved its value the way it
 // moved (a MAX that rose for a row removed, a total that rose for an empty
-// row added): they are no cause of it.
+// row added), or when it reads what it read (readsAsBefore): they are no
+// cause of it.
 func (r *report) shiftCause(c candidate) (string, bool) {
 	s := c.shift
+	if r.readsAsBefore(c) {
+		return "", false
+	}
 	if m := r.lines[strings.ToLower(s.sheet)]; m != nil && (m.movedAt(s.row, s.col) || m.pastedAt(s.row, s.col)) {
 		c1, c2, dc := 0, 0, 0
 		if b := m.block(s.col); b != nil {
