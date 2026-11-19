@@ -102,6 +102,8 @@ func (rc *reach) judgeObjects(before, after map[string][]object, exists func(k s
 			switch {
 			case !ok, rc.copies[k], !exists(k):
 				continue
+			case o.vanishes && p.rg.R1 == p.rg.R2 && p.rg.C1 == p.rg.C2 && !(o.rg.R1 == o.rg.R2 && o.rg.C1 == o.rg.C2):
+				continue // cut to one cell: it goes (Excel keeps no merge of one cell)
 			case o.free && rc.hits(k, p.rg):
 				reached[k] = append(reached[k], p.rg)
 				continue // the edit reaches it: it may change it
@@ -125,10 +127,32 @@ func (rc *reach) judgeObjects(before, after map[string][]object, exists func(k s
 		}
 		// The objects now, each taken once by the one it matches.
 		used := make([]bool, len(after[k]))
+		// Objects whose cells are judged, not their ranges: by their group.
+		type group struct {
+			from string
+			o    object
+			want []grid.Range // the cells the shifts give
+			got  []grid.Range // the cells the sheet holds
+		}
+		var groups []*group
 		for _, w := range expected[k] {
+			if w.o.cover {
+				var g *group
+				for _, h := range groups {
+					if h.o.kind == w.o.kind && h.o.fixed == w.o.fixed && h.o.refs == w.o.refs && h.from == w.from {
+						g = h
+					}
+				}
+				if g == nil {
+					g = &group{from: w.from, o: w.o}
+					groups = append(groups, g)
+				}
+				g.want = append(g.want, w.o.rg)
+				continue
+			}
 			found := false
 			for i, a := range after[k] {
-				if used[i] || a.kind != w.o.kind || a.fixed != w.o.fixed {
+				if used[i] || a.cover || a.kind != w.o.kind || a.fixed != w.o.fixed {
 					continue
 				}
 				if a.cell != w.o.cell {
@@ -149,11 +173,18 @@ func (rc *reach) judgeObjects(before, after map[string][]object, exists func(k s
 			if found {
 				continue
 			}
-			// What the sheet holds instead: the nearest of its kind.
+			// What the sheet holds instead: the nearest of its kind (at the
+			// same place, else with the same fixed text).
 			instead := "nothing of its kind"
-			for i, a := range after[k] {
-				if !used[i] && a.kind == w.o.kind && a.fixed == w.o.fixed {
+			for pass := 0; pass < 2 && instead == "nothing of its kind"; pass++ {
+				for i, a := range after[k] {
+					if used[i] || a.cover || a.kind != w.o.kind || pass == 0 && a.rg != w.o.rg || pass == 1 && a.fixed != w.o.fixed {
+						continue
+					}
 					instead = a.String()
+					if a.fixed != w.o.fixed {
+						instead += " holding " + a.fixed + " (it held " + w.o.fixed + ")"
+					}
 					if a.refs != "" && a.refs != w.o.refs {
 						instead += " reading " + strings.ReplaceAll(a.refs, "\n", "; ")
 					}
@@ -168,14 +199,99 @@ func (rc *reach) judgeObjects(before, after map[string][]object, exists func(k s
 			}
 			return fmt.Sprintf("%s: outside the edit's reach, the %s is not there as it was: the edit's shifts give the %s, and the sheet holds %s", display(k), w.o, gives, instead)
 		}
+		// The objects the sheet holds: a group's, or none of the expected.
+		mask := append(append([]grid.Range{}, rc.solid[k]...), reached[k]...)
+		var unmatched []object
 		for i, a := range after[k] {
-			if used[i] || a.free && (rc.hits(k, a.rg) || overlaps(reached[k], a.rg)) {
+			if used[i] {
 				continue
 			}
-			return fmt.Sprintf("%s: outside the edit's reach, the edit made a %s it does not name", display(k), a)
+			if a.cover {
+				var in *group
+				for _, g := range groups {
+					if g.o.kind != a.kind || g.o.fixed != a.fixed {
+						continue
+					}
+					if _, ok := rc.sameRefs(g.o.refs, a.refs, g.from, k, display); ok || g.o.skipRefs {
+						in = g
+						break
+					}
+				}
+				if in != nil {
+					in.got = append(in.got, a.rg)
+					continue
+				}
+			}
+			if a.free && (rc.hits(k, a.rg) || overlaps(reached[k], a.rg)) {
+				continue
+			}
+			unmatched = append(unmatched, a)
+		}
+		for _, g := range groups {
+			if at, ok := sameCover(g.want, g.got, mask); !ok {
+				name := strings.TrimSpace(g.o.kind + " " + g.o.label)
+				return fmt.Sprintf("%s: outside the edit's reach, the %s is not there as it was: the edit's shifts give the %s over %s, and the sheet holds it over %s (they differ at %s)",
+					display(k), name, name, listRanges(g.want), listRanges(g.got), grid.CellName(at[0], at[1]))
+			}
+		}
+		if len(unmatched) > 0 {
+			return fmt.Sprintf("%s: outside the edit's reach, the edit made a %s it does not name", display(k), unmatched[0])
 		}
 	}
 	return ""
+}
+
+// listRanges names ranges, "nothing" for none.
+func listRanges(rs []grid.Range) string {
+	if len(rs) == 0 {
+		return "nothing"
+	}
+	var out []string
+	for _, r := range rs {
+		out = append(out, r.String())
+	}
+	return strings.Join(out, " ")
+}
+
+// sameCover tells whether two lists of ranges cover the same cells outside a
+// mask; if not, a cell they differ on. It compares the compressed grid their
+// edges make, so a range of a whole column costs no more than a cell.
+func sameCover(a, b, mask []grid.Range) ([2]int, bool) {
+	rows, cols := map[int]bool{1: true}, map[int]bool{1: true}
+	for _, list := range [][]grid.Range{a, b, mask} {
+		for _, r := range list {
+			rows[r.R1], rows[r.R2+1] = true, true
+			cols[r.C1], cols[r.C2+1] = true, true
+		}
+	}
+	var rs, cs []int
+	for r := range rows {
+		rs = append(rs, r)
+	}
+	for c := range cols {
+		cs = append(cs, c)
+	}
+	sort.Ints(rs)
+	sort.Ints(cs)
+	covers := func(list []grid.Range, r, c int) bool {
+		for _, g := range list {
+			if g.Contains(r, c) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, r := range rs {
+		for _, c := range cs {
+			if covers(mask, r, c) {
+				continue
+			}
+			if covers(a, r, c) != covers(b, r, c) {
+				return [2]int{r, c}, false
+			}
+		}
+	}
+	return [2]int{}, true
 }
 
 // wholeLine tells whether a range holds the whole of a row (or column).

@@ -33,6 +33,26 @@ const (
 	xlsxwriterRelease = "3.3.1"
 )
 
+// ObjectsFromRun is the first run seed whose pools hold objects beside cells:
+// merges, notes, links, hidden rows and columns and a styled header
+// (fuzzgen.py --objects), which the reach invariant judges outside an edit's
+// reach. Pools of smaller run seeds are made as they always were, byte for
+// byte, so the repros in known.txt (all of runs below it) replay on the pools
+// they were found on. A fresh run's default seed is above it.
+const ObjectsFromRun = 2_000_000
+
+// WithObjects tells whether the pool of a seed holds those objects.
+func WithObjects(poolSeed uint64) bool { return poolSeed/1000 >= ObjectsFromRun }
+
+// objectsFlag is fuzzgen.py's flag for the pool of a seed, with a space before
+// it, or "".
+func objectsFlag(poolSeed uint64) string {
+	if WithObjects(poolSeed) {
+		return " --objects"
+	}
+	return ""
+}
+
 // PoolSeed is the seed fuzzgen.py makes the pool of a sequence of long mode
 // from: run*1000 plus its round (sequence seed run*100000+i is in round
 // i/RoundSequences). Sequence 700012 starts from pool 7000.
@@ -44,8 +64,8 @@ func PoolSeed(seq uint64) uint64 {
 // GenerateCommand is the command that makes the pool of a seed in dir/pool,
 // from the repository's root.
 func GenerateCommand(seed uint64, dir string) string {
-	return fmt.Sprintf("uv run --no-project --with openpyxl==%s --with xlsxwriter==%s python scripts/fuzzgen.py --seed %d --count %d --pool-only %s",
-		openpyxlRelease, xlsxwriterRelease, seed, PoolFiles, dir)
+	return fmt.Sprintf("uv run --no-project --with openpyxl==%s --with xlsxwriter==%s python scripts/fuzzgen.py --seed %d --count %d --pool-only%s %s",
+		openpyxlRelease, xlsxwriterRelease, seed, PoolFiles, objectsFlag(seed), dir)
 }
 
 // generateTimeout bounds one pool's making: uv may fetch the two releases
@@ -58,8 +78,12 @@ func Generate(root string, seed uint64, dir string) (Pool, error) {
 	out := filepath.Join(dir, "pool-"+strconv.FormatUint(seed, 10))
 	ctx, cancel := context.WithTimeout(context.Background(), generateTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "uv", "run", "--no-project", "--with", "openpyxl=="+openpyxlRelease, "--with", "xlsxwriter=="+xlsxwriterRelease,
-		"python", filepath.Join(root, "scripts", "fuzzgen.py"), "--seed", strconv.FormatUint(seed, 10), "--count", strconv.Itoa(PoolFiles), "--pool-only", out)
+	args := []string{"run", "--no-project", "--with", "openpyxl==" + openpyxlRelease, "--with", "xlsxwriter==" + xlsxwriterRelease,
+		"python", filepath.Join(root, "scripts", "fuzzgen.py"), "--seed", strconv.FormatUint(seed, 10), "--count", strconv.Itoa(PoolFiles), "--pool-only"}
+	if WithObjects(seed) {
+		args = append(args, "--objects")
+	}
+	cmd := exec.CommandContext(ctx, "uv", append(args, out)...)
 	var buf bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	if err := cmd.Run(); err != nil {

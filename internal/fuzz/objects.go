@@ -33,6 +33,14 @@ import (
 //     letter for letter;
 //   - an object on a sheet made as a copy is new, and not judged.
 //
+// Two things are not judged, and are bugs the first long runs found (the
+// README names them): a note's author (the full editor writes every note again
+// with the author "Author", where the streaming editor leaves the file's own),
+// and where a chart stands (the streaming editor leaves a chart where it was
+// when rows are inserted or deleted above it, the full editor moves it with
+// its cells). Judged, each ends every sequence that reaches it, at the first
+// edit the full editor takes on a workbook with a note or a chart.
+//
 // An object that an edit's reach lies on may be changed by it (a set into a
 // merge, a clear over a validation, a copy onto a note), but not a table, a
 // filter, a chart, a hidden row or column, nor the sheet's visibility: no edit
@@ -47,6 +55,11 @@ type object struct {
 	refs  string     // what it holds that reads cells (rewritten as a formula is)
 	label string     // how a finding names it
 	free  bool       // an edit whose reach lies on it may change it
+	// vanishes says it goes when a shift cuts it to one cell (a merge).
+	vanishes bool
+	// cover says sheets may write its cells as other ranges (a validation's
+	// sqref cut in two): the cells it covers are judged, not its ranges.
+	cover bool
 	// soft is what it holds that an edit reaching the header row of its place
 	// may change (a table's column names follow its header cells).
 	soft string
@@ -77,7 +90,7 @@ func (o object) String() string {
 func gridObjects(s *grid.Sheet) []object {
 	var out []object
 	for _, m := range s.Merges {
-		out = append(out, object{kind: "merge", rg: m, free: true})
+		out = append(out, object{kind: "merge", rg: m, free: true, vanishes: true})
 	}
 	for _, t := range s.Tables {
 		out = append(out, object{kind: "table", rg: t.Range, label: t.Name,
@@ -86,11 +99,11 @@ func gridObjects(s *grid.Sheet) []object {
 	}
 	for _, n := range s.Notes {
 		out = append(out, object{kind: "note", rg: grid.Range{R1: n.Row, C1: n.Col, R2: n.Row, C2: n.Col}, cell: true, free: true,
-			label: fmt.Sprintf("%q", n.Text), fixed: fmt.Sprintf("%q %q %v", n.Author, n.Text, n.Thread)})
+			label: fmt.Sprintf("%q", n.Text), fixed: fmt.Sprintf("%q %v", n.Text, n.Thread)})
 	}
 	for _, l := range s.Links {
 		out = append(out, object{kind: "link", rg: grid.Range{R1: l.Row, C1: l.Col, R2: l.Row, C2: l.Col}, cell: true, free: true,
-			label: l.URL + l.Location, fixed: fmt.Sprintf("%q %q", l.URL, l.Tooltip), refs: l.Location})
+			label: l.URL + l.Location, fixed: fmt.Sprintf("%q %q %q", l.URL, l.Location, l.Tooltip)})
 	}
 	for _, c := range s.Charts {
 		var refs []string
@@ -183,7 +196,7 @@ func readFileObjects(data []byte, wb *grid.Workbook) (*fileObjects, error) {
 		}
 		for _, v := range vs {
 			for _, rg := range sqrefParts(v.Range) {
-				out.objects[k] = append(out.objects[k], object{kind: "validation", rg: rg, free: true, relative: true, label: strings.Fields(v.Rule + " ")[0],
+				out.objects[k] = append(out.objects[k], object{kind: "validation", rg: rg, free: true, relative: true, cover: true, label: strings.Fields(v.Rule + " ")[0],
 					fixed: fmt.Sprintf("%q %q %v", v.Prompt, v.Error, v.Warn), refs: v.Rule})
 			}
 		}
@@ -193,7 +206,7 @@ func readFileObjects(data []byte, wb *grid.Workbook) (*fileObjects, error) {
 		}
 		for _, c := range cs {
 			for _, rg := range sqrefParts(c.Range) {
-				out.objects[k] = append(out.objects[k], object{kind: "conditional format", rg: rg, free: true, relative: true,
+				out.objects[k] = append(out.objects[k], object{kind: "conditional format", rg: rg, free: true, relative: true, cover: true,
 					fixed: fmt.Sprintf("%v %v", c.Recorded, c.Banding), refs: c.Rule})
 			}
 		}

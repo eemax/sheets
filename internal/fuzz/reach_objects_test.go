@@ -272,8 +272,8 @@ func fileBook(n int) *fileObjects {
 	}
 	f := &fileObjects{objects: map[string][]object{}, looks: map[string]map[[2]int]string{}}
 	f.objects["data"] = []object{
-		{kind: "validation", rg: grid.Range{R1: 2, C1: 2, R2: row(5), C2: 2}, free: true, relative: true, label: "list", refs: "list a,b"},
-		{kind: "conditional format", rg: grid.Range{R1: 2, C1: 2, R2: row(5), C2: 3}, free: true, relative: true, refs: "=$B2>10"},
+		{kind: "validation", rg: grid.Range{R1: 2, C1: 2, R2: row(5), C2: 2}, free: true, relative: true, cover: true, label: "list", refs: "list a,b"},
+		{kind: "conditional format", rg: grid.Range{R1: 2, C1: 2, R2: row(5), C2: 3}, free: true, relative: true, cover: true, refs: "=$B2>10"},
 	}
 	looks := map[[2]int]string{}
 	for r := 1; r <= 5; r++ {
@@ -302,22 +302,22 @@ func TestReachFile(t *testing.T) {
 			f := fileBook(0)
 			f.objects["data"][0].rg.R2 = 9
 			return f
-		}, wantErr: "the validation list at B2:B5 is not there as it was"},
+		}, wantErr: "the validation list is not there as it was: the edit's shifts give the validation list over B2:B5, and the sheet holds it over B2:B9 (they differ at B6)"},
 		{name: "a validation made", edit: far, after: func() *fileObjects {
 			f := fileBook(0)
-			f.objects["data"] = append(f.objects["data"], object{kind: "validation", rg: grid.Range{R1: 9, C1: 1, R2: 9, C2: 1}, free: true, relative: true, refs: "whole"})
+			f.objects["data"] = append(f.objects["data"], object{kind: "validation", rg: grid.Range{R1: 9, C1: 1, R2: 9, C2: 1}, free: true, relative: true, cover: true, refs: "whole"})
 			return f
 		}, wantErr: "the edit made a validation at A9 it does not name"},
 		{name: "a conditional format lost", edit: far, after: func() *fileObjects {
 			f := fileBook(0)
 			f.objects["data"] = f.objects["data"][:1]
 			return f
-		}, wantErr: "the conditional format at B2:C5 is not there as it was"},
+		}, wantErr: "the conditional format is not there as it was: the edit's shifts give the conditional format over B2:C5, and the sheet holds it over nothing (they differ at B2)"},
 		{name: "a conditional format's rule rewritten", edit: far, after: func() *fileObjects {
 			f := fileBook(0)
 			f.objects["data"][1].refs = "=$B3>10"
 			return f
-		}, wantErr: "the conditional format at B2:C5 is not there as it was: the edit's shifts give the conditional format at B2:C5 reading =$B2>10"},
+		}, wantErr: "the conditional format is not there as it was: the edit's shifts give the conditional format over B2:C5, and the sheet holds it over nothing (they differ at B2)"},
 		{name: "a look changed", edit: far, after: func() *fileObjects {
 			f := fileBook(0)
 			f.looks["data"][[2]int{1, 1}] = ""
@@ -336,7 +336,16 @@ func TestReachFile(t *testing.T) {
 		{name: "a validation cut by a clear leaves its remainder", edit: Edit{Class: "clear", Args: []string{"clear", FileArg, "Data!B3"}}, after: func() *fileObjects {
 			f := fileBook(0)
 			f.objects["data"][0].rg = grid.Range{R1: 2, C1: 2, R2: 2, C2: 2}
-			f.objects["data"] = append(f.objects["data"], object{kind: "validation", rg: grid.Range{R1: 4, C1: 2, R2: 5, C2: 2}, free: true, relative: true, label: "list", refs: "list a,b"})
+			f.objects["data"] = append(f.objects["data"], object{kind: "validation", rg: grid.Range{R1: 4, C1: 2, R2: 5, C2: 2}, free: true, relative: true, cover: true, label: "list", refs: "list a,b"})
+			return f
+		}},
+		{name: "a validation written as two ranges is the same", edit: far, after: func() *fileObjects {
+			f := fileBook(0)
+			v := f.objects["data"][0]
+			v.rg = grid.Range{R1: 2, C1: 2, R2: 3, C2: 2}
+			w := v
+			w.rg = grid.Range{R1: 4, C1: 2, R2: 5, C2: 2}
+			f.objects["data"] = append([]object{v, w}, f.objects["data"][1:]...)
 			return f
 		}},
 		{name: "rows inserted: both move and grow", edit: Edit{Class: "rows-insert", Args: []string{"rows", "insert", FileArg, "Data!3", "-n", "2"}}, after: func() *fileObjects { return fileBook(2) }},
@@ -344,7 +353,7 @@ func TestReachFile(t *testing.T) {
 			f := fileBook(2)
 			f.objects["data"][1].rg.R2 = 5
 			return f
-		}, wantErr: "the conditional format at B2:C7 is not there as it was"},
+		}, wantErr: "the conditional format is not there as it was: the edit's shifts give the conditional format over B2:C7, and the sheet holds it over B2:C5 (they differ at B6)"},
 	} {
 		before := objBook(0)
 		mo := newModel(before)
@@ -389,5 +398,61 @@ func TestReadFileObjects(t *testing.T) {
 	}
 	if !found {
 		t.Error("no pool file's validation or conditional format is read")
+	}
+}
+
+// TestReachObjectsKept: a link's place is the text it was typed as (Excel does
+// not follow a hyperlink to a cell when rows are inserted or a sheet is
+// renamed), a merge cut to one cell goes, and a note's author is not judged (the long run's first findings of objects).
+func TestReachObjectsKept(t *testing.T) {
+	judge := func(edit Edit, mutate func(wb *grid.Workbook), after *grid.Workbook) string {
+		before := objBook(0)
+		mutate(before)
+		mo := newModel(before)
+		mo.r = newReach(before)
+		mo.apply(edit)
+		return mo.reached(after)
+	}
+	link := func(wb *grid.Workbook) {
+		wb.Sheet("Data").Links = append(wb.Sheet("Data").Links, grid.Link{Row: 9, Col: 1, Location: "Data!B2"})
+	}
+	// A rename leaves the link as it was.
+	after := objBook(0)
+	link(after)
+	after.Sheets[0].Name = "Old"
+	after.Sheets[0].Charts[0].Series[0] = grid.ChartSeries{Name: "Old!$B$1", Categories: "Old!$A$2:$A$5", Values: "Old!$B$2:$B$5"}
+	if got := judge(Edit{Class: "sheet-rename", Args: []string{"sheet", "rename", FileArg, "Data", "Old"}}, link, after); got != "" {
+		t.Errorf("a link's place after a rename: %s", got)
+	}
+	// Rows inserted above it: it moves, and its place does not.
+	after = objBook(2)
+	after.Sheet("Data").Links = append(after.Sheet("Data").Links, grid.Link{Row: 11, Col: 1, Location: "Data!B2"})
+	if got := judge(Edit{Class: "rows-insert", Args: []string{"rows", "insert", FileArg, "Data!3", "-n", "2"}}, link, after); got != "" {
+		t.Errorf("a link's place after rows are inserted: %s", got)
+	}
+	// A merge over three columns, two of them deleted, is one cell: gone.
+	cut := objBook(0)
+	cut.Sheet("Data").Merges = nil
+	if got := judge(Edit{Class: "cols-delete", Args: []string{"cols", "delete", FileArg, "Data!B:C"}}, func(wb *grid.Workbook) {}, cut); strings.Contains(got, "merge") {
+		t.Errorf("a merge cut to one cell: %s", got)
+	}
+	// A note's author is not judged (the full editor writes "Author"), its text is.
+	other := objBook(0)
+	other.Sheet("Data").Notes[0].Author = "Author"
+	if got := judge(Edit{Class: "set", Args: []string{"set", FileArg, "Data!ZZ900", "1"}}, func(wb *grid.Workbook) {}, other); got != "" {
+		t.Errorf("a note by another author: %q", got)
+	}
+	other.Sheet("Data").Notes[0].Text = "other"
+	got := judge(Edit{Class: "set", Args: []string{"set", FileArg, "Data!ZZ900", "1"}}, func(wb *grid.Workbook) {}, other)
+	for _, want := range []string{`the note "check" on B3 is not there as it was`, `the sheet holds note "other" on B3`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("a note with other text: %q lacks %q", got, want)
+		}
+	}
+	// And a note gone says so.
+	gone := objBook(0)
+	gone.Sheet("Data").Notes = nil
+	if got := judge(Edit{Class: "set", Args: []string{"set", FileArg, "Data!ZZ900", "1"}}, func(wb *grid.Workbook) {}, gone); !strings.Contains(got, "and the sheet holds nothing of its kind") {
+		t.Errorf("a note lost: %q", got)
 	}
 }

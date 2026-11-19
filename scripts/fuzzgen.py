@@ -3,11 +3,13 @@
 Half are written by openpyxl, half by XlsxWriter, each from its own seed:
 values of every type, formulas of all three kinds (plain, legacy array
 entered with Ctrl+Shift+Enter, dynamic array), Excel tables, defined names,
-charts, validations and conditional formats, and (from fix round 3 of the
-fuzzer's long mode) merges, notes, links, hidden rows and columns and a styled
-header, which the reach invariant judges outside an edit's reach. These come
-from a random stream of their own, so the committed pool's cells and objects
-are what the seed always made, and the committed files need no change.
+charts, validations and conditional formats. With --objects (long mode's
+pools of runs from seed 2,000,000: fix round 3 of the fuzzer's long mode) it
+adds merges, notes, links, hidden rows and columns and a styled header, which
+the reach invariant judges outside an edit's reach. They come from a random
+stream of their own, and only with the flag, so every seed without it makes
+the files it always made, byte for byte: the committed pool, and the pools the
+repros of known.txt replay on, need no change.
 
 Every formula carries its kind in its text, as the condition N("p")=0,
 N("l")=0 or N("d")=0 of an IF that is always true: IF(N("p")=0,B2*C2). N of
@@ -45,7 +47,7 @@ in the package) are fixed.
 --pool-only writes the pool and no must-refuse cases: the fuzzer's long mode
 (SHEETS_FUZZ=long) makes a fresh pool this way from each seed it runs, and
 the must-refuse cases are made from the committed pool's files (another seed
-may hold none that fits a case).
+may hold none that fits a case). --objects adds the objects named above.
 """
 import argparse
 import datetime
@@ -136,7 +138,7 @@ class Plan:
     (sheet, row, col) -> value, formula ("=...") or None, and its arrays,
     tables, names, charts, validations and conditional formats."""
 
-    def __init__(self, rng, dynamic):
+    def __init__(self, rng, dynamic, objects=False):
         self.rng = rng
         self.sheets = ["Data"]
         n2 = rng.choice([0, 1, 1, 2])
@@ -161,7 +163,7 @@ class Plan:
         self.arrays = rng.random() < 0.5
         self.n = rng.randint(4, 14)  # data rows on Data
         self.build(dynamic)
-        self.extras()
+        self.extras(objects)
 
     def build(self, dynamic):
         rng, n = self.rng, self.n
@@ -270,26 +272,29 @@ class Plan:
                 self.shared = [("G", 2, last)]
         self.typed_empty = rng.random() < 0.5
 
-    def extras(self):
-        """What a sheet holds besides cells and the objects above: a merge, a
-        note, a link (to the web, or to a cell), a hidden row and column, and a
-        header in bold on a fill. The fuzzer's reach invariant judges these
-        outside an edit's reach (internal/fuzz/objects.go). They come from a
-        random stream of their own, so the cells and objects above are the same
-        for a seed as before they were added, and the committed pool needs no
-        change."""
-        o = random.Random(str(self.rng.getstate()[1][:8]) + "objects")
-        last = self.n + 1
+    def extras(self, objects):
+        """What a sheet holds besides cells and the objects above, with
+        --objects: a merge, a note, a link (to the web, or to a cell), a hidden
+        row and column, and a header in bold on a fill. The fuzzer's reach
+        invariant judges these outside an edit's reach (internal/fuzz/objects.go).
+        They come from a random stream of their own, and only with the flag, so
+        the cells and objects above are the same for a seed as before they were
+        added."""
         self.merges = []  # (sheet, ref)
         self.notes = []  # (sheet, cell, text)
         self.links = []  # (sheet, cell, target): "https://..." or "Data!B2"
         self.hidden_cols = []  # (sheet, column letter)
         self.hidden_rows = []  # (sheet, row)
+        self.styled = False
+        if not objects:
+            return
+        o = random.Random(str(self.rng.getstate()[1][:8]) + "objects")
+        last = self.n + 1
         if o.random() < 0.4:
             r = last + 5
             self.cells[("Data", r, 1)] = "Remarks"
             self.merges.append(("Data", f"A{r}:C{r}"))
-        if o.random() < 0.4:
+        if o.random() < 0.25:
             self.notes.append(("Data", f"{o.choice('BCDEF')}1", "check this"))
         if o.random() < 0.4:
             r = last + 7
@@ -654,6 +659,7 @@ def main():
     ap.add_argument("--seed", type=int, default=20261118)
     ap.add_argument("--count", type=int, default=40)
     ap.add_argument("--pool-only", action="store_true", help="no must-refuse cases (long mode's fresh pools)")
+    ap.add_argument("--objects", action="store_true", help="merges, notes, links, hidden rows and columns, a styled header (long mode's pools of runs from seed 2,000,000)")
     args = ap.parse_args()
     pool = os.path.join(args.out, "pool")
     os.makedirs(pool, exist_ok=True)
@@ -661,7 +667,7 @@ def main():
     for i in range(args.count):
         rng = random.Random(args.seed * 1000 + i)
         producer = "openpyxl" if i % 2 == 0 else "xlsxwriter"
-        plan = Plan(rng, dynamic=producer == "xlsxwriter")
+        plan = Plan(rng, dynamic=producer == "xlsxwriter", objects=args.objects)
         path = os.path.join(pool, f"{producer}-{i:02d}.xlsx")
         (write_openpyxl if producer == "openpyxl" else write_xlsxwriter)(plan, path)
         if plan.shared:

@@ -25,7 +25,8 @@ const maxSamples = 120
 // sequences, from seeds the run's seed gives), so its sequences start from
 // many more workbooks than the committed 40. See README.md, Long mode.
 //
-//   - SHEETS_FUZZ_SEED: the run's seed (default: a fresh one, printed);
+//   - SHEETS_FUZZ_SEED: the run's seed (default: a fresh one, printed, from
+//     ObjectsFromRun up: its pools hold objects beside cells);
 //   - SHEETS_FUZZ_TIME: how long it runs (default 10m), finishing the
 //     sequence it is in;
 //   - SHEETS_FUZZ_EDITS: the most edits it makes (default: no limit);
@@ -45,7 +46,7 @@ const maxSamples = 120
 // never a failure), and LibreOffice's second opinion on the values of plain
 // formulas (reported, never a failure).
 func fuzzLong(t *testing.T, committed []Workbook, kn *Known) {
-	seed := uint64(time.Now().UnixNano()/int64(time.Millisecond)%1_000_000) + 2
+	seed := ObjectsFromRun + uint64(time.Now().UnixNano()/int64(time.Millisecond)%1_000_000) + 2
 	given := false
 	if v := os.Getenv("SHEETS_FUZZ_SEED"); v != "" {
 		var err error
@@ -405,6 +406,21 @@ func TestPoolSeed(t *testing.T) {
 	}
 	if !strings.Contains(GenerateCommand(7000, "DIR"), "fuzzgen.py --seed 7000 --count 40 --pool-only DIR") {
 		t.Error(GenerateCommand(7000, "DIR"))
+	}
+	// Pools of runs from ObjectsFromRun hold objects beside cells; those of
+	// every run before it are made as they were, so known.txt's repros replay.
+	for _, tc := range []struct {
+		pool uint64
+		want bool
+	}{
+		{7000, false}, {718113007, false}, {915488000, false}, {ObjectsFromRun*1000 - 1, false}, {ObjectsFromRun * 1000, true}, {2000031000, true},
+	} {
+		if got := WithObjects(tc.pool); got != tc.want {
+			t.Errorf("WithObjects(%d) = %v, want %v", tc.pool, got, tc.want)
+		}
+	}
+	if c := GenerateCommand(2000031000, "DIR"); !strings.Contains(c, "--seed 2000031000 --count 40 --pool-only --objects DIR") {
+		t.Error(c)
 	}
 }
 
