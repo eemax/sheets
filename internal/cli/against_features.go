@@ -86,7 +86,7 @@ func compareFeatures(before, after []xlsx.Feature, renamed, tables map[string]st
 	movedTo := func(f xlsx.Feature, home string) (string, string) {
 		var out []string
 		sheet := strings.ToLower(home)
-		for i, w := range strings.Fields(f.Where) {
+		for _, w := range strings.Fields(f.Where) {
 			s := shift(home, w)
 			if s == "" || strings.Contains(s, "#REF!") {
 				continue
@@ -95,7 +95,7 @@ func compareFeatures(before, after []xlsx.Feature, renamed, tables map[string]st
 			if k := strings.LastIndex(s, "!"); k >= 0 && !strings.Contains(w, "!") {
 				on, s = strings.ToLower(strings.ReplaceAll(strings.Trim(s[:k], "'"), "''", "'")), s[k+1:]
 			}
-			if i == 0 {
+			if len(out) == 0 {
 				sheet = on
 			} else if on != sheet {
 				return "", "" // split between sheets: not the feature it was

@@ -1261,7 +1261,7 @@ func (r *report) cutCells(j *job) bool {
 	for row := 1; row <= n; row++ {
 		j.rows = append(j.rows, diff.Pair{Old: row, New: row})
 	}
-	j.cols, j.colsAdded, j.colsRemoved, j.moved, j.blocks = nil, nil, nil, nil, nil
+	j.cols, j.colsAdded, j.colsRemoved, j.moved, j.blocks, j.heldCols = nil, nil, nil, nil, nil, nil
 	for col := 1; col <= max(ua.C2, ub.C2); col++ {
 		j.cols = append(j.cols, [2]int{col, col})
 	}
@@ -1341,7 +1341,7 @@ type blockJob struct {
 // held gives the columns compared that hold a cell on either side (see
 // diff.Columns): the cells of the others are empty on both.
 func (j *job) held() [][2]int {
-	if j.heldCols == nil || j.heldOf != len(j.cols) {
+	if j.heldCols == nil || j.heldOf != len(j.cols) { // cols set again (cutCells) clears it
 		ha, hb := diff.Columns(j.sa), diff.Columns(j.sb)
 		j.heldCols = [][2]int{}
 		for _, c := range j.cols {
@@ -2023,7 +2023,7 @@ func (r *report) removalMoves(sa *grid.Sheet, at xlsx.At, sheet string, runs [][
 				case !v.known:
 					unknown = true
 				case v.cell.Kind == grid.Number:
-					n := v.cell.Num
+					n := v.num // as the values compared count it (dates in the 1900 system)
 					if numbers == 0 || n > hi {
 						hi = n
 					}
