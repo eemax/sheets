@@ -46,6 +46,7 @@ func (e *Editor) InsertRows(sheet string, at, n int) error {
 		}
 		return r
 	})
+	e.recordOp(LineOp{Sheet: sheet, At: at, N: n})
 	return nil
 }
 
@@ -76,6 +77,7 @@ func (e *Editor) DeleteRows(sheet string, from, to int) error {
 		}
 		return r
 	})
+	e.recordOp(LineOp{Sheet: sheet, At: from, N: -n})
 	return nil
 }
 
@@ -112,6 +114,7 @@ func (e *Editor) InsertCols(sheet string, at, n int) error {
 		}
 		return r
 	})
+	e.recordOp(LineOp{Sheet: sheet, Cols: true, At: at, N: n})
 	return nil
 }
 
@@ -141,6 +144,7 @@ func (e *Editor) DeleteCols(sheet string, from, to int) error {
 		}
 		return r
 	})
+	e.recordOp(LineOp{Sheet: sheet, Cols: true, At: from, N: -n})
 	return nil
 }
 
@@ -814,6 +818,7 @@ func (e *Editor) RenameSheet(from, to string) error {
 	e.renameState(from, to)
 	e.rewriteSnapshot(func(f string) string { return formula.RenameSheet(f, from, to) })
 	e.sheetEdit(from, to, false, func(f string) string { return formula.RenameSheet(f, from, to) })
+	e.recordOp(LineOp{Sheet: from, Rename: to})
 	return nil
 }
 
@@ -929,6 +934,7 @@ func (e *Editor) DeleteSheet(name string) error {
 	}
 	delete(e.extent, name)
 	delete(e.layouts, name)
+	e.recordOp(LineOp{Sheet: name, Gone: true})
 	return nil
 }
 

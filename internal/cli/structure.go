@@ -36,6 +36,7 @@ func (a *app) edit(file string, create bool, fn func(ed book.Editor, res *struct
 	if err := ed.Save(a.dryRun); err != nil {
 		return err
 	}
+	a.track(file, ed)
 	res.Warnings = append(res.Warnings, ed.Warnings()...)
 	if a.json {
 		return a.printJSON(res)

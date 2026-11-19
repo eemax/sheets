@@ -78,6 +78,12 @@ type Editor struct {
 	resFormulas map[cellKey]*formulaAt
 	calcWB      *grid.Workbook // the workbook as it stood after calcAt changes
 	calcAt      int
+
+	// lineOps are the rows, columns and sheets inserted, deleted or
+	// renamed, and out the file as last rendered, for the change report
+	// (see effects.go).
+	lineOps []LineOp
+	out     []byte
 }
 
 // OpenEditor opens path for editing, or starts a new workbook when the file
@@ -601,6 +607,7 @@ func (e *Editor) Render() ([]byte, error) {
 			}
 		}
 	}
+	e.out = buf
 	return buf, nil
 }
 

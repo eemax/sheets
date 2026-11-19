@@ -65,6 +65,7 @@ type StreamEditor struct {
 	extent    map[string]grid.Range // used range by lower-cased sheet, where edits grew it
 	warnings  []string
 	res       *calcResult // after saving
+	out       []byte      // the file as last rendered
 	// laysOut lets Render go on where a legacy array over several cells
 	// is to be computed, which needs the full editor (see Auto.full).
 	laysOut bool

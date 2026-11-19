@@ -35,8 +35,14 @@ type app struct {
 	tty    bool
 	dryRun bool
 	// batch is set for the commands of a batch (sheets do): they print no
-	// next-step hints.
+	// next-step hints, and no change report (the batch prints one).
 	batch bool
+	// session follows what the command's edits did, for the change report
+	// (see change.go); changed is the report, once worked out.
+	session *session
+	changed *changeReport
+	// hints wait for the change report, which comes before them.
+	hints []string
 }
 
 // Main runs the CLI and returns the process exit code.
@@ -54,7 +60,14 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	root.SetIn(stdin)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
-	if err := root.Execute(); err != nil {
+	err := root.Execute()
+	if (err == nil || err == errSilent) && !a.json {
+		a.printChange(a.changeReport())
+	}
+	for _, h := range a.hints {
+		fmt.Fprint(stdout, h)
+	}
+	if err != nil {
 		if err != errSilent {
 			if a.json {
 				enc := json.NewEncoder(stderr)
@@ -120,6 +133,7 @@ func version() string {
 // printJSON prints compact JSON (indented on a terminal): agents pay for
 // every space.
 func (a *app) printJSON(v any) error {
+	v = withChange(v, a.changeReport())
 	enc := json.NewEncoder(a.stdout)
 	enc.SetEscapeHTML(false)
 	if a.tty {
@@ -138,7 +152,7 @@ func (a *app) hint(format string, args ...any) {
 	if a.batch {
 		return
 	}
-	fmt.Fprintf(a.stdout, "next: "+format+"\n", args...)
+	a.hints = append(a.hints, fmt.Sprintf("next: "+format+"\n", args...))
 }
 
 // shellQuote quotes an argument for a suggested command line.

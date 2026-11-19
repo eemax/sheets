@@ -444,6 +444,9 @@ type calcResult struct {
 	touched  map[string][][2]int // cells whose values changed, by lower-cased sheet
 	arrays   map[cellKey]spilled // whole results of dynamic arrays computed
 	legacy   map[cellKey]laidOut // whole results of legacy array formulas over several cells
+	// effects are the results recomputed that moved, went or became
+	// errors, for the change report (see effects.go).
+	effects []ResultChange
 }
 
 // laidOut is a legacy array formula's whole result, over its range.
@@ -718,6 +721,12 @@ func computeResults(st calcState) (calcResult, error) {
 				store(f, grid.Cell{})
 				out.dropped[keyOf(f.sheet, f.row, f.col)] = linkNote
 			}
+			if i < len(first) {
+				_, written := st.changed[keyOf(f.sheet, f.row, f.col)]
+				if rc, keep := effectOf(f, written, true, grid.Cell{}, false, linkNote); keep {
+					out.effects = append(out.effects, rc)
+				}
+			}
 			continue
 		}
 		key := keyOf(f.sheet, f.row, f.col)
@@ -789,6 +798,11 @@ func computeResults(st calcState) (calcResult, error) {
 			// No stored result rather than a wrong or stale one.
 			store(f, grid.Cell{})
 			out.dropped[key] = why
+			if !(why == arrayNotFilled && st.deferArrays) {
+				if rc, keep := effectOf(f, written, i < len(first), grid.Cell{}, false, why); keep {
+					out.effects = append(out.effects, rc)
+				}
+			}
 			switch {
 			case i >= len(first) || written:
 			case why == arrayNotFilled && st.deferArrays:
@@ -803,6 +817,9 @@ func computeResults(st calcState) (calcResult, error) {
 			continue
 		}
 		store(f, v)
+		if rc, keep := effectOf(f, written, i < len(first), v, true, ""); keep {
+			out.effects = append(out.effects, rc)
+		}
 	}
 	if cycle := j.members; len(cycle) > 0 {
 		var list []string

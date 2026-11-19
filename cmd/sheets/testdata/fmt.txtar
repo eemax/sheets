@@ -40,3 +40,4 @@ Order ID	Year	Amount	Rate
 -- fmt.out --
 formatted book.xlsx · preset default
 Data  table A1:D4: Order ID integer, Year integer, Amount decimal, Rate decimal
+change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before

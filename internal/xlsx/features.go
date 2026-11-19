@@ -171,7 +171,7 @@ func Features(data []byte) ([]Feature, error) {
 // those in Excel 2010's extension list too (where Excel keeps a list read
 // from another sheet, and the parts of a rule older Excel cannot show).
 func sheetRules(sheet string, b []byte) []Feature {
-	s := string(b)
+	s := string(outsideCells(b))
 	var out []Feature
 	for _, m := range validationEl.FindAllStringSubmatch(s, -1) {
 		a := attrsOf("<v " + m[1] + ">")
@@ -216,6 +216,25 @@ func sheetRules(sheet string, b []byte) []Feature {
 		}
 	}
 	return out
+}
+
+// outsideCells is a sheet's XML without its cells. Validations and
+// conditional formats come after them, and no cell can hold a tag (its
+// text is escaped), so the rules are looked for in the rest alone: through
+// a sheet of 150,000 rows, the looking is what takes the time.
+func outsideCells(b []byte) []byte {
+	i := bytes.Index(b, []byte("sheetData"))
+	j := bytes.LastIndex(b, []byte("sheetData>"))
+	if i < 0 || j <= i {
+		return b
+	}
+	lt := bytes.LastIndexByte(b[:i], '<')
+	if lt < 0 {
+		return b
+	}
+	end := j + len("sheetData>")
+	out := make([]byte, 0, lt+len(b)-end)
+	return append(append(out, b[:lt]...), b[end:]...)
 }
 
 // formulasOf reads the formulas a rule holds, in order, as written (without

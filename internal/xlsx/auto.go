@@ -18,6 +18,10 @@ type Auto struct {
 	s        *StreamEditor
 	e        *Editor
 	warnings []string // from the streaming part of the session
+	// data is the file as opened, and handed what the streaming part of
+	// the session did, once the full editor took over (see effects.go).
+	data   []byte
+	handed *Effects
 }
 
 // StreamFrom is the file size from which edits stream; -1 when they never
@@ -44,7 +48,7 @@ func OpenAuto(path string, data []byte) (*Auto, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Auto{path: path, s: s}, nil
+	return &Auto{path: path, s: s, data: data}, nil
 }
 
 // Streaming tells whether no edit has needed the full editor so far.
@@ -63,6 +67,8 @@ func (a *Auto) full() (*Editor, error) {
 			return nil, err
 		}
 		a.warnings = append(a.warnings, a.s.warnings...)
+		ef := a.s.effects()
+		a.handed = &ef
 	}
 	e, err := OpenEditorData(a.path, data)
 	if err != nil {

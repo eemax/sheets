@@ -98,6 +98,7 @@ Types: integer, decimal, currency[:symbol], percent, date, datetime, time, text.
 			if err != nil {
 				return err
 			}
+			a.trackBytes(file, fr.Before, fr.After)
 			if a.json {
 				return a.printJSON(fmtResult{File: file, Preset: p.Name, Formatted: true, FormatResult: fr})
 			}

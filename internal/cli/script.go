@@ -111,6 +111,7 @@ for at most --timeout.
 				return err
 			}
 			defer b.End()
+			a.session = batchSession(file, b.Start())
 			s := newScriptSession(a, file)
 			defer s.close()
 			res := scriptResult{File: file, DryRun: a.dryRun}
@@ -133,6 +134,7 @@ for at most --timeout.
 				res.Done = append(res.Done, "styling on "+plural(len(s.styled), "range"))
 			}
 			res.Formulas, res.Warnings = s.report, s.warningList()
+			a.ended(b)
 			if !a.dryRun {
 				if err := b.Commit(); err != nil {
 					return err
@@ -283,6 +285,7 @@ func (s *scriptSession) flush() error {
 	if err := ed.Save(false); err != nil {
 		return err
 	}
+	s.a.track(s.file, ed)
 	s.warnings = append(s.warnings, ed.Warnings()...)
 	s.wb = nil
 	s.recent = map[cellKey]bool{}
@@ -460,6 +463,7 @@ func (s *scriptSession) finish() error {
 		if err := last.Save(false); err != nil {
 			return err
 		}
+		s.a.track(s.file, last)
 		s.warnings = append(s.warnings, last.Warnings()...)
 		s.wb = nil
 	}

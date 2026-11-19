@@ -112,6 +112,7 @@ skipped.`,
 			if err := ed.Save(a.dryRun); err != nil {
 				return err
 			}
+			a.track(args[0], ed)
 			res.saved(ed)
 			if a.json {
 				return a.printJSON(res)
