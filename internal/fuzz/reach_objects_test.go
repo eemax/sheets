@@ -2,6 +2,7 @@ package fuzz
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -428,6 +429,265 @@ func TestReachFile(t *testing.T) {
 		if tc.wantErr == "" && got != "" || tc.wantErr != "" && !strings.Contains(got, tc.wantErr) {
 			t.Errorf("%s: the model says %q, want %q", tc.name, got, tc.wantErr)
 		}
+	}
+}
+
+// TestPaneAfter: where a frozen pane splits after lines are inserted or
+// deleted, as Excel moves it: lines among the frozen ones move the split.
+func TestPaneAfter(t *testing.T) {
+	ins := func(at, n int) xform { return xform{kind: 'l', at: at, n: n} }
+	del := func(at, end int) xform { return xform{kind: 'l', at: at, end: end} }
+	for _, tc := range []struct {
+		name   string
+		frozen int
+		x      xform
+		want   int
+	}{
+		{"insert at the first frozen row", 1, ins(1, 1), 2},
+		{"insert at the last frozen row (an off-by-one if the split stays)", 3, ins(3, 2), 5},
+		{"insert at the row after the frozen ones", 3, ins(4, 2), 3},
+		{"insert far below", 1, ins(40, 3), 1},
+		{"insert above the frozen ones", 2, ins(1, 3), 5},
+		{"nothing frozen", 0, ins(1, 3), 0},
+		{"nothing frozen, a delete", 0, del(1, 3), 0},
+		{"delete a frozen row", 1, del(1, 1), 0},
+		{"delete the last frozen row", 3, del(3, 3), 2},
+		{"delete past the frozen ones", 3, del(4, 6), 3},
+		{"delete across the split", 3, del(2, 5), 1},
+		{"delete all of them and more", 3, del(1, 9), 0},
+		{"delete some of them", 3, del(1, 2), 1},
+	} {
+		if got := paneAfter(tc.frozen, tc.x); got != tc.want {
+			t.Errorf("%s: %d frozen after %+v is %d, want %d", tc.name, tc.frozen, tc.x, got, tc.want)
+		}
+	}
+}
+
+// TestReachPanes: a frozen pane stands as it did outside an edit's reach, its
+// split moved by the lines inserted or deleted among the frozen ones, and
+// followed to a renamed sheet; a sheet made as a copy is new (fuzzer-long's
+// audit, f4.3: splitAfter's `from > split` as `from >= split` left the frozen
+// header showing the row inserted above it, and no pool file held a pane).
+func TestReachPanes(t *testing.T) {
+	two := func(name string) *grid.Workbook {
+		return reachBook(map[string]string{"Data!A1": "'Item", "Data!B1": "'Units", "Data!A2": "'x", "Data!B2": "2", name + "!A1": "1"})
+	}
+	run := func(edit Edit, before, after map[string][2]int, names ...string) string {
+		wb := two("Plan")
+		m := newModel(wb)
+		m.r = newReach(wb)
+		m.apply(edit)
+		return m.r.judgePanes(before, after, func(k string) bool {
+			for _, n := range names {
+				if strings.ToLower(n) == k {
+					return true
+				}
+			}
+			return false
+		}, func(k string) string {
+			for _, n := range names {
+				if strings.ToLower(n) == k {
+					return n
+				}
+			}
+			return k
+		})
+	}
+	rows := func(args ...string) Edit {
+		return Edit{Class: "rows-" + args[0], Args: append([]string{"rows", args[0], FileArg}, args[1:]...)}
+	}
+	cols := func(args ...string) Edit {
+		return Edit{Class: "cols-" + args[0], Args: append([]string{"cols", args[0], FileArg}, args[1:]...)}
+	}
+	set := Edit{Class: "set", Args: []string{"set", FileArg, "Data!ZZ900", "1"}}
+	data := []string{"Data", "Plan"}
+	for _, tc := range []struct {
+		name          string
+		edit          Edit
+		before, after map[string][2]int
+		names         []string
+		wantErr       string
+	}{
+		{name: "no pane, none made", edit: set, before: nil, after: nil, names: data},
+		{name: "a pane kept by an edit far away", edit: set, before: map[string][2]int{"data": {1, 0}}, after: map[string][2]int{"data": {1, 0}}, names: data},
+		{name: "a pane lost by an edit far away", edit: set, before: map[string][2]int{"data": {1, 0}}, after: nil, names: data,
+			wantErr: "Data: outside the edit's reach, the frozen pane is not there as it was: the edit's shifts of lines give a pane freezing 1 row, and the sheet freezes no rows or columns"},
+		{name: "a pane made by an edit far away", edit: set, before: nil, after: map[string][2]int{"plan": {0, 1}}, names: data,
+			wantErr: "Plan: outside the edit's reach, the frozen pane is not there as it was: the edit's shifts of lines give a pane freezing no rows or columns, and the sheet freezes 1 column"},
+		{name: "a pane changed by an edit far away", edit: set, before: map[string][2]int{"data": {1, 1}}, after: map[string][2]int{"data": {1, 2}}, names: data,
+			wantErr: "the edit's shifts of lines give a pane freezing 1 row and 1 column, and the sheet freezes 1 row and 2 columns"},
+		{name: "rows inserted in the frozen header: the split moves", edit: rows("insert", "Data!1"), before: map[string][2]int{"data": {1, 0}}, after: map[string][2]int{"data": {2, 0}}, names: data},
+		{name: "rows inserted in the frozen header: the split stays", edit: rows("insert", "Data!1"), before: map[string][2]int{"data": {1, 0}}, after: map[string][2]int{"data": {1, 0}}, names: data,
+			wantErr: "the edit's shifts of lines give a pane freezing 2 rows, and the sheet freezes 1 row"},
+		{name: "rows inserted at the last frozen row", edit: rows("insert", "Data!3", "-n", "2"), before: map[string][2]int{"data": {3, 1}}, after: map[string][2]int{"data": {5, 1}}, names: data},
+		{name: "rows inserted at the first row that scrolls", edit: rows("insert", "Data!4", "-n", "2"), before: map[string][2]int{"data": {3, 1}}, after: map[string][2]int{"data": {3, 1}}, names: data},
+		{name: "rows inserted at the first row that scrolls: the split moves", edit: rows("insert", "Data!4", "-n", "2"), before: map[string][2]int{"data": {3, 1}}, after: map[string][2]int{"data": {5, 1}}, names: data,
+			wantErr: "the edit's shifts of lines give a pane freezing 3 rows and 1 column, and the sheet freezes 5 rows and 1 column"},
+		{name: "rows inserted on another sheet", edit: rows("insert", "Plan!1"), before: map[string][2]int{"data": {1, 0}}, after: map[string][2]int{"data": {1, 0}}, names: data},
+		{name: "rows inserted do not move the columns", edit: rows("insert", "Data!1"), before: map[string][2]int{"data": {1, 1}}, after: map[string][2]int{"data": {2, 1}}, names: data},
+		{name: "rows deleted from the frozen header", edit: rows("delete", "Data!1:2"), before: map[string][2]int{"data": {3, 0}}, after: map[string][2]int{"data": {1, 0}}, names: data},
+		{name: "all the frozen rows deleted, a column stays frozen", edit: rows("delete", "Data!1:3"), before: map[string][2]int{"data": {3, 1}}, after: map[string][2]int{"data": {0, 1}}, names: data},
+		{name: "all frozen lines deleted", edit: rows("delete", "Data!1:3"), before: map[string][2]int{"data": {3, 0}}, after: nil, names: data},
+		{name: "rows deleted below the pane", edit: rows("delete", "Data!5:6"), before: map[string][2]int{"data": {3, 0}}, after: map[string][2]int{"data": {3, 0}}, names: data},
+		{name: "columns inserted in the frozen columns", edit: cols("insert", "Data!A"), before: map[string][2]int{"data": {1, 1}}, after: map[string][2]int{"data": {1, 2}}, names: data},
+		{name: "columns inserted past the frozen columns", edit: cols("insert", "Data!C"), before: map[string][2]int{"data": {1, 2}}, after: map[string][2]int{"data": {1, 2}}, names: data},
+		{name: "columns deleted from the frozen columns", edit: cols("delete", "Data!A:B"), before: map[string][2]int{"data": {1, 3}}, after: map[string][2]int{"data": {1, 1}}, names: data},
+		{name: "columns deleted: the split stays", edit: cols("delete", "Data!A:B"), before: map[string][2]int{"data": {1, 3}}, after: map[string][2]int{"data": {1, 3}}, names: data,
+			wantErr: "the edit's shifts of lines give a pane freezing 1 row and 1 column, and the sheet freezes 1 row and 3 columns"},
+		{name: "a sheet renamed takes its pane along", edit: Edit{Class: "sheet-rename", Args: []string{"sheet", "rename", FileArg, "Data", "Old"}}, before: map[string][2]int{"data": {1, 0}}, after: map[string][2]int{"old": {1, 0}}, names: []string{"Old", "Plan"}},
+		{name: "a sheet renamed leaves its pane behind", edit: Edit{Class: "sheet-rename", Args: []string{"sheet", "rename", FileArg, "Data", "Old"}}, before: map[string][2]int{"data": {1, 0}}, after: nil, names: []string{"Old", "Plan"},
+			wantErr: "Old: outside the edit's reach, the frozen pane is not there as it was"},
+		{name: "a sheet made as a copy is new", edit: Edit{Class: "sheet-copy", Args: []string{"sheet", "copy", FileArg, "Data", "Copy"}}, before: map[string][2]int{"data": {1, 0}}, after: map[string][2]int{"data": {1, 0}, "copy": {2, 2}}, names: []string{"Data", "Plan", "Copy"}},
+		{name: "a sheet added holds no pane", edit: Edit{Class: "sheet-add", Args: []string{"sheet", "add", FileArg, "New"}}, before: nil, after: map[string][2]int{"new": {1, 0}}, names: []string{"Data", "Plan", "New"},
+			wantErr: "New: outside the edit's reach, the frozen pane is not there as it was"},
+	} {
+		got := run(tc.edit, tc.before, tc.after, tc.names...)
+		if tc.wantErr == "" && got != "" || tc.wantErr != "" && !strings.Contains(got, tc.wantErr) {
+			t.Errorf("%s: the model says %q, want %q", tc.name, got, tc.wantErr)
+		}
+	}
+}
+
+// TestFilePanes: the frozen panes of a file are read from it: the rows and
+// columns kept in view, by sheet, and the two editors' are compared.
+func TestFilePanes(t *testing.T) {
+	var rows, cols, both int
+	for _, w := range loadPool(t) {
+		wb, err := xlsx.ReadBytes(w.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := readFileObjects(w.Data, wb)
+		if err != nil {
+			t.Fatalf("%s: %v", w.Name, err)
+		}
+		for _, p := range f.panes {
+			switch {
+			case p[0] > 0 && p[1] > 0:
+				both++
+			case p[0] > 0:
+				rows++
+			default:
+				cols++
+			}
+		}
+	}
+	if rows == 0 || cols == 0 || both == 0 {
+		t.Errorf("the committed pool freezes %d sheets by rows, %d by columns and %d by both, want some of each: regenerate it with fuzzgen.py --notes --panes", rows, cols, both)
+	}
+	a, b := &fileObjects{panes: map[string][2]int{"data": {1, 0}}}, &fileObjects{panes: map[string][2]int{"data": {2, 0}}}
+	name := func(k string) string { return k }
+	if got := compareFileObjects(a, a, name); got != "" {
+		t.Errorf("the same panes differ: %s", got)
+	}
+	if got := compareFileObjects(a, b, name); !strings.Contains(got, "the streaming editor's file freezes 1 row, the full editor's 2 rows") {
+		t.Errorf("panes of 1 and 2 rows: %q", got)
+	}
+	if got := compareFileObjects(a, &fileObjects{}, name); !strings.Contains(got, "the full editor's no rows or columns") {
+		t.Errorf("a pane and none: %q", got)
+	}
+}
+
+// TestPoolPanesMove runs sheets' own editors over each frozen pane of the
+// committed pool: a rows or columns insert among the frozen lines moves the
+// split, one below it leaves it, and a delete of the first line takes one of
+// the frozen lines, in both editors' files, and the reach invariant finds
+// nothing. It is the audit's off-by-one in splitAfter (`from > split` as
+// `from >= split`, fuzzer-long's audit, f4.3) caught by `go test` alone, not
+// only by a fuzz run: insert before the last frozen line does not move the
+// split, and the frozen header shows the row inserted above it.
+func TestPoolPanesMove(t *testing.T) {
+	judged := 0
+	for _, w := range loadPool(t) {
+		wb, err := xlsx.ReadBytes(w.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := readFileObjects(w.Data, wb)
+		if err != nil {
+			t.Fatalf("%s: %v", w.Name, err)
+		}
+		for _, sh := range wb.Sheets {
+			pane, ok := f.panes[strings.ToLower(sh.Name)]
+			if !ok {
+				continue
+			}
+			s, err := newSession(t.TempDir(), w.Data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.close()
+			cur := pane // the rows and columns frozen, as the steps below move them
+			type step struct {
+				edit Edit
+				move func()
+			}
+			ref := func(cols bool, from, to int) string {
+				if cols {
+					if from == to {
+						return sh.Name + "!" + grid.ColName(from)
+					}
+					return sh.Name + "!" + grid.ColName(from) + ":" + grid.ColName(to)
+				}
+				if from == to {
+					return fmt.Sprintf("%s!%d", sh.Name, from)
+				}
+				return fmt.Sprintf("%s!%d:%d", sh.Name, from, to)
+			}
+			var steps []step
+			for i, line := range []string{"rows", "cols"} {
+				if pane[i] == 0 {
+					continue
+				}
+				cols := i == 1
+				insert := func(at, n int) Edit {
+					return Edit{Class: line + "-insert", Args: []string{line, "insert", FileArg, ref(cols, at, at), "-n", fmt.Sprint(n)}}
+				}
+				steps = append(steps,
+					// Before the last frozen line: the split moves by 2.
+					step{insert(pane[i], 2), func() { cur[i] += 2 }},
+					// At the first line that scrolls: the split stays.
+					step{insert(pane[i]+3, 1), func() {}},
+					// The first line deleted: one frozen line goes.
+					step{Edit{Class: line + "-delete", Args: []string{line, "delete", FileArg, ref(cols, 1, 1)}}, func() { cur[i]-- }})
+			}
+			for n, st := range steps {
+				o, err := s.step(st.edit, n)
+				if err != nil {
+					t.Fatalf("%s %s: %v", w.Name, strings.Join(st.edit.Args, " "), err)
+				}
+				for _, v := range o.broken {
+					t.Errorf("%s, %s: %s: %s", w.Name, strings.Join(st.edit.Args[:2], " "), v.invariant, v.detail)
+				}
+				// An edit sheets refuses (an insert through an array, a delete of
+				// a table's header row) changes nothing.
+				if o.applied {
+					st.move()
+					judged++
+				}
+				for k, path := range s.paths {
+					data, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					wb, err := xlsx.ReadBytes(data)
+					if err != nil {
+						t.Fatal(err)
+					}
+					got, err := readFileObjects(data, wb)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if p := got.panes[strings.ToLower(sh.Name)]; p != cur {
+						t.Errorf("%s, after %s (%s editor): %s freezes %s, want %s", w.Name, strings.Join(st.edit.Args, " "), editors[k].name, sh.Name, paneName(p), paneName(cur))
+					}
+				}
+			}
+		}
+	}
+	t.Logf("%d edits applied over the pool's panes", judged)
+	if judged < 30 {
+		t.Errorf("%d edits applied over the pool's panes, want at least 30", judged)
 	}
 }
 

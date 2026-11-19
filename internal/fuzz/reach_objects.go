@@ -430,6 +430,69 @@ func (rc *reach) checkObjects(now map[string]*grid.Sheet, display func(string) s
 	return ""
 }
 
+// paneAfter is how many rows (or columns) a pane freezes after lines are
+// inserted or deleted, as Excel moves it: lines inserted before one of the
+// frozen lines (at or above the last of them) make the frozen part longer, so
+// the frozen lines stay frozen; lines inserted below it leave it; lines
+// deleted from it make it shorter by those of them that were frozen. x is the
+// edit's shift of lines (xform 'l': n inserted before at, or n == 0 and
+// at..end deleted).
+func paneAfter(frozen int, x xform) int {
+	switch {
+	case frozen == 0 || x.at > frozen:
+		return frozen
+	case x.n > 0:
+		return frozen + x.n
+	}
+	return frozen - (min(x.end, frozen) - x.at + 1)
+}
+
+// judgePanes judges the frozen panes of the sheets: each sheet of the
+// workbook before, outside a sheet made as a copy, freezes after the edit the
+// rows and columns the shifts of lines give (paneAfter), and a sheet the edit
+// makes freezes none.
+func (rc *reach) judgePanes(before, after map[string][2]int, exists func(k string) bool, display func(string) string) string {
+	want := map[string][2]int{}
+	var keys []string
+	for k0 := range rc.sheets {
+		keys = append(keys, k0)
+	}
+	sort.Strings(keys)
+	for _, k0 := range keys {
+		k, p := k0, before[k0]
+		for _, x := range rc.xforms {
+			switch {
+			case x.kind == 'r' && x.sheet == k:
+				k = x.to
+			case x.kind == 'l' && x.sheet == k && x.cols:
+				p[1] = paneAfter(p[1], x)
+			case x.kind == 'l' && x.sheet == k:
+				p[0] = paneAfter(p[0], x)
+			}
+		}
+		want[k] = p
+	}
+	var ks []string
+	for k := range want {
+		ks = append(ks, k)
+	}
+	for k := range after {
+		if _, ok := want[k]; !ok {
+			ks = append(ks, k)
+		}
+	}
+	sort.Strings(ks)
+	for _, k := range ks {
+		if rc.copies[k] || !exists(k) {
+			continue
+		}
+		if want[k] != after[k] {
+			return fmt.Sprintf("%s: outside the edit's reach, the frozen pane is not there as it was: the edit's shifts of lines give a pane freezing %s, and the sheet freezes %s", display(k), paneName(want[k]), paneName(after[k]))
+		}
+	}
+	return ""
+}
+
 // checkFile judges what the file holds that the reader does not give
 // (validations, conditional formats, the look of each cell), before and after
 // the edit, as checkObjects does the rest.
@@ -449,6 +512,9 @@ func (rc *reach) checkFile(after *grid.Workbook, before, afterObjs *fileObjects,
 	}
 	exists := func(k string) bool { return now[k] != nil }
 	if msg := rc.judgeObjects(before.objects, afterObjs.objects, exists, display); msg != "" {
+		return msg
+	}
+	if msg := rc.judgePanes(before.panes, afterObjs.panes, exists, display); msg != "" {
 		return msg
 	}
 	// The look of each cell outside the reach, where it stands now.

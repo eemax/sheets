@@ -12,6 +12,11 @@ the files it always made, byte for byte: the pools the repros of known.txt
 replay on need no change. --notes adds only the notes of --objects (the same
 ones, for a seed), which the committed pool holds: the default mode judges a
 note outside an edit's reach too (fix round 4: a note lost went unseen in it).
+--panes adds frozen panes (a header row, a first column, both, or more rows and
+columns) to some sheets, again from a random stream of their own; --objects
+adds them too. The committed pool holds them: a rows or columns insert or
+delete moves the split as Excel does, and the fuzzer judges where it lands
+(fix round 5: a split off by one went unseen, no pool file having a pane).
 
 Every formula carries its kind in its text, as the condition N("p")=0,
 N("l")=0 or N("d")=0 of an IF that is always true: IF(N("p")=0,B2*C2). N of
@@ -50,7 +55,7 @@ in the package) are fixed.
 (SHEETS_FUZZ=long) makes a fresh pool this way from each seed it runs, and
 the must-refuse cases are made from the committed pool's files (another seed
 may hold none that fits a case). --objects adds the objects named above,
---notes the notes among them alone.
+--notes the notes among them alone, --panes the frozen panes alone.
 """
 import argparse
 import datetime
@@ -141,7 +146,7 @@ class Plan:
     (sheet, row, col) -> value, formula ("=...") or None, and its arrays,
     tables, names, charts, validations and conditional formats."""
 
-    def __init__(self, rng, dynamic, objects=False, notes=False):
+    def __init__(self, rng, dynamic, objects=False, notes=False, panes=False):
         self.rng = rng
         self.sheets = ["Data"]
         n2 = rng.choice([0, 1, 1, 2])
@@ -166,7 +171,7 @@ class Plan:
         self.arrays = rng.random() < 0.5
         self.n = rng.randint(4, 14)  # data rows on Data
         self.build(dynamic)
-        self.extras(objects, notes)
+        self.extras(objects, notes, panes)
 
     def build(self, dynamic):
         rng, n = self.rng, self.n
@@ -275,7 +280,7 @@ class Plan:
                 self.shared = [("G", 2, last)]
         self.typed_empty = rng.random() < 0.5
 
-    def extras(self, objects, notes=False):
+    def extras(self, objects, notes=False, panes=False):
         """What a sheet holds besides cells and the objects above, with
         --objects: a merge, a note, a link (to the web, or to a cell), a hidden
         row and column, and a header in bold on a fill. The fuzzer's reach
@@ -283,7 +288,12 @@ class Plan:
         They come from a random stream of their own, and only with the flag, so
         the cells and objects above are the same for a seed as before they were
         added. With --notes alone, only the notes: the ones --objects makes for
-        the seed (the draw before theirs is the merge's, taken and not used)."""
+        the seed (the draw before theirs is the merge's, taken and not used).
+        --panes (and --objects) freeze panes, from a stream of their own again:
+        a pane is a split of rows and columns, and Excel moves it when lines
+        among the frozen ones are inserted or deleted."""
+        self.panes = []  # (sheet, rows frozen, columns frozen)
+        self.freeze(objects or panes)
         self.merges = []  # (sheet, ref)
         self.notes = []  # (sheet, cell, text)
         self.links = []  # (sheet, cell, target): "https://..." or "Data!B2"
@@ -314,6 +324,19 @@ class Plan:
         if o.random() < 0.3:
             self.hidden_rows.append(("Data", last + 9))
         self.styled = o.random() < 0.5
+
+    def freeze(self, on):
+        """Frozen panes on some sheets: on Data about one file in three (the
+        header row most often, a first column, both, or a few rows and columns),
+        on each other sheet about one in five (a header row, a column, both)."""
+        if not on:
+            return
+        p = random.Random(str(self.rng.getstate()[1][:8]) + "panes")
+        if p.random() < 0.35:
+            self.panes.append(("Data",) + p.choice([(1, 0), (1, 0), (1, 1), (0, 1), (2, 0), (2, 1), (3, 2)]))
+        for name in self.sheets[1:]:
+            if p.random() < 0.2:
+                self.panes.append((name,) + p.choice([(1, 0), (1, 1), (0, 1)]))
 
     def value(self, sheet, c, r):
         """What the cell holds, for the results typed formulas compute."""
@@ -415,6 +438,8 @@ def write_openpyxl(plan, path):
             cell = sheets["Data"].cell(row=1, column=c)
             cell.font = Font(bold=True)
             cell.fill = PatternFill("solid", fgColor="DDEBF7")
+    for s, rows, cols in plan.panes:
+        sheets[s].freeze_panes = f"{col(cols + 1)}{rows + 1}"
     wb.save(path)
     # openpyxl stamps the time of saving over the property set above.
     tmp = path + ".tmp"
@@ -480,6 +505,8 @@ def write_xlsxwriter(plan, path):
         sheets[s].set_column(f"{letter}:{letter}", None, None, {"hidden": True})
     for s, r in plan.hidden_rows:
         sheets[s].set_row(r - 1, None, None, {"hidden": True})
+    for s, rows, cols in plan.panes:
+        sheets[s].freeze_panes(rows, cols)
     wb.close()
 
 
@@ -670,6 +697,7 @@ def main():
     ap.add_argument("--pool-only", action="store_true", help="no must-refuse cases (long mode's fresh pools)")
     ap.add_argument("--objects", action="store_true", help="merges, notes, links, hidden rows and columns, a styled header (long mode's pools of runs from seed 2,000,000)")
     ap.add_argument("--notes", action="store_true", help="the notes of --objects alone (the committed pool's)")
+    ap.add_argument("--panes", action="store_true", help="frozen panes on some sheets (--objects adds them too; the committed pool's)")
     args = ap.parse_args()
     pool = os.path.join(args.out, "pool")
     os.makedirs(pool, exist_ok=True)
@@ -677,7 +705,7 @@ def main():
     for i in range(args.count):
         rng = random.Random(args.seed * 1000 + i)
         producer = "openpyxl" if i % 2 == 0 else "xlsxwriter"
-        plan = Plan(rng, dynamic=producer == "xlsxwriter", objects=args.objects, notes=args.notes)
+        plan = Plan(rng, dynamic=producer == "xlsxwriter", objects=args.objects, notes=args.notes, panes=args.panes)
         path = os.path.join(pool, f"{producer}-{i:02d}.xlsx")
         (write_openpyxl if producer == "openpyxl" else write_xlsxwriter)(plan, path)
         if plan.shared:

@@ -41,6 +41,14 @@ import (
 // its cells). Judged, each ends every sequence that reaches it, at the first
 // edit the full editor takes on a workbook with a note or a chart.
 //
+// A frozen pane (the rows and columns kept in view) is judged by where its
+// split stands (reach.judgePanes): lines inserted or deleted among the frozen
+// ones move it, as Excel moves it, and no other edit does (the house style
+// freezes the header of every sheet fmt touches, and every rows or columns
+// edit moves a split: an off-by-one in the code that does, left the frozen
+// header showing the row inserted above it, with no pool file holding a pane:
+// fuzzer-long's audit, f4.3).
+//
 // An object that an edit's reach lies on may be changed by it (a set into a
 // merge, a clear over a validation, a copy onto a note), but not a table, a
 // filter, a chart, a hidden row or column, nor the sheet's visibility: no edit
@@ -178,6 +186,9 @@ func compareObjects(a, b *grid.Sheet) string {
 type fileObjects struct {
 	objects map[string][]object
 	looks   map[string]map[[2]int]string
+	// panes are the frozen rows and columns of each sheet (the rows kept in
+	// view, then the columns; none for a sheet that freezes nothing).
+	panes map[string][2]int
 }
 
 // readFileObjects reads the validations, conditional formats and cell looks
@@ -188,9 +199,16 @@ func readFileObjects(data []byte, wb *grid.Workbook) (*fileObjects, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := &fileObjects{objects: map[string][]object{}, looks: map[string]map[[2]int]string{}}
+	out := &fileObjects{objects: map[string][]object{}, looks: map[string]map[[2]int]string{}, panes: map[string][2]int{}}
 	for _, s := range wb.Sheets {
 		k := strings.ToLower(s.Name)
+		view, err := e.ViewOf(s.Name)
+		if err != nil {
+			return nil, err
+		}
+		if r, c, ok := grid.ParseCell(view.Freeze); ok {
+			out.panes[k] = [2]int{r - 1, c - 1} // Freeze is the first cell that scrolls
+		}
 		vs, err := e.Validations(s.Name)
 		if err != nil {
 			return nil, err
@@ -236,6 +254,26 @@ func readFileObjects(data []byte, wb *grid.Workbook) (*fileObjects, error) {
 	return out, nil
 }
 
+// paneName says how many rows and columns a pane freezes: "2 rows and 1
+// column", "no rows or columns" for none.
+func paneName(p [2]int) string {
+	plural := func(n int, what string) string {
+		if n == 1 {
+			return "1 " + what
+		}
+		return fmt.Sprintf("%d %ss", n, what)
+	}
+	switch {
+	case p[0] == 0 && p[1] == 0:
+		return "no rows or columns"
+	case p[1] == 0:
+		return plural(p[0], "row")
+	case p[0] == 0:
+		return plural(p[1], "column")
+	}
+	return plural(p[0], "row") + " and " + plural(p[1], "column")
+}
+
 func cutLast(s, sep string) (string, string, bool) {
 	i := strings.LastIndex(s, sep)
 	if i < 0 {
@@ -275,9 +313,18 @@ func compareFileObjects(stream, full *fileObjects, name func(k string) string) s
 				keys = append(keys, k)
 			}
 		}
+		for k := range f.panes {
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
+		if a, b := stream.panes[k], full.panes[k]; a != b {
+			return fmt.Sprintf("%s: the streaming editor's file freezes %s, the full editor's %s", name(k), paneName(a), paneName(b))
+		}
 		group := func(f *fileObjects) map[string][]grid.Range {
 			out := map[string][]grid.Range{}
 			for _, o := range f.objects[k] {
