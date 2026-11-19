@@ -271,6 +271,51 @@ stdout '^  Data!D1 +6 → 15 +input Data!A1$'
 stdout '^  Data!B5 +\(empty\) → 5 +input Data!A1$'
 ! stdout 'added'
 
+# A dynamic array's result is where its formula puts it, not rows typed in:
+# a FILTER that lost a row (an input changed) removed no row, its values
+# moved in place, the input their cause, and the total over it is no
+# formula changed.
+exec sheets set filter.xlsx Data!A1 Region Data!B1 Units Data!A2 North Data!B2 50 Data!A3 South Data!B3 40 Data!A4 East Data!B4 30 Data!A5 West Data!B5 20 Data!A6 Mid Data!B6 10
+exec sheets set filter.xlsx Report!A1 Big Report!A2 '=FILTER(Data!A2:B6,Data!B2:B6>8)' Report!D2 '=SUM(B2:B20)'
+cp filter.xlsx filter2.xlsx
+exec sheets set filter2.xlsx Data!B4 2
+exec sheets check filter2.xlsx --against filter.xlsx
+stdout '^filter2.xlsx against filter.xlsx: 1 input changed, 0 formulas changed, 7 computed values moved \(each with its cause\), 0 unexplained, 0 features lost, 0 unknown$'
+stdout '^  Report!D2 +150 → 120 +input Data!B4$'
+stdout '^  Report!A4 +"East" → "West" +input Data!B4$'
+stdout '^  Report!B6 +10 → \(empty\) +input Data!B4$'
+! stdout 'structure:'
+! stdout 'flagged:'
+# A SORT sorted again by an input changed: its values moved in place, the
+# input their cause; nothing added, removed or flagged.
+exec sheets set rank.xlsx Data!A1 Region Data!B1 Units Data!A2 North Data!B2 50 Data!A3 South Data!B3 40 Data!A4 East Data!B4 30 Data!A5 West Data!B5 20 Data!A6 Mid Data!B6 10 Data!A7 Up Data!B7 7 Data!A8 Low Data!B8 5 Data!A9 Far Data!B9 3
+exec sheets set rank.xlsx Rank!A1 Top Rank!A2 '=SORT(Data!A2:B9,2,-1)' Rank!D2 '=SUM(B2:B9)' Rank!D3 '=INDEX(A2:A9,1)'
+cp rank.xlsx rank2.xlsx
+exec sheets set rank2.xlsx Data!B7 60
+exec sheets check rank2.xlsx --against rank.xlsx
+stdout ': 1 input changed, 0 formulas changed, 14 computed values moved \(each with its cause\), 0 unexplained,'
+stdout '^  Rank!A2 +"North" → "Up" +input Data!B7$'
+stdout '^  Rank!D3 +"North" → "Up" +input Data!B7$'
+! stdout 'structure:'
+! stdout 'flagged:'
+! stdout 'rows moved'
+# Rows inserted or deleted through a SEQUENCE: the rows are added or
+# removed, the result is where its formula puts it, as it was.
+exec sheets set seq.xlsx Data!A1 4 Data!B1 '=SEQUENCE(A1)' Data!D1 Item Data!D2 a Data!D3 b Data!D4 c Data!D5 d Data!D6 e Data!E1 '=SUM(B1:B4)'
+cp seq.xlsx seqins.xlsx
+exec sheets rows insert seqins.xlsx Data!3 -n 2
+exec sheets check seqins.xlsx --against seq.xlsx
+stdout '^seqins.xlsx against seq.xlsx: 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown$'
+stdout '^  rows added: Data!3:4$'
+! stdout 'changed:'
+cp seq.xlsx seqdel.xlsx
+exec sheets rows delete seqdel.xlsx Data!3
+exec sheets check seqdel.xlsx --against seq.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 1 computed value moved \(each with its cause\), 0 unexplained,'
+stdout '^  Data!E1 +10 → 6 +rows removed: Data!3 in seq.xlsx$'
+stdout '^  row removed: Data!3 in seq.xlsx$'
+! stdout 'changed:'
+
 # The last row of a range a total reads deleted: Excel shrinks the range, which
 # is the rows removed, not a formula changed or a value with no cause.
 cp against_before.xlsx lastrow.xlsx

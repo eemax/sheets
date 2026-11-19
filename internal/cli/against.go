@@ -731,6 +731,127 @@ func (r *report) pairSpilled(sa, sb *grid.Sheet, rows []diff.Pair) []diff.Pair {
 	return out
 }
 
+// resultPair is an array formula in both versions whose result spans
+// several cells in either: its formula's cell before and now, and the
+// larger of the results' extents.
+type resultPair struct {
+	ra, ca, rb, cb int
+	rows, cols     int
+}
+
+// multi gives a sheet's array formulas' results over several cells, by
+// their formula's cell.
+func multi(s *grid.Sheet) map[[2]int]grid.Range {
+	out := map[[2]int]grid.Range{}
+	for _, rg := range append(append([]grid.Range{}, s.Spills...), s.Arrays...) {
+		if rg.Rows()*rg.Cols() > 1 {
+			k := [2]int{rg.R1, rg.C1}
+			if o, ok := out[k]; !ok || rg.Rows()*rg.Cols() > o.Rows()*o.Cols() {
+				out[k] = rg
+			}
+		}
+	}
+	return out
+}
+
+// results pairs a sheet's array formulas over several cells by their
+// formula's cell (paired as its row and column are), so their results
+// compare cell by cell from there: a FILTER that lost a row, a SORT sorted
+// again, rows inserted or deleted through a SEQUENCE. It gives the pairs,
+// and the cells of the results they compare, before and now.
+func (r *report) results(j *job, m *lineMap) ([]resultPair, map[[2]int]bool, map[[2]int]bool) {
+	ma, mb := multi(j.sa), multi(j.sb)
+	if len(ma)+len(mb) == 0 {
+		return nil, nil, nil
+	}
+	formulaAt := func(s *grid.Sheet, row, col int) bool {
+		c := s.At(row, col)
+		return c != nil && c.Formula != ""
+	}
+	// Each new cell's old one, for the formulas only the new version
+	// spills (the lines' maps the other way, made once).
+	var colInv, rowInv map[int]int
+	blockInv := map[int]map[int]int{}
+	oldOf := func(row, col int) (int, int) {
+		if colInv == nil {
+			colInv, rowInv = map[int]int{}, map[int]int{}
+			for o, n := range m.col {
+				colInv[n] = o
+			}
+			for o, n := range m.row {
+				rowInv[n] = o
+			}
+		}
+		oc := colInv[col]
+		if oc == 0 {
+			return 0, 0
+		}
+		inv := rowInv
+		if b := m.block(oc); b != nil {
+			if inv = blockInv[b.c1]; inv == nil {
+				inv = map[int]int{}
+				for o, n := range b.row {
+					inv[n] = o
+				}
+				blockInv[b.c1] = inv
+			}
+		}
+		return inv[row], oc
+	}
+	var out []resultPair
+	seen := map[[2]int]bool{} // new cells
+	add := func(ra, ca, rb, cb int) {
+		if seen[[2]int{rb, cb}] || !formulaAt(j.sa, ra, ca) || !formulaAt(j.sb, rb, cb) {
+			return
+		}
+		seen[[2]int{rb, cb}] = true
+		p := resultPair{ra: ra, ca: ca, rb: rb, cb: cb, rows: 1, cols: 1}
+		if rg, ok := ma[[2]int{ra, ca}]; ok {
+			p.rows, p.cols = max(p.rows, rg.Rows()), max(p.cols, rg.Cols())
+		}
+		if rg, ok := mb[[2]int{rb, cb}]; ok {
+			p.rows, p.cols = max(p.rows, rg.Rows()), max(p.cols, rg.Cols())
+		}
+		out = append(out, p)
+	}
+	for k := range ma {
+		if rb, cb := m.rowOf(k[0], k[1]), m.col[k[1]]; rb > 0 && cb > 0 {
+			add(k[0], k[1], rb, cb)
+		}
+	}
+	for k := range mb {
+		if !seen[k] {
+			if ra, ca := oldOf(k[0], k[1]); ra > 0 {
+				add(ra, ca, k[0], k[1])
+			}
+		}
+	}
+	sort.Slice(out, func(x, y int) bool {
+		if out[x].rb != out[y].rb {
+			return out[x].rb < out[y].rb
+		}
+		return out[x].cb < out[y].cb
+	})
+	oldIn, newIn := map[[2]int]bool{}, map[[2]int]bool{}
+	for _, p := range out {
+		for dr := 0; dr < p.rows; dr++ {
+			for dc := 0; dc < p.cols; dc++ {
+				if dr > 0 || dc > 0 {
+					oldIn[[2]int{p.ra + dr, p.ca + dc}] = true
+					newIn[[2]int{p.rb + dr, p.cb + dc}] = true
+				}
+			}
+		}
+	}
+	return out, oldIn, newIn
+}
+
+// empty tells whether a cell holds nothing.
+func empty(s *grid.Sheet, row, col int) bool {
+	c := s.At(row, col)
+	return c == nil || c.IsEmpty()
+}
+
 // runs joins line numbers into runs.
 func runs(lines []int) [][2]int {
 	sort.Ints(lines)
@@ -967,7 +1088,7 @@ func (r *report) compare() {
 			B.wb.Sheets[0].Name = A.wb.Sheets[0].Name
 		}
 	}
-	opts := diff.Options{Moves: true, LostRefs: true, ColumnShifts: true, Dates: true}
+	opts := diff.Options{Moves: true, LostRefs: true, ColumnShifts: true, Dates: true, Spills: true}
 	al := diff.Align(A.wb, B.wb, opts)
 	r.renamed = map[string]string{}
 	r.formulaSrc = map[xlsx.At]string{}
@@ -1094,12 +1215,28 @@ func (r *report) compare() {
 			continue
 		}
 		r.cur = r.lines[strings.ToLower(j.sa.Name)]
+		first := len(r.candidates)
+		var res []resultPair
+		var oldIn, newIn map[[2]int]bool
+		if !out.ValuesOnly {
+			res, oldIn, newIn = r.results(j, r.cur)
+		}
+		// pair compares two cells paired by their rows, unless the result of
+		// an array formula holds either and its formula's cell compares it.
+		pair := func(ra, ca, rb, cb int) {
+			if a, b := oldIn[[2]int{ra, ca}], newIn[[2]int{rb, cb}]; a || b {
+				if a && b || a && empty(j.sb, rb, cb) || b && empty(j.sa, ra, ca) {
+					return
+				}
+			}
+			r.cell(j.sa, ra, ca, j.sb, rb, cb)
+		}
 		for _, q := range j.rows {
 			if q.Old == 0 || q.New == 0 {
 				continue
 			}
 			for _, c := range j.cols {
-				r.cell(j.sa, q.Old, c[0], j.sb, q.New, c[1])
+				pair(q.Old, c[0], q.New, c[1])
 			}
 		}
 		for _, b := range j.blocks {
@@ -1108,9 +1245,28 @@ func (r *report) compare() {
 					continue
 				}
 				for _, c := range b.cols {
-					r.cell(j.sa, q.Old, c[0], j.sb, q.New, c[1])
+					pair(q.Old, c[0], q.New, c[1])
 				}
 			}
+		}
+		for _, p := range res {
+			for dr := 0; dr < p.rows; dr++ {
+				for dc := 0; dc < p.cols; dc++ {
+					if dr > 0 || dc > 0 {
+						r.cell(j.sa, p.ra+dr, p.ca+dc, j.sb, p.rb+dr, p.cb+dc)
+					}
+				}
+			}
+		}
+		if len(res) > 0 {
+			// The results' cells among the rest, row by row.
+			cs := r.candidates[first:]
+			sort.SliceStable(cs, func(x, y int) bool {
+				if cs[x].at.Row != cs[y].at.Row {
+					return cs[x].at.Row < cs[y].at.Row
+				}
+				return cs[x].at.Col < cs[y].at.Col
+			})
 		}
 	}
 	if out.ValuesOnly {

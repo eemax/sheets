@@ -101,6 +101,15 @@ type Options struct {
 	// rows holding the same dates are the same rows. sheets diff leaves it
 	// off; check --against turns it on.
 	Dates bool
+	// Spills aligns rows without the values of array formulas' results (a
+	// FILTER, SORT or SEQUENCE spilling, an array entered with
+	// Ctrl+Shift+Enter): the cells of a result but its formula's are blank,
+	// and the rows holding nothing else pair in order between the rows that
+	// pair by what they hold. So a result that lost a row or was sorted again
+	// (an input changed) moves no row, adds none and removes none, and rows
+	// inserted through a result are the rows inserted. sheets diff leaves it
+	// off; check --against turns it on.
+	Spills bool
 	// Rewrite gives an old formula (on the old version's sheet named) as
 	// Excel would have rewritten it for what changed on other sheets (rows
 	// added there, a sheet renamed), so rows whose formulas read another
@@ -430,6 +439,74 @@ type side struct {
 	// side's, with Options.Rewrite), worked out once per cell in rewritten.
 	rewrite   func(string) string
 	rewritten map[[2]int]string
+	// results are the array formulas' results over several cells, by each
+	// row they span (with Options.Spills): their cells but the formula's
+	// key as blank.
+	results map[int][]grid.Range
+}
+
+// resultsOf finds a sheet's array formulas' results over several cells, by
+// each row they span.
+func resultsOf(s *grid.Sheet) map[int][]grid.Range {
+	out := map[int][]grid.Range{}
+	for _, rg := range append(append([]grid.Range{}, s.Spills...), s.Arrays...) {
+		if rg.Rows()*rg.Cols() < 2 {
+			continue
+		}
+		for r := rg.R1; r <= rg.R2; r++ {
+			out[r] = append(out[r], rg)
+		}
+	}
+	return out
+}
+
+// inResult tells whether a cell is part of an array formula's result, not
+// its formula's cell.
+func (x side) inResult(row, col int) bool {
+	for _, rg := range x.results[row] {
+		if rg.Contains(row, col) && (row != rg.R1 || col != rg.C1) {
+			return true
+		}
+	}
+	return false
+}
+
+// fillers pairs again, in a sheet with array formulas' results (with
+// Options.Spills), the rows that hold nothing but results' cells, or
+// nothing: which of them pair says nothing (a result's cells are where its
+// formula puts them, whatever rows were added or removed), so between each
+// two rows paired by what they hold they pair in order from the top, and
+// those left over are added or removed. matches pair rows in order; blank
+// tells the rows that hold nothing else.
+func fillers(matches [][2]int, blankA, blankB []bool) [][2]int {
+	var out [][2]int
+	pi, pj := 0, 0
+	gap := func(i2, j2 int) {
+		i, j := pi, pj
+		for {
+			for i < i2 && !blankA[i] {
+				i++
+			}
+			for j < j2 && !blankB[j] {
+				j++
+			}
+			if i >= i2 || j >= j2 {
+				return
+			}
+			out = append(out, [2]int{i, j})
+			i, j = i+1, j+1
+		}
+	}
+	for _, m := range matches {
+		if blankA[m[0]] || blankB[m[1]] {
+			continue
+		}
+		gap(m[0], m[1])
+		out = append(out, m)
+		pi, pj = m[0]+1, m[1]+1
+	}
+	gap(len(blankA), len(blankB))
+	return out
 }
 
 // formulaOf is a cell's formula, as rewritten.
@@ -456,7 +533,7 @@ var columnRefs = regexp.MustCompile(`C(?:\[-?\d+\]|\d+)`)
 
 func (x side) key(row, col int) string {
 	c := x.s.At(row, col)
-	if c == nil || c.IsEmpty() {
+	if c == nil || c.IsEmpty() || len(x.results) > 0 && x.inResult(row, col) {
 		return ""
 	}
 	if c.Formula != "" {
@@ -557,6 +634,9 @@ func prepare(A, B side, opts Options) (side, side) {
 		A.rewrite = func(f string) string { return opts.Rewrite(name, f) }
 		A.rewritten = map[[2]int]string{}
 	}
+	if opts.Spills && A.results == nil {
+		A.results, B.results = resultsOf(A.s), resultsOf(B.s)
+	}
 	return A, B
 }
 
@@ -616,6 +696,18 @@ func alignSheet(A, B side, opts Options) sheetAlign {
 	var skipA, skipB map[int]bool
 	if opts.Moves {
 		matches, moved, placed = findMoves(sa1, sb1, fillGaps(sa1, sb1, matches), blankA, blankB)
+	}
+	if opts.Spills && len(A.results)+len(B.results) > 0 {
+		matches = fillers(matches, blankA, blankB)
+		var kept [][2]int
+		for _, p := range placed {
+			if !blankA[p[0]] && !blankB[p[1]] {
+				kept = append(kept, p)
+			}
+		}
+		placed = kept
+	}
+	if opts.Moves {
 		skipA, skipB = map[int]bool{}, map[int]bool{}
 		for _, m := range append(append([][2]int{}, moved...), placed...) {
 			skipA[m[0]], skipB[m[1]] = true, true

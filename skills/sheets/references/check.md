@@ -88,7 +88,11 @@
   Formulas Excel rewrites for rows or columns added or removed (a column
   inserted between the columns a formula reads too, or a row inserted on
   the sheet it reads), a sheet renamed, or a sheet deleted (`#REF!`), are
-  not changes, nor is LibreOffice's `TRUE()` for `TRUE`. Dates compare as
+  not changes, nor is LibreOffice's `TRUE()` for `TRUE`. An array
+  formula's result (a FILTER, SORT or SEQUENCE spilling) is where its
+  formula puts it: one that lost a row or was sorted again moved its
+  values in place, each with its cause, and rows inserted or deleted
+  through it are those rows, its values as they were. Dates compare as
   dates, whether a workbook counts them from 1900 or from 1904 (a Mac's).
   Rows a sort moved are moved rows, though rows were inserted or deleted
   above or inside them. Text lists ten of each section, the check's
