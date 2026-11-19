@@ -460,11 +460,12 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     average, SUMIF or SUMPRODUCT over the same rows, a table's column)
     did not move for the sort, and names the input that moved it. Rows
     removed or added are a cause only of what they can move that way, a
-    formula Excel rewrote for them included: a MAX that rose for a row
-    removed, a COUNT that rose, a SUM that fell though they held 0 or
-    less, or a total that moved for an empty row inserted in its range,
-    did not move for them, and stays `unexplained` unless something else
-    moved it. A formula changed is listed too, with what
+    formula Excel rewrote for them included, over a range, a table's
+    column or a defined name alike: a MAX that rose for a row removed, a
+    COUNT that rose, a SUM that fell though they held 0 or less (or by
+    more than they held), or a total that moved for an empty row inserted
+    in its range, did not move for them, and stays `unexplained` unless
+    something else moved it. A formula changed is listed too, with what
     it computes now. A value that moved because rows added or removed moved
     its formula or what it reads (`=ROW()`, a range older Excel reads one
     cell of) has them as its cause;
@@ -532,6 +533,9 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     as well rows added or removed above, and is told as that;
   - then the check of book.xlsx, as above.
 
+  A row deleted with a cell set in the row that moved up into its place is
+  one row removed and one input changed: a row changed pairs with the row
+  removed or added beside it that differs from it in the fewest cells.
   Formulas Excel rewrites for rows or columns added or removed (a column
   inserted between the columns a formula reads too, or a row inserted on
   the sheet it reads), cells cut and pasted, a sheet renamed, or a sheet
