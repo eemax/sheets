@@ -65,8 +65,10 @@
   know now (`unknown:`, by reason); charts, validations, conditional
   formats, shapes, pictures, names and tables lost (`lost:`); the
   validations and conditional formats the command replaced on the same
-  cells with another of their kind, a dropdown's items or a bound edited
-  (`0 features lost (1 changed)`, and a `changed:` line: an edit, not a
+  cells with another of their kind, a dropdown's items or a bound edited,
+  or the cells a rule reads (a dropdown pointed at another range, a
+  highlight testing another column, a threshold in another cell:
+  `0 features lost (1 changed)`, and a `changed:` line: an edit, not a
   loss); and the lint findings that changed, by rule. A feature that went
   with its cells (`sheets move`, to another sheet too) or with its sheet
   is not lost. A value you did not mean to move, a new error or a feature

@@ -169,8 +169,10 @@ naming a table that does not exist is refused.
   know now (`unknown:`, by reason); charts, validations, conditional
   formats, shapes, pictures, names and tables lost (`lost:`); the
   validations and conditional formats the command replaced on the same
-  cells with another of their kind, a dropdown's items or a bound edited
-  (`0 features lost (1 changed)`, and a `changed:` line: an edit, not a
+  cells with another of their kind, a dropdown's items or a bound edited,
+  or the cells a rule reads (a dropdown pointed at another range, a
+  highlight testing another column, a threshold in another cell:
+  `0 features lost (1 changed)`, and a `changed:` line: an edit, not a
   loss); and the lint findings that changed, by rule. A feature that went
   with its cells (`sheets move`, to another sheet too) or with its sheet
   is not lost. A value you did not mean to move, a new error or a feature
@@ -468,7 +470,10 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     COUNT that rose, a SUM that fell though they held 0 or less (or by
     more than they held), or a total that moved for an empty row inserted
     in its range, did not move for them, and stays `unexplained` unless
-    something else moved it. A formula changed is listed too, with what
+    something else moved it. Nor did a formula that moved with its row, or
+    that rows added or removed above it moved, and reads the cells it read
+    (`=B2*C2` in a sorted row): a wrong result stored for it stays
+    `unexplained`, and so does a total over it. A formula changed is listed too, with what
     it computes now. A value that moved because rows added or removed moved
     its formula or what it reads (`=ROW()`, a range older Excel reads one
     cell of) has them as its cause;
@@ -483,16 +488,18 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     validations in Excel 2010's extension list, such as a list read from
     another sheet). A feature is kept only by one of its kind and identity
     in the new version: a validation or conditional format of the same
-    type and formula (the cells it reads aside, which rows and columns
-    added or removed rewrite), a chart of the same type in the same place
+    type and formula, reading the cells rows and columns added or removed
+    put it on (as Excel rewrites it for them), a chart of the same type in the same place
     or on the same data, a shape or picture in the same place or by name,
     a name or table by its name. Another of its kind is no stand-in: a
     chart added beside a dropped one, a validation beside one dropped, and
     the banding `sheets fmt` writes over a conditional format, are the old
     one lost. A validation or conditional format whose cells hold another
-    of its kind now (a bound raised, a dropdown's items, a threshold) was
-    edited: it is in `features_changed`, with its rule before and after,
-    not lost, and sets no exit 1. Only a rule of the same type is an edit
+    of its kind now (a bound raised, a dropdown's items or the range it
+    reads, a threshold or the cell it is in) was edited: it is in
+    `features_changed`, with its rule before and after, not lost, and sets
+    no exit 1. A rule a tool left as it was where rows moved what it reads
+    (openpyxl's `insert_rows`) is changed too, with what Excel writes. Only a rule of the same type is an edit
     of it (a whole-number validation made a decimal one, or one that
     allows any value, too), and a formula rule or custom validation only
     when it is the same formula but for its numbers, texts and
@@ -539,7 +546,10 @@ cells. Excel 365 comment threads are listed but cannot be changed.
 
   A row deleted with a cell set in the row that moved up into its place is
   one row removed and one input changed: a row changed pairs with the row
-  removed or added beside it that differs from it in the fewest cells.
+  removed or added beside it that differs from it in the fewest cells. So is
+  the last row of a table deleted and a cell set in its place, where nothing
+  moves up: one row removed and the cell typed in (from empty), not every
+  cell of the row changed.
   Formulas Excel rewrites for rows or columns added or removed (a column
   inserted between the columns a formula reads too, or a row inserted on
   the sheet it reads), cells cut and pasted, a sheet renamed, or a sheet
