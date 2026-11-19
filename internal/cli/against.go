@@ -468,6 +468,26 @@ type report struct {
 	// (by the old name, lower-cased); cur is the sheet being compared.
 	lines map[string]*lineMap
 	cur   *lineMap
+	// trA and trB follow what each version's formulas read (trA once asked
+	// for); resultOK remembers resultHolds by cell.
+	trA, trB *xlsx.Tracer
+	resultOK map[xlsx.At]bool
+}
+
+// tracerA follows what the old version's formulas read.
+func (r *report) tracerA() *xlsx.Tracer {
+	if r.trA == nil {
+		r.trA = xlsx.NewTracer(r.A.wb)
+	}
+	return r.trA
+}
+
+// tracerB follows what the new version's formulas read.
+func (r *report) tracerB() *xlsx.Tracer {
+	if r.trB == nil {
+		r.trB = xlsx.NewTracer(r.B.wb)
+	}
+	return r.trB
 }
 
 // lineMap gives the new number of each row and column kept, and its sheet's
@@ -718,10 +738,30 @@ func (r *report) reseat(sa, sb *grid.Sheet, rows []diff.Pair, cols [][2]int) []d
 		}
 		return k
 	}
+	// Rows that hold an array formula's result (spilled) are not rows typed
+	// in: a result that shrank moves what is below it up (pairSpilled).
+	results := func(s *grid.Sheet) func(row int) bool {
+		var rgs []grid.Range
+		for _, rg := range append(append([]grid.Range{}, s.Spills...), s.Arrays...) {
+			if rg.Rows()*rg.Cols() > 1 {
+				rgs = append(rgs, rg)
+			}
+		}
+		return func(row int) bool {
+			for _, rg := range rgs {
+				if row >= rg.R1 && row <= rg.R2 {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	spillA, spillB := results(sa), results(sb)
+	ok := func(q diff.Pair) bool { return q.Old == 0 || !spillA(q.Old) && (q.New == 0 || !spillB(q.New)) }
 	cur, copied := rows, false
 	for i := range cur {
 		q := cur[i]
-		if q.Old == 0 || q.New == 0 {
+		if q.Old == 0 || q.New == 0 || !ok(q) {
 			continue
 		}
 		if i+1 >= len(cur) || cur[i+1].Old != 0 && cur[i+1].New != 0 {
@@ -737,6 +777,9 @@ func (r *report) reseat(sa, sb *grid.Sheet, rows []diff.Pair, cols [][2]int) []d
 				o := cur[k]
 				if o.Old != 0 && o.New != 0 {
 					break
+				}
+				if o.Old != 0 && spillA(o.Old) || o.New != 0 && spillB(o.New) {
+					continue
 				}
 				d := 0
 				if o.New == 0 {
@@ -1698,7 +1741,7 @@ func (r *report) compare() {
 	r.formulaSrc = map[xlsx.At]string{}
 	var tr *xlsx.Tracer
 	if !out.ValuesOnly {
-		tr = xlsx.NewTracer(B.wb)
+		tr = r.tracerB()
 	}
 	al, jobs := r.align()
 	var removals []removal
@@ -1885,7 +1928,6 @@ func (r *report) compare() {
 	// Formulas that read lines removed, or a sheet removed (in the old
 	// version): what they read changed, whether Excel shrank a reference
 	// or, with nothing left to read, wrote #REF!.
-	var ta *xlsx.Tracer
 	// A formula that moved, as lines removed cannot move it (a MAX that
 	// rose, a SUM that fell though what was removed was below zero), did not
 	// move for them: what else changed moved it.
@@ -1894,10 +1936,7 @@ func (r *report) compare() {
 		movedAt[r.candidates[i].at] = &r.candidates[i]
 	}
 	touching := func(sheet string, runs [][2]int, cols bool, label func(k int) string) {
-		if ta == nil {
-			ta = xlsx.NewTracer(A.wb)
-		}
-		for at, k := range ta.Touching(sheet, runs, cols) {
+		for at, k := range r.tracerA().Touching(sheet, runs, cols) {
 			m := r.lines[strings.ToLower(at.Sheet)]
 			if m == nil || m.rowOf(at.Row, at.Col) == 0 || m.col[at.Col] == 0 {
 				continue // its sheet, row or column was removed
@@ -2077,36 +2116,14 @@ func lessAt(a, b xlsx.At) bool {
 // value moved: a MAX only falls for them, and only when they held its
 // value; a MIN only rises, likewise; a COUNT only falls, when they held a
 // number; a SUM moves against the sum of what they held; an average moves
-// only when they held a number. A formula that is not one such call over
-// references alone can move either way.
+// only when they held a number. The formula is one such call over what it
+// reads (references, the columns of Excel tables, defined names: see
+// Tracer.Outer), alone; any other can move either way. And it holds only a
+// value that is what the call gives over what the formula reads now
+// (resultHolds): a SUM that fell further than the lines held is no work of
+// theirs.
 func (r *report) removalMoves(sa *grid.Sheet, at xlsx.At, sheet string, runs [][2]int, cols bool, c *candidate) bool {
-	x := sa.At(at.Row, at.Col)
-	if x == nil || x.Formula == "" || c.before.cell.Kind != grid.Number || c.after.cell.Kind != grid.Number {
-		return true
-	}
-	call, ok := engine.Outer(x.Formula)
-	ws := r.A.wb.Sheet(sheet)
-	if !ok || ws == nil || !aggregates[call.Func] {
-		return true
-	}
-	h, known := heldIn(r.A.wb, sa, ws, call.Refs, runs, cols)
-	if !known {
-		return true
-	}
-	d, was := c.after.num-c.before.num, c.before.num
-	switch call.Func {
-	case "MAX":
-		return d < 0 && h.numbers > 0 && h.hi >= was
-	case "MIN":
-		return d > 0 && h.numbers > 0 && h.lo <= was
-	case "COUNT":
-		return d < 0 && h.numbers > 0
-	case "COUNTA":
-		return d < 0 && h.filled > 0
-	case "AVERAGE":
-		return h.numbers > 0
-	}
-	return h.sum > 0 && d < 0 || h.sum < 0 && d > 0
+	return r.linesMove(true, sa, at, sheet, runs, cols, c)
 }
 
 // additionMoves tells whether lines added to a sheet (runs, numbered as now)
@@ -2116,22 +2133,50 @@ func (r *report) removalMoves(sa *grid.Sheet, at xlsx.At, sheet string, runs [][
 // SUM moves with the sum of what they held; an average moves only when they
 // held a number. Lines added that hold nothing move none of them (an empty
 // row inserted in a total's range). A formula that is not one such call over
-// references alone can move either way.
+// what it reads can move either way, and a value that is not what the call
+// gives is no work of the lines (see removalMoves).
 func (r *report) additionMoves(sb *grid.Sheet, at xlsx.At, sheet string, runs [][2]int, cols bool, c *candidate) bool {
-	x := sb.At(at.Row, at.Col)
+	return r.linesMove(false, sb, at, sheet, runs, cols, c)
+}
+
+// linesMove is removalMoves (removed) and additionMoves.
+func (r *report) linesMove(removed bool, home *grid.Sheet, at xlsx.At, sheet string, runs [][2]int, cols bool, c *candidate) bool {
+	side, tr := r.B, r.tracerB()
+	if removed {
+		side, tr = r.A, r.tracerA()
+	}
+	x := home.At(at.Row, at.Col)
 	if x == nil || x.Formula == "" || c.before.cell.Kind != grid.Number || c.after.cell.Kind != grid.Number {
 		return true
 	}
-	call, ok := engine.Outer(x.Formula)
-	ws := r.B.wb.Sheet(sheet)
+	call, ok := tr.Outer(at.Sheet, at.Row, at.Col)
+	ws := side.wb.Sheet(sheet)
 	if !ok || ws == nil || !aggregates[call.Func] {
 		return true
 	}
-	h, known := heldIn(r.B.wb, sb, ws, call.Refs, runs, cols)
+	h, known := heldIn(side.wb, home, ws, call.Refs, runs, cols)
 	if !known {
 		return true
 	}
+	if !r.resultHolds(c) {
+		return false
+	}
 	d, was := c.after.num-c.before.num, c.before.num
+	if removed {
+		switch call.Func {
+		case "MAX":
+			return d < 0 && h.numbers > 0 && h.hi >= was
+		case "MIN":
+			return d > 0 && h.numbers > 0 && h.lo <= was
+		case "COUNT":
+			return d < 0 && h.numbers > 0
+		case "COUNTA":
+			return d < 0 && h.filled > 0
+		case "AVERAGE":
+			return h.numbers > 0
+		}
+		return h.sum > 0 && d < 0 || h.sum < 0 && d > 0
+	}
 	switch call.Func {
 	case "MAX":
 		return d > 0 && h.numbers > 0 && h.hi > was
@@ -2147,6 +2192,77 @@ func (r *report) additionMoves(sb *grid.Sheet, at xlsx.At, sheet string, runs []
 	return h.sum > 0 && d > 0 || h.sum < 0 && d < 0
 }
 
+// resultHolds tells whether the result the new version stores for a formula
+// that is a call over what it reads (a SUM, a MAX, a COUNT) is what the call
+// gives over what it reads there, as stored: false when it is not (a total
+// of 24 stored as 0). That is no move any lines made, whatever their
+// direction. True when it cannot be told (not such a call, a value unknown,
+// or a cell read whose own result the calculator gets otherwise).
+func (r *report) resultHolds(c *candidate) bool {
+	if ok, seen := r.resultOK[c.at]; seen {
+		return ok
+	}
+	ok := r.resultHeld(c)
+	if r.resultOK == nil {
+		r.resultOK = map[xlsx.At]bool{}
+	}
+	r.resultOK[c.at] = ok
+	return ok
+}
+
+func (r *report) resultHeld(c *candidate) bool {
+	home := r.B.wb.Sheet(c.at.Sheet)
+	call, ok := r.tracerB().Outer(c.at.Sheet, c.at.Row, c.at.Col)
+	if home == nil || !ok || !aggregates[call.Func] || c.after.cell.Kind != grid.Number {
+		return true
+	}
+	var h held
+	for _, ref := range call.Refs {
+		on := ref.Sheet
+		if on == "" {
+			on = home.Name
+		}
+		ws := r.B.wb.Sheet(on)
+		if ws == nil {
+			return true
+		}
+		unknown := false
+		ws.Each(grid.Range{R1: ref.Area.R1, C1: ref.Area.C1, R2: ref.Area.R2, C2: ref.Area.C2}, func(row, col int, cell *grid.Cell) {
+			if cell.Formula != "" {
+				if _, differs := r.B.differ[strings.ToLower(cellAt(ws.Name, row, col))]; differs {
+					unknown = true
+				}
+			}
+			h.add(value(r.B.wb, ws, row, col))
+		})
+		if unknown || h.unknown {
+			return true
+		}
+	}
+	var want float64
+	switch call.Func {
+	case "SUM":
+		want = h.sum
+	case "COUNT":
+		want = float64(h.numbers)
+	case "COUNTA":
+		want = float64(h.filled)
+	case "MAX":
+		want = h.hi
+	case "MIN":
+		want = h.lo
+	case "AVERAGE":
+		if h.numbers == 0 {
+			return true
+		}
+		want = h.sum / float64(h.numbers)
+	default:
+		return true
+	}
+	got := c.after.num
+	return math.Abs(got-want) <= 1e-9*math.Max(1, math.Max(math.Abs(got), math.Abs(want)))
+}
+
 // aggregates are the calls over references that lines removed or added
 // move by what the lines hold.
 var aggregates = map[string]bool{"MAX": true, "MIN": true, "COUNT": true, "COUNTA": true, "SUM": true, "AVERAGE": true}
@@ -2155,6 +2271,27 @@ var aggregates = map[string]bool{"MAX": true, "MIN": true, "COUNT": true, "COUNT
 type held struct {
 	sum, hi, lo     float64
 	numbers, filled int
+	unknown         bool // a value there is unknown
+}
+
+// add counts a cell's value.
+func (h *held) add(v valueOf) {
+	switch {
+	case !v.known:
+		h.unknown = true
+		return
+	case v.cell.Kind == grid.Number:
+		n := v.num // as the values compared count it (dates in the 1900 system)
+		if h.numbers == 0 || n > h.hi {
+			h.hi = n
+		}
+		if h.numbers == 0 || n < h.lo {
+			h.lo = n
+		}
+		h.sum += n
+		h.numbers++
+	}
+	h.filled++
 }
 
 // heldIn totals what lines of ws (runs of rows, or of columns with cols) hold
@@ -2176,26 +2313,8 @@ func heldIn(wb *grid.Workbook, home, ws *grid.Sheet, refs []engine.RefArg, runs 
 			if cols {
 				cut = grid.Range{R1: 1, C1: run[0], R2: grid.MaxRows, C2: run[1]}
 			}
-			unknown := false
-			ws.Each(rg.Intersect(cut), func(row, col int, _ *grid.Cell) {
-				v := value(wb, ws, row, col)
-				switch {
-				case !v.known:
-					unknown = true
-				case v.cell.Kind == grid.Number:
-					n := v.num // as the values compared count it (dates in the 1900 system)
-					if h.numbers == 0 || n > h.hi {
-						h.hi = n
-					}
-					if h.numbers == 0 || n < h.lo {
-						h.lo = n
-					}
-					h.sum += n
-					h.numbers++
-				}
-				h.filled++
-			})
-			if unknown {
+			ws.Each(rg.Intersect(cut), func(row, col int, _ *grid.Cell) { h.add(value(wb, ws, row, col)) })
+			if h.unknown {
 				return h, false
 			}
 		}

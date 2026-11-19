@@ -852,3 +852,116 @@ func TestAgainstCausesDeleteSetNeighbour(t *testing.T) {
 		}
 	}
 }
+
+// totalsFixture copies against_totals.xlsx (Data!B2:B6 holding 5, 7, 3, 9, 4,
+// an Excel table Sales over A1:B6 and the name Units over B2:B6; Sum!A1
+// =SUM(Sales[Units]), A2 =MAX(Sales[Units]), A3 =SUM(Units), A4 =MAX(Units),
+// A5 =COUNT(Sales[Units])) with its results stored, as Excel stores them.
+func totalsFixture(t *testing.T) (dir, before string) {
+	t.Helper()
+	dir = t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before = filepath.Join(dir, "b.xlsx")
+	if err := os.WriteFile(before, mustRead(t, filepath.Join("..", "xlsx", "testdata", "against_totals.xlsx")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := runCLI("", "check", "--fix", before); code != 0 {
+		t.Fatalf("check --fix: exit %d: %s", code, out)
+	}
+	return dir, before
+}
+
+// unexplainedAt tells whether a cell is among the values unexplained.
+func unexplainedAt(r causesResult, cell string) bool {
+	for _, u := range r.Unexplained {
+		if u.Cell == cell {
+			return true
+		}
+	}
+	return false
+}
+
+// A total over an Excel table's column or a defined name is a call over
+// references like one over a range (f1.1): a row removed is no cause of a MAX
+// that rose or a SUM that rose, whichever way the formula reads the numbers,
+// and a row added that holds nothing, inside the table, none of a total of
+// another number. What the row can move, it moves.
+func TestAgainstCausesRemovedTable(t *testing.T) {
+	dir, before := totalsFixture(t)
+	deleted := edited(t, before, filepath.Join(dir, "d.xlsx"), []string{"rows", "delete", "Data!6"})
+	for _, c := range []struct{ cell, value string }{
+		{"A1", "999"}, {"A2", "50"}, {"A3", "999"}, {"A4", "50"}, {"A5", "7"},
+	} {
+		after := filepath.Join(dir, "a.xlsx")
+		stored(t, deleted, after, c.cell, c.value)
+		r, code := against(t, after, before)
+		if m := causes(r)["Sum!"+c.cell]; !unexplainedAt(r, "Sum!"+c.cell) || m != "" || code != 1 {
+			t.Errorf("%s stored as %s: exit %d, cause %q, unexplained %+v", c.cell, c.value, code, m, r.Unexplained)
+		}
+	}
+	// The way the row can move them: the 4 it held was in the sums and in the
+	// count, below the MAX.
+	r, code := against(t, deleted, before)
+	m := causes(r)
+	for _, c := range []string{"Sum!A1", "Sum!A3", "Sum!A5"} {
+		if !strings.HasPrefix(m[c], "rows removed: Data!6") {
+			t.Errorf("%s: cause %q (moved %+v)", c, m[c], r.Moved)
+		}
+	}
+	if len(r.Unexplained) != 0 || code != 0 {
+		t.Errorf("the row removed: exit %d, unexplained %+v", code, r.Unexplained)
+	}
+	// An empty row inserted inside the table moves nothing; a total stored as
+	// another number is unexplained.
+	empty := edited(t, before, filepath.Join(dir, "i.xlsx"), []string{"rows", "insert", "Data!4"})
+	if r, code := against(t, empty, before); len(r.Moved)+len(r.Unexplained) != 0 || code != 0 {
+		t.Errorf("an empty row in the table: exit %d, moved %+v, unexplained %+v", code, r.Moved, r.Unexplained)
+	}
+	for _, c := range []struct{ cell, value string }{{"A1", "999"}, {"A2", "50"}, {"A3", "999"}, {"A4", "50"}} {
+		after := filepath.Join(dir, "a.xlsx")
+		stored(t, empty, after, c.cell, c.value)
+		r, code := against(t, after, before)
+		if m := causes(r)["Sum!"+c.cell]; !unexplainedAt(r, "Sum!"+c.cell) || m != "" || code != 1 {
+			t.Errorf("an empty row in the table, %s stored as %s: exit %d, cause %q, unexplained %+v", c.cell, c.value, code, m, r.Unexplained)
+		}
+	}
+}
+
+// A SUM or a COUNT that moved further than the lines removed or added could
+// move it is not their doing (f1.4): the row of 4 removed lowers the total by
+// 4, not by 28; a number added raises it by that number.
+func TestAgainstCausesRemovedSize(t *testing.T) {
+	dir, before := causesFixture(t)
+	deleted := edited(t, before, filepath.Join(dir, "d.xlsx"), []string{"rows", "delete", "Data!6"})
+	after := filepath.Join(dir, "a.xlsx")
+	stored(t, deleted, after, "B2", "0")
+	r, code := against(t, after, before)
+	if m := causes(r)["Summary!B2"]; !unexplainedAt(r, "Summary!B2") || m != "" || code != 1 {
+		t.Errorf("a SUM that fell by 28: exit %d, cause %q, unexplained %+v", code, m, r.Unexplained)
+	}
+	// What the row held is what the total fell by: the value sheets computes.
+	r, code = against(t, deleted, before)
+	if m := causes(r)["Summary!B2"]; !strings.HasPrefix(m, "rows removed: Data!6") || len(r.Unexplained) != 0 || code != 0 {
+		t.Errorf("a SUM that fell by 4: exit %d, cause %q, unexplained %+v", code, m, r.Unexplained)
+	}
+	// A number added: the total rose by it, not by more.
+	added := edited(t, before, filepath.Join(dir, "n.xlsx"), []string{"rows", "insert", "Data!4"}, []string{"set", "Data!B4", "11"})
+	stored(t, added, after, "B2", "100")
+	r, code = against(t, after, before)
+	if m := causes(r)["Summary!B2"]; !unexplainedAt(r, "Summary!B2") || m != "" || code != 1 {
+		t.Errorf("a SUM that rose by 72 for a 11 added: exit %d, cause %q, unexplained %+v", code, m, r.Unexplained)
+	}
+	r, code = against(t, added, before)
+	if m := causes(r)["Summary!B2"]; m != "rows added: Data!4" || len(r.Unexplained) != 0 || code != 0 {
+		t.Errorf("a SUM that rose by 11: exit %d, cause %q, unexplained %+v", code, m, r.Unexplained)
+	}
+	// A COUNT that fell by more than the numbers the row held.
+	tdir, tbefore := totalsFixture(t)
+	tdeleted := edited(t, tbefore, filepath.Join(tdir, "d.xlsx"), []string{"rows", "delete", "Data!6"})
+	tafter := filepath.Join(tdir, "a.xlsx")
+	stored(t, tdeleted, tafter, "A5", "2")
+	r, code = against(t, tafter, tbefore)
+	if m := causes(r)["Sum!A5"]; !unexplainedAt(r, "Sum!A5") || m != "" || code != 1 {
+		t.Errorf("a COUNT that fell by 3: exit %d, cause %q, unexplained %+v", code, m, r.Unexplained)
+	}
+}

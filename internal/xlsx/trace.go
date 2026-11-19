@@ -179,6 +179,20 @@ func (t *Tracer) Formula(sheet string, row, col int) bool {
 	return ok
 }
 
+// Outer gives the call a formula cell is, alone (=SUM(Sales[Units]),
+// =MAX(Units), =COUNT(B2:B9)), with what it is given resolved to references:
+// the columns of Excel tables as the cells they are, defined names as what
+// they refer to. It says false for a cell that holds no formula, for one that
+// is no call over references alone, and for a name that is none.
+func (t *Tracer) Outer(sheet string, row, col int) (engine.Call, bool) {
+	id, ok := t.at[keyOf(sheet, row, col)]
+	if !ok {
+		return engine.Call{}, false
+	}
+	f := t.fs[id]
+	return engine.OuterNamed(f.calc, func(on, n string) (engine.RefArg, bool) { return t.nameRef(f.sheet, on, n) })
+}
+
 // Anchor gives the cell of the array formula whose result a cell holds
 // (not the formula's own cell).
 func (t *Tracer) Anchor(sheet string, row, col int) (At, bool) {

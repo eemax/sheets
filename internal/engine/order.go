@@ -133,7 +133,12 @@ func OrderReads(text string, name func(sheet, n string) (RefArg, bool)) ([]Order
 // =MAX(B2:B9)*2 or =IF(A1,MAX(B2:B9))), with the references given as its
 // arguments: ok is false when the formula is no call alone, or an argument
 // of it is not a reference.
-func Outer(text string) (Call, bool) {
+func Outer(text string) (Call, bool) { return OuterNamed(text, nil) }
+
+// OuterNamed is Outer with the defined names given as arguments resolved
+// (name gives the reference one stands for, false when it is none or is
+// unknown: then the formula is no call over references alone).
+func OuterNamed(text string, name func(sheet, n string) (RefArg, bool)) (Call, bool) {
 	n, err := Parse(text)
 	if err != nil || n.kind != nCall {
 		return Call{}, false
@@ -141,6 +146,9 @@ func Outer(text string) (Call, bool) {
 	c := Call{Func: strings.ToUpper(bareName(n.str))}
 	for _, a := range n.args {
 		r, ok := refArg(a)
+		if !ok && a.kind == nName && name != nil {
+			r, ok = name(a.sheet, a.str)
+		}
 		if !ok {
 			return Call{}, false
 		}
