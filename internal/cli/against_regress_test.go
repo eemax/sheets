@@ -410,3 +410,41 @@ func TestAgainstRegressTotalOverReaders(t *testing.T) {
 		t.Errorf("an empty row and a rate set: cause %q, exit %d, unexplained %+v", m["Summary!A1"], code, r.Unexplained)
 	}
 }
+
+// A chart's series show whether the last row of a table was removed or cleared,
+// as a formula, a name or a table do (f1.2 of the last audit): with only a
+// chart reading the rows, the last row cleared is its cells changed, the values
+// cleared named, no row removed; the last two cleared, likewise; the last row
+// deleted (the chart's series rewritten for it) and a cell set in its place is
+// one row removed and the cell typed in.
+func TestAgainstRegressChartReads(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before := regressBook(t, dir, "b.xlsx", regressTable, []string{"chart", "add", "Data", "--x", "Region", "--y", "Units", "--at", "Data!F2"})
+	for _, c := range []struct {
+		name    string
+		edits   [][]string
+		inputs  int
+		removed string // the structure told: "" for none
+		cell    string
+		was     string // the cell's value before
+	}{
+		{"the last row cleared", [][]string{{"clear", "Data!A6:C6"}}, 3, "", "Data!A6", `"Mid"`},
+		{"the last two rows cleared", [][]string{{"clear", "Data!A5:C6"}}, 6, "", "Data!B5", "9"},
+		{"the last row deleted and a cell set", [][]string{{"rows", "delete", "Data!6"}, {"set", "Data!B6", "77"}}, 1, "row removed", "Data!B6", ""},
+	} {
+		after := edited(t, before, filepath.Join(dir, "a.xlsx"), c.edits...)
+		r, code := against(t, after, before)
+		var got []string
+		for _, e := range r.Structure {
+			got = append(got, e.Change)
+		}
+		if s := r.Summary; s.Inputs != c.inputs || s.Flagged != 0 || s.FeaturesLost != 0 || code != 0 ||
+			c.removed == "" && len(got) != 0 || c.removed != "" && (len(got) != 1 || got[0] != c.removed) {
+			t.Errorf("%s: exit %d, %+v, structure %q", c.name, code, s, got)
+		}
+		if v, ok := changedOf(r)[c.cell]; !ok || v[0] != c.was {
+			t.Errorf("%s: %s changed %q", c.name, c.cell, v)
+		}
+	}
+}

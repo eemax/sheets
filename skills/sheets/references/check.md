@@ -97,7 +97,10 @@
     formula reads: with a changed input reaching it, or lines of the other
     kind, the net move is no telling of what they did, and they are named
     when they held something (a row of 7 removed, and an input raised by 45
-    in the same column: the total rose, for both). Nor did a formula that moved with its row, or
+    in the same column: the total rose, for both). A total over formulas
+    they moved (a grand total over SUMIFs that read a row inserted and typed
+    in) moved for them through those formulas, either way, and names them.
+    Nor did a formula that moved with its row, or
     that rows added or removed above it moved, and reads the cells it read
     (`=B2*C2` in a sorted row): a wrong result stored for it stays
     `unexplained`, and so does a total over it. A structure change is a
@@ -186,17 +189,18 @@
   the last row of a table deleted and a cell set in its place, where nothing
   moves up: one row removed and the cell typed in (from empty), not every
   cell of the row changed, when what reads the rows shows they were removed
-  (a formula, a defined name or an Excel table reading them as Excel rewrote
-  it for the removal, and none as it was). Otherwise its values are the
-  same as the row's cells cleared and typed over where they are, and that
-  is what is reported, each cell changed, the cleared ones too: the last row
-  edited in place, a CSV file, a sheet nothing reads, openpyxl's
-  `delete_rows` (which rewrites no formula). The last rows of a table with
-  nothing in their place (cleared with `sheets clear`, or deleted) are the
-  other way about: one row removed, unless a formula, a defined name or an
-  Excel table reading them reads them as it did (not rewritten for a
-  removal), when they were cleared where they are: each cell changed, the
-  values cleared named, what reads them moved for them, nothing flagged.
+  (a formula, a defined name, an Excel table or a chart's series reading
+  them as Excel rewrote it for the removal, and none as it was). Otherwise
+  its values are the same as the row's cells cleared and typed over where
+  they are, and that is what is reported, each cell changed, the cleared
+  ones too: the last row edited in place, a CSV file, a sheet nothing reads,
+  openpyxl's `delete_rows` (which rewrites no formula). The last rows of a
+  table with nothing in their place (cleared with `sheets clear`, or
+  deleted) are the other way about: one row removed, unless a formula, a
+  defined name, an Excel table or a chart's series reading them reads them
+  as it did (not rewritten for a removal), when they were cleared where
+  they are: each cell changed, the values cleared named, what reads them
+  moved for them, nothing flagged.
   Formulas Excel rewrites for rows or columns added or removed (a column
   inserted between the columns a formula reads too, or a row inserted on
   the sheet it reads), cells cut and pasted, a sheet renamed, or a sheet

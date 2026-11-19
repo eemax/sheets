@@ -1946,6 +1946,46 @@ func (r *report) typedRemoved(j *job, jobs []*job) (bool, bool) {
 			}
 		}
 	}
+	// A chart's series: the charts of each version on a sheet (as now named),
+	// of a type and with as many series, paired in their order; where there
+	// are not as many of them in both, which is which cannot be told.
+	type chartKey struct {
+		sheet, typ string
+		cs         bool
+		n          int
+	}
+	charts := map[chartKey][2][]xlsx.Feature{}
+	for v, fs := range [][]xlsx.Feature{r.fa, r.fb} {
+		for _, f := range fs {
+			if f.Kind != xlsx.FeatureChart || len(f.Series) == 0 {
+				continue
+			}
+			on := f.Sheet
+			if to, ok := r.renamed[strings.ToLower(f.Sheet)]; v == 0 && ok {
+				if on = to; to == "" {
+					continue // its sheet was removed
+				}
+			}
+			k := chartKey{strings.ToLower(on), f.Type, f.Chartsheet, len(f.Series)}
+			both := charts[k]
+			both[v] = append(both[v], f)
+			charts[k] = both
+		}
+	}
+	for k, both := range charts {
+		if len(both[0]) != len(both[1]) {
+			continue
+		}
+		home := both[1][0].Sheet
+		if k.cs {
+			home = "" // a chart sheet has no cells: its series name their sheet
+		}
+		for i, f := range both[0] {
+			for s, ref := range f.Series {
+				probes = append(probes, probe{ref, home, both[1][i].Series[s]})
+			}
+		}
+	}
 	rewrite := func(p probe) string { return folded(r.shifted(r.renamedIn(p.text), p.home, false, "")) }
 	ifRemoved := make([]string, len(probes))
 	for i, p := range probes {
