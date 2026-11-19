@@ -274,6 +274,9 @@ func TestAgainstCausesSortDisplaced(t *testing.T) {
 // inserted before any range is read. Counted in the cells read, not in time.
 func TestAgainstCausesRunningTotalsFast(t *testing.T) {
 	rows := 3000
+	if raceSlow > 1 {
+		rows = 800 // the race detector: what it finds, not how fast (n²/2 is still 20 times the limit)
+	}
 	dir := t.TempDir()
 	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
 	var b strings.Builder
