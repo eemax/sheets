@@ -152,8 +152,9 @@ type valueOf struct {
 	cell grid.Cell
 	// num is a number as the 1900 date system counts it: a date in a 1904
 	// workbook is 1,462 days earlier by its serial, which says nothing of
-	// the date.
+	// the date. shift is what was added to the stored number for that.
 	num   float64
+	shift float64
 	known bool
 }
 
@@ -170,9 +171,15 @@ func value(wb *grid.Workbook, s *grid.Sheet, row, col int) valueOf {
 	if c.Pending {
 		return valueOf{text: "?"}
 	}
+	return valueFrom(wb, c)
+}
+
+// valueFrom reads a cell that holds a value.
+func valueFrom(wb *grid.Workbook, c *grid.Cell) valueOf {
 	v := valueOf{text: valueText(wb, c), cell: *c, num: c.Num, known: true}
 	if f := wb.FormatOf(c); c.Kind == grid.Number && wb.Date1904 && (f.Kind == grid.Date || f.Kind == grid.DateTime) {
 		v.num += epochDays
+		v.shift = epochDays
 	}
 	return v
 }
@@ -188,22 +195,48 @@ func valueText(wb *grid.Workbook, c *grid.Cell) string {
 	return v
 }
 
-// sameValues tells whether two known values are the same, numbers to
-// within rounding.
-func sameValues(a, b valueOf) bool {
+// sameResults tells whether two known computed values are the same,
+// numbers to Excel's 15 significant digits: what its calculator and ours,
+// or two producers writing one result, may differ in is the digits past
+// them. A result under 1e-15 is as good as zero: what cancellation leaves
+// of a sum or a difference.
+func sameResults(a, b valueOf) bool { return sameValues(a, b, false) }
+
+// sameInputs tells whether two known typed values (a number, text, a CSV
+// file's cell) are the same, exactly: a barcode, an order number or an
+// amount in the millions differs in digits a tolerance would take for
+// rounding. Numbers compare as the files store them; across the two date
+// systems, as the days they count to 15 digits.
+func sameInputs(a, b valueOf) bool { return sameValues(a, b, true) }
+
+func sameValues(a, b valueOf, exact bool) bool {
 	x, y := a.cell, b.cell
 	if x.Kind != y.Kind {
 		return false
 	}
 	switch x.Kind {
 	case grid.Number:
-		return math.Abs(a.num-b.num) <= 1e-9*math.Max(1, math.Max(math.Abs(a.num), math.Abs(b.num)))
+		if exact && a.shift == b.shift {
+			return x.Num == y.Num
+		}
+		d := math.Abs(a.num - b.num)
+		return d <= 5e-15*math.Max(math.Abs(a.num), math.Abs(b.num)) || d < 1e-15
 	case grid.Text, grid.Error:
 		return x.Text == y.Text
 	case grid.Bool:
 		return x.Bool == y.Bool
 	}
 	return true
+}
+
+// inputTexts show two inputs that differ as they read: when both read the
+// same (a number differing past the digits its format shows), by the digits
+// the file stores.
+func inputTexts(a, b valueOf) (string, string) {
+	if a.text == b.text && a.cell.Kind == grid.Number && b.cell.Kind == grid.Number {
+		return strconv.FormatFloat(a.cell.Num, 'g', -1, 64), strconv.FormatFloat(b.cell.Num, 'g', -1, 64)
+	}
+	return a.text, b.text
 }
 
 // arrays finds the array formulas whose results hold cells, sheet by
@@ -1017,7 +1050,7 @@ func (r *report) holds(sa *grid.Sheet, ra int, sb *grid.Sheet, rb int, cols [][2
 			}
 		case x.Formula != "" || y.Formula != "":
 			return false
-		case !sameValues(value(r.A.wb, sa, ra, c[0]), value(r.B.wb, sb, rb, c[1])):
+		case !sameResults(value(r.A.wb, sa, ra, c[0]), value(r.B.wb, sb, rb, c[1])):
 			return false
 		}
 	}
@@ -1601,8 +1634,9 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 	}
 	va, vb := value(A.wb, sa, ra, ca), value(B.wb, sb, rb, cb)
 	if r.out.ValuesOnly {
-		if va.known && vb.known && !sameValues(va, vb) {
-			out.Changed = append(out.Changed, changedCell{Cell: here, Was: was, Kind: "value", Before: va.text, After: vb.text})
+		if va.known && vb.known && !sameInputs(va, vb) {
+			before, after := inputTexts(va, vb)
+			out.Changed = append(out.Changed, changedCell{Cell: here, Was: was, Kind: "value", Before: before, After: after})
 		}
 		return
 	}
@@ -1636,7 +1670,7 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 			// A value now: the change shows it.
 		case !va.known || !vb.known:
 			out.Unknown = append(out.Unknown, unknownValue{Cell: here, Before: va.text, After: vb.text, Why: unknownWhy()})
-		case xe || !sameValues(va, vb):
+		case xe || !sameResults(va, vb):
 			r.candidates = append(r.candidates, candidate{at: at, before: va, after: vb, was: was, note: note(), cause: "formula " + here})
 		}
 	}
@@ -1645,8 +1679,9 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 	switch {
 	case !ka && !kb:
 		// Inputs.
-		if (xe != ye) || !sameValues(va, vb) {
-			out.Changed = append(out.Changed, changedCell{Cell: here, Was: was, Kind: "input", Before: va.text, After: vb.text})
+		if (xe != ye) || !sameInputs(va, vb) {
+			before, after := inputTexts(va, vb)
+			out.Changed = append(out.Changed, changedCell{Cell: here, Was: was, Kind: "input", Before: before, After: after})
 			r.cause(sb.Name, one, "input "+here)
 		}
 		return
@@ -1707,7 +1742,7 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 		return
 	}
 	// A computed value, its formula unchanged: did it move?
-	if va.known && vb.known && sameValues(va, vb) {
+	if va.known && vb.known && sameResults(va, vb) {
 		if len(B.differ) > 0 {
 			if d, ok := B.differ[strings.ToLower(here)]; ok {
 				// It holds what it held, a result the sheets calculator
@@ -1739,11 +1774,11 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 func (r *report) calculators(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int, va, vb valueOf) string {
 	A, B := r.A, r.B
 	old, now := strings.ToLower(cellAt(sa.Name, ra, ca)), strings.ToLower(cellAt(sb.Name, rb, cb))
-	if d, ok := A.differ[old]; ok && B.stored[now] != "" && sameValues(calcValue(A.wb, sa.At(ra, ca), d.Calc), vb) {
+	if d, ok := A.differ[old]; ok && B.stored[now] != "" && sameResults(calcValue(A.wb, sa.At(ra, ca), d.Calc), vb) {
 		return "the difference is the calculator's, not a change: sheets gets " + vb.text + " from what it reads in " + A.path +
 			", which stores " + va.text + " (Excel's result, kept), and computed it in " + B.path + " (" + B.stored[now] + ")"
 	}
-	if d, ok := B.differ[now]; ok && A.stored[old] != "" && sameValues(calcValue(B.wb, sb.At(rb, cb), d.Calc), va) {
+	if d, ok := B.differ[now]; ok && A.stored[old] != "" && sameResults(calcValue(B.wb, sb.At(rb, cb), d.Calc), va) {
 		return "the difference is the calculator's, not a change: sheets gets " + va.text + " from what it reads in " + B.path +
 			", which stores " + vb.text + " (Excel's result, kept), and computed it in " + A.path + " (" + A.stored[old] + ")"
 	}
@@ -1756,11 +1791,7 @@ func calcValue(wb *grid.Workbook, stored *grid.Cell, calc grid.Cell) valueOf {
 	if stored != nil {
 		calc.Fmt = stored.Fmt
 	}
-	v := valueOf{text: valueText(wb, &calc), cell: calc, num: calc.Num, known: true}
-	if f := wb.FormatOf(&calc); calc.Kind == grid.Number && wb.Date1904 && (f.Kind == grid.Date || f.Kind == grid.DateTime) {
-		v.num += epochDays
-	}
-	return v
+	return valueFrom(wb, &calc)
 }
 
 // repr shows a cell: its formula, or its value.
@@ -2052,7 +2083,7 @@ func (r *report) trace(tr *xlsx.Tracer) {
 		if !ok {
 			continue
 		}
-		if d, ok := r.A.differ[h.old]; ok && sameValues(calcValue(r.A.wb, nil, d.Calc), h.calc) {
+		if d, ok := r.A.differ[h.old]; ok && sameResults(calcValue(r.A.wb, nil, d.Calc), h.calc) {
 			continue
 		}
 		here := cellAt(h.at.Sheet, h.at.Row, h.at.Col)

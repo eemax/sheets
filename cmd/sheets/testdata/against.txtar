@@ -549,6 +549,24 @@ stdout '^  Data!C2  108 → 109 +moved, and sheets cannot tell why: it reads Dat
 exec sheets check after.csv --against before.csv
 cmp stdout csv.out
 
+# Inputs compare exactly: a barcode, an amount in the millions to the cent and
+# an order number that changed in digits a tolerance would take for rounding
+# are inputs changed, in xlsx and CSV alike; what they move is traced to them.
+exec sheets set ids.xlsx Data!A1 GTIN Data!B1 Amount Data!C1 Order Data!A2 7350012345678 Data!B2 12345678.90 Data!C2 4500012345 Data!D2 '=B2*2'
+cp ids.xlsx ids2.xlsx
+exec sheets set ids2.xlsx Data!A2 7350012349999 Data!B2 12345678.91 Data!C2 4500012346
+exec sheets check ids2.xlsx --against ids.xlsx
+stdout ': 3 inputs changed, 0 formulas changed, 1 computed value moved \(each with its cause\), 0 unexplained,'
+stdout '^  Data!A2  input  7350012345678 → 7350012349999$'
+stdout '^  Data!B2  input  12345678.9 → 12345678.91$'
+stdout '^  Data!C2  input  4500012345 → 4500012346$'
+stdout '^  Data!D2  24691357.8 → 24691357.82  input Data!B2$'
+exec sheets check gtin2.csv --against gtin1.csv
+stdout '^gtin2.csv against gtin1.csv: 3 values changed$'
+stdout '^  gtin2!A2  value  7350012345678 → 7350012349999$'
+stdout '^  gtin2!B2  value  12345678.9 → 12345678.91$'
+stdout '^  gtin2!C2  value  4500012345 → 4500012346$'
+
 # Nothing changed.
 exec sheets check against_before.xlsx --against against_before.xlsx
 stdout '^against_before.xlsx against against_before.xlsx: 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown$'
@@ -568,6 +586,12 @@ Bob,47
 Ada,92
 Cy,80
 Di,60
+-- gtin1.csv --
+GTIN,Amount,Order
+7350012345678,12345678.90,4500012345
+-- gtin2.csv --
+GTIN,Amount,Order
+7350012349999,12345678.91,4500012346
 -- input.out --
 input.xlsx against against_before.xlsx: 1 input changed, 0 formulas changed, 8 computed values moved (each with its cause), 0 unexplained, 0 features lost, 0 unknown
 changed:

@@ -232,9 +232,47 @@ func TestSameValuesDates(t *testing.T) {
 		{"numbers", mk(true, 43860, 0), mk(false, 43860, 0), true},
 		{"numbers, 1,462 apart", mk(true, 43860, 0), mk(false, 45322, 0), false},
 	} {
-		if got := sameValues(c.a, c.b); got != c.same {
-			t.Errorf("%s: %v, want %v", c.name, got, c.same)
+		if got := sameInputs(c.a, c.b); got != c.same {
+			t.Errorf("%s (inputs): %v, want %v", c.name, got, c.same)
 		}
+		if got := sameResults(c.a, c.b); got != c.same {
+			t.Errorf("%s (results): %v, want %v", c.name, got, c.same)
+		}
+	}
+}
+
+// Typed values compare exactly; computed results to Excel's 15 digits.
+func TestSameValuesExact(t *testing.T) {
+	num := func(n float64) valueOf {
+		return valueOf{cell: grid.Cell{Kind: grid.Number, Num: n}, num: n, known: true}
+	}
+	tenth, fifth := 0.1, 0.2
+	for _, c := range []struct {
+		name          string
+		a, b          float64
+		inputs, calcs bool
+	}{
+		{"a barcode", 7350012345678, 7350012349999, false, false},
+		{"one cent on 12,345,678.90", 12345678.90, 12345678.91, false, false},
+		{"an order number", 4500012345, 4500012346, false, false},
+		{"the same", 7350012345678, 7350012345678, true, true},
+		{"past the 15th digit", 0.1, 0.1000000000000001, false, true},
+		{"rounding of a sum", tenth + fifth, 0.3, false, true},
+		{"the 13th digit", 1, 1.0000000000001, false, false},
+		{"what cancellation leaves", 0, 5.5e-17, false, true},
+		{"small, and not zero", 1e-9, 2e-9, false, false},
+	} {
+		if got := sameInputs(num(c.a), num(c.b)); got != c.inputs {
+			t.Errorf("%s (inputs): %v, want %v", c.name, got, c.inputs)
+		}
+		if got := sameResults(num(c.a), num(c.b)); got != c.calcs {
+			t.Errorf("%s (results): %v, want %v", c.name, got, c.calcs)
+		}
+	}
+	a, b := num(0.1), num(0.1000000000000001)
+	a.text, b.text = "0.1", "0.1"
+	if x, y := inputTexts(a, b); x == y {
+		t.Errorf("two inputs that differ read alike: %q, %q", x, y)
 	}
 }
 
