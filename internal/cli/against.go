@@ -1652,10 +1652,9 @@ func (r *report) record(j *job) []removal {
 	if len(j.colsRemoved) > 0 {
 		removals = append(removals, removalOf(j.colsRemoved, true))
 	}
-	// where gives the row now at an old row's place, as the lines added and
-	// removed put it (the rows it held moved elsewhere, perhaps: it is the
-	// place the rows moved from, as the rows between a row and where it went
-	// shifted into it).
+	// where gives the row number now at the place an old row was at, as the
+	// rows added above it and removed above it put it (the row that stood there
+	// may have gone elsewhere: it is the place that counts).
 	added, removed := append([]int{}, j.rowsAdded...), append([]int{}, j.rowsRemoved...)
 	sort.Ints(added)
 	sort.Ints(removed)
@@ -1687,6 +1686,9 @@ func (r *report) record(j *job) []removal {
 				lo = first
 			}
 			hi = max(hi, last)
+		}
+		if lo == 0 {
+			return
 		}
 		span := grid.Range{R1: lo, C1: max(min(c1, c1-dc), 1), R2: hi, C2: map[bool]int{true: grid.MaxCols, false: max(c2, c2-dc)}[c1 == 0]}
 		var carried []grid.Range
