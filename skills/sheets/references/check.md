@@ -97,10 +97,7 @@
     formula reads: with a changed input reaching it, or lines of the other
     kind, the net move is no telling of what they did, and they are named
     when they held something (a row of 7 removed, and an input raised by 45
-    in the same column: the total rose, for both). A total over formulas
-    they moved (a grand total over SUMIFs that read a row inserted and typed
-    in) moved for them through those formulas, either way, and names them.
-    Nor did a formula that moved with its row, or
+    in the same column: the total rose, for both). Nor did a formula that moved with its row, or
     that rows added or removed above it moved, and reads the cells it read
     (`=B2*C2` in a sorted row): a wrong result stored for it stays
     `unexplained`, and so does a total over it. A structure change is a
@@ -108,7 +105,10 @@
     whose value held (a MAX an input change left as it was, a total an empty
     row inserted did not move) stops the tracing, so a wrong result stored
     for what reads it stays `unexplained`, and what reads that follows it
-    (`which moved with nothing upstream changed`), or holds what it held. A formula changed is listed too, with what
+    (`which moved with nothing upstream changed`), or holds what it held.
+    A total over formulas that rows added moved (a grand total over SUMIFs
+    that read a row inserted and typed in) moved for them through those
+    formulas, whichever way, and names them as those formulas do. A formula changed is listed too, with what
     it computes now. A value that moved because rows added or removed moved
     its formula or what it reads (`=ROW()`, a range older Excel reads one
     cell of) has them as its cause;

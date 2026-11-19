@@ -1857,9 +1857,9 @@ func (r *report) pairCleared(p diff.SheetPair, j *job, typedFrom map[int]bool) (
 // removed were removed (the first result) or were cleared where they are (the
 // second): rows with cells typed in where they were (job.typed), or the last
 // rows with nothing in their place (job.cleared). Their values alike cannot
-// tell: a formula, a defined name or an Excel table of the old version that
-// reads the sheet from the first of them down reads now as Excel rewrites it
-// for their removal, or as it would with the rows kept. With nothing to show
+// tell: a formula, a defined name, an Excel table or a chart's series of the
+// old version that reads the sheet from the first of them down reads now as
+// Excel rewrites it for their removal, or as it would with the rows kept. With nothing to show
 // it (a CSV file, rows nothing reads) neither is, and the rows with cells typed
 // in were not removed (their cells changed where they are, and the values
 // cleared are among the changes), while the last rows with none were.
