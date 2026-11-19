@@ -168,11 +168,20 @@ def guide(arm, bindir):
 
 def done(out, t, arm):
     """Whether a task's arm ran already, in an earlier run into OUT: it has
-    a meta.json, and it started or was run again once already."""
+    a meta.json, and it started, or was run again once already. A run whose
+    last attempt hit the plan or rate limit is not finished: --more resumes it."""
     d = os.path.join(out, t["id"], arm)
     if not os.path.exists(os.path.join(d, "meta.json")):
         return False
-    return not unstarted(d) or os.path.exists(os.path.join(d, "meta.prev.json"))
+    if not unstarted(d):
+        return True
+    if not os.path.exists(os.path.join(d, "meta.prev.json")):
+        return False
+    try:
+        answer = open(os.path.join(d, "answer.txt")).read()[:500]
+    except OSError:
+        answer = ""
+    return not _LIMIT.search(answer)
 
 
 _NO_START = re.compile(r"rate.?limit|usage limit|limit reached|hit your [^.\n]{0,40}limit|overloaded|API Error|authenticat|credit balance", re.I)
@@ -514,7 +523,8 @@ def report(out, results, arms):
     # A run that never started (usage limit, API error) is missing, not a fail;
     # python+check follows python's run.
     missing = sorted({(r["id"], DERIVED.get(r["arm"], r["arm"])) for r in results
-                      if unstarted(os.path.join(out, r["id"], DERIVED.get(r["arm"], r["arm"])))})
+                      if not r["arm"].startswith("golden")
+                      and unstarted(os.path.join(out, r["id"], DERIVED.get(r["arm"], r["arm"])))})
     results = [r for r in results if r["id"] not in bad
                and (r["id"], DERIVED.get(r["arm"], r["arm"])) not in missing]
     by = {(r["id"], r["arm"]): r for r in results}

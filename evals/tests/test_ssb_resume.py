@@ -58,6 +58,26 @@ class Rerun(unittest.TestCase):
             json.dump(first, open(os.path.join(d, "meta.json"), "w"))
             self.assertTrue(ssb.done(out, t, "python"))
 
+    def test_twice_limited_run_is_resumed(self):
+        with tempfile.TemporaryDirectory() as out:
+            d = os.path.join(out, "1", "python")
+            os.makedirs(d)
+            for f in ("meta.json", "meta.prev.json"):
+                json.dump({"turns": 0, "error": True}, open(os.path.join(d, f), "w"))
+            open(os.path.join(d, "answer.txt"), "w").write("You've hit your session limit · resets 3pm")
+            self.assertFalse(ssb.done(out, {"id": "1"}, "python"))
+            open(os.path.join(d, "answer.txt"), "w").write("API Error: 500 overloaded")
+            self.assertTrue(ssb.done(out, {"id": "1"}, "python"))
+
+
+class GoldenReport(unittest.TestCase):
+    def test_golden_folders_are_started(self):
+        with tempfile.TemporaryDirectory() as out:
+            os.makedirs(os.path.join(out, "1", "golden", "work"))
+            ssb.report(out, [{"id": "1", "arm": "golden", "kind": "Cell-Level", "passed": True,
+                              "stored": {"passed": True, "problems": []}, "meta": {}, "claim": "none"}], ["golden"])
+            self.assertNotIn("PARTIAL", open(os.path.join(out, "report.md")).read())
+
 
 if __name__ == "__main__":
     unittest.main()
