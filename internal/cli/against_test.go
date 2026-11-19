@@ -94,14 +94,20 @@ func TestLostFeatures(t *testing.T) {
 		t.Errorf("lost of three alike\n got %+v\nwant %+v", got, want)
 	}
 	// Another of its kind is no reason to say nothing of the one that is gone:
-	// a validation that changed its type, or its formula, is not the one it was.
+	// a validation of another type on other cells is not the one it was. One
+	// on the same cells whose formula, operator or type changed is it,
+	// edited: changed, not lost.
+	if got := lostFeatures([]xlsx.Feature{whole("B2:B6")}, []xlsx.Feature{decimal("B2:B7")}, nil, nil, nil); len(got) != 1 {
+		t.Errorf("another type on other cells: %+v", got)
+	}
 	for name, now := range map[string]xlsx.Feature{
-		"its type":     decimal("B2:B7"),
+		"its type":     decimal("B2:B6"),
 		"its formula":  rule(xlsx.FeatureValidation, "Data", "B2:B6", "whole validation", "whole", "between|0|200"),
 		"its operator": rule(xlsx.FeatureValidation, "Data", "B2:B6", "whole validation", "whole", "notBetween|0|100"),
 	} {
-		if got := lostFeatures([]xlsx.Feature{whole("B2:B6")}, []xlsx.Feature{now}, nil, nil, nil); len(got) != 1 {
-			t.Errorf("changed %s: %+v", name, got)
+		lost, changed := compareFeatures([]xlsx.Feature{whole("B2:B6")}, []xlsx.Feature{now}, nil, nil, nil)
+		if len(lost) != 0 || len(changed) != 1 || changed[0].Where != "Data!B2:B6" || changed[0].Before == changed[0].After {
+			t.Errorf("changed %s: lost %+v, changed %+v", name, lost, changed)
 		}
 	}
 	// A conditional format replaced by another kind (a banding rule) is lost,

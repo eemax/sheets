@@ -21,7 +21,7 @@ stdout '"features_lost":\[\{"kind":"validation","where":"Data!A2:A6","what":"lis
 stdout '\{"cell":"Summary!B3","before":"630","after":"660","cause":"input Data!B2","note":"computed by sheets: the file stores no result"\}'
 stdout '"rule":"missing-result","severity":"error"'
 stdout '"unexplained":\[\],'
-stdout '"summary":\{"inputs_changed":1,"formulas_changed":0,"flagged":0,"moved":8,"unexplained":0,"features_lost":3,"unknown":0,"moved_rows":0\}'
+stdout '"summary":\{"inputs_changed":1,"formulas_changed":0,"flagged":0,"moved":8,"unexplained":0,"features_lost":3,"features_changed":0,"unknown":0,"moved_rows":0\}'
 
 # One row's formula broken: flagged, as unlike the rows around it; what it
 # moves is explained by it.
@@ -63,7 +63,8 @@ stdout '^  Data!2, were 4$'
 stdout ', 0 unexplained,'
 
 # Rows added and removed: totals Excel rewrites to take them in are not
-# changes; what they move is explained by the rows.
+# changes; what they move is explained by the rows, each by those that can
+# move it that way (a row of 4 removed does not raise a total, or a MAX).
 cp against_before.xlsx rows.xlsx
 exec sheets rows insert rows.xlsx Data!4
 exec sheets set rows.xlsx Data!A4 Extra Data!B4 10 Data!C4 5 Data!D4 '=B4*C4'
@@ -552,7 +553,7 @@ stdout '^  table  Data!A1:B3  Sales$'
 # left as they were (openpyxl deletes the sheet: they now read nothing) or
 # rewritten with #REF! (sheets and Excel): none is unexplained, and the
 # formulas sheets rewrote are not changes. A name removed is the cause of
-# what used it, ahead of an input changed upstream.
+# what used it, named first, with the input changed upstream after it.
 fixture against_nodata.xlsx against_noname.xlsx against_facts.xlsx
 ! exec sheets check against_nodata.xlsx --against against_before.xlsx
 stdout ', 0 unexplained, 6 features lost,'
@@ -566,7 +567,7 @@ stdout ': 0 inputs changed, 0 formulas changed, 6 computed values moved \(each w
 stdout '^  Summary!B2 +28 → #REF! +sheet removed: Data$'
 ! exec sheets check against_noname.xlsx --against against_before.xlsx
 stdout ', 0 unexplained,'
-stdout '^  Summary!B4 +157.5 → #NAME\? +name TaxRate removed$'
+stdout '^  Summary!B4 +157.5 → #NAME\? +name TaxRate removed, input Data!B2$'
 stdout '^  Summary!B2 +28 → 29 +input Data!B2$'
 stdout '^  name removed: TaxRate = Summary!\$B\$1$'
 
@@ -805,13 +806,13 @@ warning  Summary!B7  labelled "North units" but reads Data!B2, the "East" line; 
 -- rows.out --
 rows.xlsx against against_before.xlsx: 0 inputs changed, 0 formulas changed, 7 computed values moved (each with its cause), 0 unexplained, 0 features lost, 0 unknown
 moved, each with its cause:
-  Data!B7     28 → 34      rows removed: Data!6 in against_before.xlsx
+  Data!B7     28 → 34      rows added: Data!4
   Data!D7     630 → 580    rows removed: Data!6 in against_before.xlsx
-  Summary!B2  28 → 34      rows removed: Data!6 in against_before.xlsx
+  Summary!B2  28 → 34      rows added: Data!4
   Summary!B3  630 → 580    rows removed: Data!6 in against_before.xlsx
   Summary!B4  157.5 → 145  rows removed: Data!6 in against_before.xlsx
   Summary!B5  472.5 → 435  rows removed: Data!6 in against_before.xlsx
-  Summary!B6  9 → 10       rows removed: Data!6 in against_before.xlsx
+  Summary!B6  9 → 10       rows added: Data!4
 structure:
   row added: Data!4
   row removed: Data!6 in against_before.xlsx

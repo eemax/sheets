@@ -52,6 +52,11 @@ type changeReport struct {
 	// pictures, names and tables the file had and no longer has.
 	FeaturesLost     int           `json:"features_lost"`
 	FeaturesLostList []lostFeature `json:"features_lost_list,omitempty"`
+	// FeaturesChanged: validations and conditional formats the command
+	// replaced on the same cells with another of their kind (a dropdown's
+	// items, a bound, a threshold): edited, not lost.
+	FeaturesChanged     int              `json:"features_changed,omitempty"`
+	FeaturesChangedList []changedFeature `json:"features_changed_list,omitempty"`
 	// RulesNotCompared: the validations and conditional formats were too
 	// many to compare after every edit (that many, at most, on the larger
 	// side); the other features were.
@@ -66,12 +71,14 @@ func (r changeReport) MarshalJSON() ([]byte, error) {
 		return marshalPlain(plain(r))
 	}
 	return marshalPlain(struct {
-		Uncounted        bool          `json:"counts_omitted"`
-		FeaturesLost     int           `json:"features_lost"`
-		FeaturesLostList []lostFeature `json:"features_lost_list,omitempty"`
-		RulesNotCompared int           `json:"rules_not_compared,omitempty"`
-		Lint             *changeLint   `json:"lint,omitempty"`
-	}{true, r.FeaturesLost, r.FeaturesLostList, r.RulesNotCompared, r.Lint})
+		Uncounted           bool             `json:"counts_omitted"`
+		FeaturesLost        int              `json:"features_lost"`
+		FeaturesLostList    []lostFeature    `json:"features_lost_list,omitempty"`
+		FeaturesChanged     int              `json:"features_changed,omitempty"`
+		FeaturesChangedList []changedFeature `json:"features_changed_list,omitempty"`
+		RulesNotCompared    int              `json:"rules_not_compared,omitempty"`
+		Lint                *changeLint      `json:"lint,omitempty"`
+	}{true, r.FeaturesLost, r.FeaturesLostList, r.FeaturesChanged, r.FeaturesChangedList, r.RulesNotCompared, r.Lint})
 }
 
 type changeValue struct {
@@ -541,9 +548,13 @@ func (s *session) compare(r *changeReport) {
 		r.RulesNotCompared = max(na, nb)
 	}
 	if len(fa) > 0 {
-		lost := lostFeatures(fa, fb, s.renamed(), nil, s.shiftRef)
+		lost, changed := compareFeatures(fa, fb, s.renamed(), nil, s.shiftRef)
 		r.FeaturesLost = len(lost)
 		r.FeaturesLostList = lost[:min(len(lost), changeListed)]
+		if len(changed) > 0 {
+			r.FeaturesChanged = len(changed)
+			r.FeaturesChangedList = changed[:min(len(changed), changeListed)]
+		}
 	}
 	switch {
 	case !lintable:
@@ -684,9 +695,10 @@ func (a *app) trackBytes(path string, before, after []byte, results ...xlsx.Resu
 	a.changed = nil
 }
 
-// printChange prints the short form: at most 12 lines (the head, what
+// printChange prints the short form: at most 13 lines (the head, what
 // moved, the new errors, three reasons for unknowns and the rest counted,
-// the features lost, the rules not compared, three lint rules).
+// the features lost, those changed, the rules not compared, three lint
+// rules).
 func (a *app) printChange(r *changeReport) {
 	if r == nil {
 		return
@@ -696,10 +708,14 @@ func (a *app) printChange(r *changeReport) {
 		a.printf("%s (a CSV file holds values only)\n", head)
 		return
 	}
+	lost := plural(r.FeaturesLost, "feature") + " lost"
+	if r.FeaturesChanged > 0 {
+		lost += fmt.Sprintf(" (%d changed)", r.FeaturesChanged)
+	}
 	if r.Uncounted {
-		head = "change: cells not compared (an undo restores the file as it was)" + fmt.Sprintf(", %s lost", plural(r.FeaturesLost, "feature"))
+		head = "change: cells not compared (an undo restores the file as it was), " + lost
 	} else {
-		head += fmt.Sprintf(", %s moved, %s, %s, %s lost", plural(r.Moved, "value"), plural(r.Errors, "new error"), plural(r.Unknown, "new unknown"), plural(r.FeaturesLost, "feature"))
+		head += fmt.Sprintf(", %s moved, %s, %s, %s", plural(r.Moved, "value"), plural(r.Errors, "new error"), plural(r.Unknown, "new unknown"), lost)
 	}
 	if r.RulesNotCompared > 0 {
 		head += " (rules not compared)"
@@ -749,6 +765,13 @@ func (a *app) printChange(r *changeReport) {
 			parts = append(parts, p)
 		}
 		a.printf("lost: %s%s\n", strings.Join(parts, ", "), more(r.FeaturesLost, len(r.FeaturesLostList)))
+	}
+	if len(r.FeaturesChangedList) > 0 {
+		var parts []string
+		for _, f := range r.FeaturesChangedList {
+			parts = append(parts, fmt.Sprintf("%s %s (%s → %s)", strings.ReplaceAll(f.Kind, "_", " "), f.Where, grid.Truncate(f.Before, 60), grid.Truncate(f.After, 60)))
+		}
+		a.printf("changed: %s%s\n", strings.Join(parts, ", "), more(r.FeaturesChanged, len(r.FeaturesChangedList)))
 	}
 	if r.RulesNotCompared > 0 {
 		a.printf("lost: validations and conditional formats not compared (%s, more than %s: sheets check --against compares them)\n", plural(r.RulesNotCompared, "rule"), grid.FormatNumber(featureRules))

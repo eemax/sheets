@@ -110,6 +110,13 @@ type Options struct {
 	// inserted through a result are the rows inserted. sheets diff leaves it
 	// off; check --against turns it on.
 	Spills bool
+	// Ranges pairs formulas by what they do, not how far their ranges reach,
+	// so a total whose range a row deleted or inserted shrank or grew
+	// (=SUM(B2:B7) becomes =SUM(B2:B6), the formula a row up) keys its row
+	// as before: a row whose cells held, and whose ranges Excel rewrote, is
+	// the same row, not one removed and another added. sheets diff leaves it
+	// off; check --against turns it on.
+	Ranges bool
 	// Rewrite gives an old formula (on the old version's sheet named) as
 	// Excel would have rewritten it for what changed on other sheets (rows
 	// added there, a sheet renamed), so rows whose formulas read another
@@ -433,8 +440,9 @@ type side struct {
 	wb *grid.Workbook
 	s  *grid.Sheet
 	// epoch counts the dates of a 1904 workbook as the 1900 system does,
-	// for alignment; loose describes formulas without their columns.
-	epoch, loose bool
+	// for alignment; loose describes formulas without their columns, ranges
+	// without the rows they span.
+	epoch, loose, ranges bool
 	// rewrite gives a formula as Excel would have rewritten it (the old
 	// side's, with Options.Rewrite), worked out once per cell in rewritten.
 	rewrite   func(string) string
@@ -531,6 +539,10 @@ const epochDays = 1462
 // columnRefs finds the columns in a formula's pattern (C[-2], C3).
 var columnRefs = regexp.MustCompile(`C(?:\[-?\d+\]|\d+)`)
 
+// rangeRows finds the rows of a range in a formula's pattern (C[-8]R[-1]:
+// C[-8]R[4], its columns kept).
+var rangeRows = regexp.MustCompile(`(C(?:\[-?\d+\]|\d+)?)R(?:\[-?\d+\]|\d+):(C(?:\[-?\d+\]|\d+)?)R(?:\[-?\d+\]|\d+)`)
+
 func (x side) key(row, col int) string {
 	c := x.s.At(row, col)
 	if c == nil || c.IsEmpty() || len(x.results) > 0 && x.inResult(row, col) {
@@ -540,6 +552,9 @@ func (x side) key(row, col int) string {
 		k, _ := formula.Pattern(x.formulaOf(row, col, c.Formula), row, col)
 		if x.loose {
 			k = columnRefs.ReplaceAllString(k, "C")
+		}
+		if x.ranges {
+			k = rangeRows.ReplaceAllString(k, "${1}R:${2}R")
 		}
 		return "=" + k
 	}
@@ -629,6 +644,7 @@ type sheetAlign struct {
 func prepare(A, B side, opts Options) (side, side) {
 	A.epoch, B.epoch = opts.Dates && A.wb.Date1904, opts.Dates && B.wb.Date1904
 	A.loose, B.loose = opts.ColumnShifts, opts.ColumnShifts
+	A.ranges, B.ranges = opts.Ranges, opts.Ranges
 	if opts.Rewrite != nil && A.rewritten == nil {
 		name := A.s.Name
 		A.rewrite = func(f string) string { return opts.Rewrite(name, f) }

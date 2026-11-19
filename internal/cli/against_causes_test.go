@@ -1,0 +1,408 @@
+package cli
+
+import (
+	"archive/zip"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// What check --against gives as the cause of a value that moved: the cause
+// that can move it. Rows a sort moved are no cause of a total over all of
+// them; rows removed are no cause of a MAX that rose; a value nothing listed
+// can account for stays unexplained, and what follows it follows it.
+
+// causesFixture copies against_before.xlsx into a test's folder: Data!A1:D7
+// (Region, Units, Price, Revenue = Units × Price, a total row), Summary
+// (B2 =SUM(Data!B2:B6), B3 =SUM(Data!D2:D6), B4 =B3*TaxRate, B5 =B3-B4,
+// B6 =MAX(Data!B2:B6), B7 =Data!B2) and the name TaxRate = Summary!$B$1.
+func causesFixture(t *testing.T) (dir, before string) {
+	t.Helper()
+	dir = t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before = filepath.Join(dir, "b.xlsx")
+	if err := os.WriteFile(before, mustRead(t, filepath.Join("..", "xlsx", "testdata", "against_before.xlsx")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir, before
+}
+
+// edited copies a workbook and runs sheets commands on the copy: each
+// command's words, the file going in after the first word, or after the
+// second for rows, cols, sheet and chart.
+func edited(t *testing.T, src, dst string, cmds ...[]string) string {
+	t.Helper()
+	if err := os.WriteFile(dst, mustRead(t, src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cmds {
+		n := 1
+		switch c[0] {
+		case "rows", "cols", "sheet", "chart":
+			n = 2
+		}
+		args := append(append(append([]string{}, c[:n]...), dst), c[n:]...)
+		if out, code := runCLI("", args...); code != 0 {
+			t.Fatalf("%v: exit %d: %s", c, code, out)
+		}
+	}
+	return dst
+}
+
+// causesResult is what the tests read of check --against's JSON.
+type causesResult struct {
+	Summary         againstSummary   `json:"summary"`
+	Changed         []changedCell    `json:"changed"`
+	Moved           []movedValue     `json:"moved"`
+	Unexplained     []movedValue     `json:"unexplained"`
+	FeaturesLost    []lostFeature    `json:"features_lost"`
+	FeaturesChanged []changedFeature `json:"features_changed"`
+	Unknown         []unknownValue   `json:"unknown"`
+	Structure       []structureEntry `json:"structure"`
+}
+
+// against runs check --against and reads its JSON.
+func against(t *testing.T, after, before string) (causesResult, int) {
+	t.Helper()
+	out, code := runCLI("", "--json", "check", after, "--against", before)
+	var r causesResult
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	return r, code
+}
+
+// causes maps each value moved to its cause.
+func causes(r causesResult) map[string]string {
+	out := map[string]string{}
+	for _, m := range r.Moved {
+		out[m.Cell] = m.Cause
+	}
+	return out
+}
+
+// A sort and one typed fix: the totals over the sorted rows moved for the
+// input, not for the sort (change-report f5.1); a cell read by position
+// moved for both.
+func TestAgainstCausesSortTotal(t *testing.T) {
+	dir, before := causesFixture(t)
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"sort", "Data!A1:D6", "Units:desc"}, []string{"set", "Data!B2", "11"})
+	r, code := against(t, after, before)
+	m := causes(r)
+	for _, c := range []string{"Data!D7", "Data!B7", "Summary!B2", "Summary!B3", "Summary!B4", "Summary!B5", "Summary!B6"} {
+		if m[c] != "input Data!B2" {
+			t.Errorf("%s: cause %q, want input Data!B2", c, m[c])
+		}
+	}
+	if want := "input Data!B2, rows moved: Data!2 (were Data!5)"; m["Summary!B7"] != want {
+		t.Errorf("Summary!B7 (=Data!B2): cause %q, want %q", m["Summary!B7"], want)
+	}
+	if code != 0 || len(r.Unexplained) != 0 {
+		t.Errorf("exit %d, unexplained %+v", code, r.Unexplained)
+	}
+}
+
+// A sort alone: the totals over the sorted rows did not move; a cell read
+// by position and a lookup did, for the sort.
+func TestAgainstCausesSortLookup(t *testing.T) {
+	dir, before := causesFixture(t)
+	base := edited(t, before, filepath.Join(dir, "base.xlsx"), []string{"set", "Summary!C1", `=VLOOKUP("North",Data!A2:D6,2,FALSE)`,
+		"Summary!C2", "=INDEX(Data!B2:B6,1)", "Summary!C3", "=SUMPRODUCT(Data!B2:B6,Data!C2:C6)", "Summary!C4", "=COUNTIF(Data!B2:B6,\">4\")",
+		"Summary!C5", "=SUM(Data!B2:B3)", "Summary!C6", "=SUMIF(Data!A2:A6,\"North\",Data!B2:B6)"})
+	after := edited(t, base, filepath.Join(dir, "a.xlsx"), []string{"sort", "Data!A1:D6", "Units:desc"})
+	r, code := against(t, after, base)
+	m := causes(r)
+	for _, c := range []string{"Summary!B7", "Summary!C2", "Summary!C5"} {
+		if !strings.HasPrefix(m[c], "rows moved: ") {
+			t.Errorf("%s (read by position): cause %q", c, m[c])
+		}
+	}
+	for _, c := range []string{"Summary!B2", "Summary!B3", "Summary!B6", "Summary!C1", "Summary!C3", "Summary!C4", "Summary!C6", "Data!B7", "Data!D7"} {
+		if _, ok := m[c]; ok {
+			t.Errorf("%s moved: %q", c, m[c])
+		}
+	}
+	if code != 0 || len(r.Unexplained)+len(r.Unknown) != 0 {
+		t.Errorf("exit %d, unexplained %+v, unknown %+v", code, r.Unexplained, r.Unknown)
+	}
+}
+
+// An Excel table's column summed, its rows sorted and one changed: the
+// total moved for the input.
+func TestAgainstCausesSortTable(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before := filepath.Join(dir, "b.xlsx")
+	if err := os.WriteFile(before, mustRead(t, filepath.Join("..", "xlsx", "testdata", "against_table.xlsx")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"sort", "Data!A1:B3", "Units:desc"}, []string{"set", "Data!B3", "6"})
+	r, code := against(t, after, before)
+	if got := causes(r)["Sum!A1"]; got != "input Data!B3" {
+		t.Errorf("Sum!A1 (=SUM(Sales[Units])): cause %q, want input Data!B3 (%+v)", got, r.Moved)
+	}
+	if code != 0 {
+		t.Errorf("exit %d", code)
+	}
+}
+
+// 300 rows sorted, one edited: the total moved for the edit.
+func TestAgainstCausesSortMany(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	var b strings.Builder
+	b.WriteString("Item\tUnits\tPrice\tRevenue\n")
+	for i := 1; i <= 300; i++ {
+		fmt.Fprintf(&b, "I%d\t%d\t%d\t=B{r}*C{r}\n", i, (i*37)%101, 1+i%9)
+	}
+	before := filepath.Join(dir, "b.xlsx")
+	if out, code := runCLI(b.String(), "write", before, "Data!A1"); code != 0 {
+		t.Fatal(out)
+	}
+	if out, code := runCLI("", "set", before, "Data!B302", "=SUM(B2:B301)", "Data!D302", "=SUM(D2:D301)"); code != 0 {
+		t.Fatal(out)
+	}
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"sort", "Data!A1:D301", "Units:desc"}, []string{"set", "Data!B2", "500"})
+	r, code := against(t, after, before)
+	m := causes(r)
+	for _, c := range []string{"Data!B302", "Data!D302"} {
+		if m[c] != "input Data!B2" {
+			t.Errorf("%s: cause %q", c, m[c])
+		}
+	}
+	if code != 0 || r.Summary.MovedRows == 0 {
+		t.Errorf("exit %d, %+v", code, r.Summary)
+	}
+}
+
+// storeResult rewrites the result Summary stores for a cell (results trusted:
+// no full calculation on load).
+func storeResult(t *testing.T, src, dst string, cells map[string]string) {
+	t.Helper()
+	rewriteParts(t, src, dst, func(name string, b []byte) []byte {
+		switch name {
+		case "xl/workbook.xml":
+			return bytes.Replace(b, []byte(` fullCalcOnLoad="true"`), nil, 1)
+		case "xl/worksheets/sheet2.xml":
+			for cell, v := range cells {
+				re := regexp.MustCompile(`(<c r="` + cell + `"[^>]*><f>[^<]*</f>)<v>[^<]*</v>`)
+				was := b
+				if b = re.ReplaceAll(b, []byte("${1}<v>"+v+"</v>")); bytes.Equal(b, was) {
+					t.Fatalf("no result of %s", cell)
+				}
+			}
+		}
+		return b
+	})
+}
+
+// A total whose stored result changed with nothing in it changed, the rows
+// it sums sorted: unexplained, as without the sort (f5.2); the cells that
+// read it and held are told with it, not unknown; one that followed it
+// moved with it as its cause.
+func TestAgainstCausesSortUnexplained(t *testing.T) {
+	dir, before := causesFixture(t)
+	sorted := edited(t, before, filepath.Join(dir, "s.xlsx"), []string{"sort", "Data!A1:D6", "Units:desc"})
+	for _, src := range []string{before, sorted} {
+		after := filepath.Join(dir, "a.xlsx")
+		storeResult(t, src, after, map[string]string{"B3": "999"})
+		r, code := against(t, after, before)
+		if len(r.Unexplained) != 1 || r.Unexplained[0].Cell != "Summary!B3" || code != 1 {
+			t.Fatalf("%s: exit %d, unexplained %+v, moved %+v", filepath.Base(src), code, r.Unexplained, r.Moved)
+		}
+		if got := strings.Join(r.Unexplained[0].Held, " "); got != "Summary!B4 Summary!B5" {
+			t.Errorf("%s: held %q", filepath.Base(src), got)
+		}
+		for _, u := range r.Unknown {
+			t.Errorf("%s: unknown %+v", filepath.Base(src), u)
+		}
+		out, _ := runCLI("", "check", after, "--against", before)
+		if !strings.Contains(out, "Summary!B3  630 → 999  read by Summary!B4, Summary!B5, which hold what they held") {
+			t.Errorf("%s: text:\n%s", filepath.Base(src), out)
+		}
+
+		// The tax followed the total: moved, for it.
+		storeResult(t, src, after, map[string]string{"B3": "999", "B4": "249.75"})
+		r, code = against(t, after, before)
+		if len(r.Unexplained) != 1 || r.Unexplained[0].Cell != "Summary!B3" || code != 1 {
+			t.Fatalf("%s, followed: exit %d, unexplained %+v", filepath.Base(src), code, r.Unexplained)
+		}
+		if got := causes(r)["Summary!B4"]; got != "Summary!B3, which moved with nothing upstream changed" {
+			t.Errorf("%s, followed: Summary!B4's cause %q", filepath.Base(src), got)
+		}
+	}
+}
+
+// A row removed and an input changed in the same column: the MAX that rose,
+// and the totals, moved for the input (f5.3); the cell that read the row
+// removed moved for the removal.
+func TestAgainstCausesRemovedRise(t *testing.T) {
+	dir, before := causesFixture(t)
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", "Data!2"}, []string{"set", "Data!B3", "77"})
+	r, _ := against(t, after, before)
+	m := causes(r)
+	for _, c := range []string{"Summary!B6", "Data!B6", "Data!D6", "Summary!B2", "Summary!B3", "Summary!B4", "Summary!B5"} {
+		if m[c] != "input Data!B3" {
+			t.Errorf("%s: cause %q, want input Data!B3", c, m[c])
+		}
+	}
+	if !strings.HasPrefix(m["Summary!B7"], "rows removed: Data!2") {
+		t.Errorf("Summary!B7 (=Data!B2, now #REF!): cause %q", m["Summary!B7"])
+	}
+	if len(r.Unexplained) != 0 {
+		t.Errorf("unexplained %+v", r.Unexplained)
+	}
+}
+
+// A row removed and an input lowered: the totals fell for both, and say so;
+// the MAX fell for the input (removing 5 leaves 9 the most).
+func TestAgainstCausesRemovedFall(t *testing.T) {
+	dir, before := causesFixture(t)
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", "Data!2"}, []string{"set", "Data!B4", "1"})
+	r, _ := against(t, after, before)
+	m := causes(r)
+	for _, c := range []string{"Data!B6", "Summary!B2"} {
+		if m[c] != "rows removed: Data!2 in "+before+", input Data!B4" {
+			t.Errorf("%s: cause %q", c, m[c])
+		}
+	}
+	if m["Summary!B6"] != "input Data!B4" {
+		t.Errorf("Summary!B6 (MAX 9 → 7): cause %q", m["Summary!B6"])
+	}
+	// The row alone: what it moved is its doing.
+	only := edited(t, before, filepath.Join(dir, "o.xlsx"), []string{"rows", "delete", "Data!2"})
+	r, code := against(t, only, before)
+	for c, cause := range causes(r) {
+		if !strings.HasPrefix(cause, "rows removed: Data!2") {
+			t.Errorf("row removed alone: %s: cause %q", c, cause)
+		}
+	}
+	if len(r.Unexplained) != 0 || code != 1 { // exit 1: Summary!B7 reads #REF!, an error
+		t.Errorf("row removed alone: exit %d, unexplained %+v", code, r.Unexplained)
+	}
+}
+
+// rewriteParts copies a workbook, its parts rewritten.
+func rewriteParts(t *testing.T, src, dst string, rewrite func(name string, b []byte) []byte) {
+	t.Helper()
+	zr, err := zip.OpenReader(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		w, err := zw.Create(f.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Write(rewrite(f.Name, data))
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A row deleted and a cell of the rows below set, on openpyxl's pool file
+// with two rows alike (f5.5): one row removed and one input changed, Excel's
+// own rewrite of a range and of a name no change, and the chart still there
+// not lost.
+func TestAgainstCausesDeleteSetAligned(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before := filepath.Join(dir, "b.xlsx")
+	if err := os.WriteFile(before, mustRead(t, filepath.Join("..", "fuzz", "testdata", "pool", "openpyxl-02.xlsx")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{"B3", "C3"} {
+		after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", "Data!2"}, []string{"set", "Data!" + c, "7"})
+		r, code := against(t, after, before)
+		s := r.Summary
+		if s.FeaturesLost != 0 || s.Inputs != 1 || s.Formulas != 0 || s.Unexplained != 0 || code != 0 {
+			t.Errorf("set %s: exit %d, %+v, lost %+v, changed %+v", c, code, s, r.FeaturesLost, r.Changed)
+		}
+		if len(r.Structure) != 1 || r.Structure[0].Change != "row removed" || r.Structure[0].Where != "Data!2 in "+before {
+			t.Errorf("set %s: structure %+v", c, r.Structure)
+		}
+		if len(r.Changed) == 1 && (r.Changed[0].Cell != "Data!"+c || r.Changed[0].Was != c[:1]+"4") {
+			t.Errorf("set %s: changed %+v", c, r.Changed)
+		}
+	}
+}
+
+// A validation's bound raised on the same cells, a dropdown's items
+// changed, a number's threshold: features changed, not lost, and no exit 1
+// for them (f5.6), in check --against and in the command's own report
+// (f4.3). A highlight's threshold another tool edited, the same.
+func TestAgainstCausesFeaturesChanged(t *testing.T) {
+	dir, before := causesFixture(t)
+	lists := edited(t, before, filepath.Join(dir, "lists.xlsx"), []string{"validate", "Data!F2:F6", "list", "1,2"})
+	for _, c := range []struct {
+		name, before string
+		cmd          []string
+	}{
+		{"bound", before, []string{"validate", "Data!B2:B6", "whole", "between", "0", "and", "5000"}},
+		{"threshold", before, []string{"validate", "Data!C2:C6", "number", ">= 5"}},
+		{"dropdown", lists, []string{"validate", "Data!F2:F6", "list", "1,2,3"}},
+	} {
+		after := filepath.Join(dir, c.name+".xlsx")
+		if err := os.WriteFile(after, mustRead(t, c.before), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, code := runCLI("", append([]string{c.cmd[0], after}, c.cmd[1:]...)...)
+		if code != 0 {
+			t.Fatalf("%s: %s", c.name, out)
+		}
+		if !strings.Contains(out, ", 0 features lost (1 changed)") || !strings.Contains(out, "\nchanged: validation Data!") {
+			t.Errorf("%s: the command's report:\n%s", c.name, out)
+		}
+		changedOK(t, c.name, after, c.before)
+	}
+	cond := filepath.Join(dir, "cond.xlsx")
+	rewriteSheet(t, before, cond, func(b []byte) []byte {
+		return bytes.Replace(b, []byte("<formula>140</formula>"), []byte("<formula>120</formula>"), 1)
+	})
+	changedOK(t, "highlight", cond, before)
+
+	// On other cells it is another rule: the one that was is lost.
+	moved := edited(t, before, filepath.Join(dir, "moved.xlsx"), []string{"validate", "Data!B2:B6", "--clear"}, []string{"validate", "Data!B3:B6", "whole", "between", "0", "and", "5000"})
+	if r, code := against(t, moved, before); len(r.FeaturesLost) != 1 || code != 1 {
+		t.Errorf("rule on other cells: exit %d, lost %+v, changed %+v", code, r.FeaturesLost, r.FeaturesChanged)
+	}
+}
+
+// changedOK checks check --against finds one feature changed and none lost.
+func changedOK(t *testing.T, name, after, before string) {
+	t.Helper()
+	r, code := against(t, after, before)
+	if len(r.FeaturesLost) != 0 || len(r.FeaturesChanged) != 1 || r.Summary.FeaturesChanged != 1 || code != 0 {
+		t.Errorf("%s: exit %d, lost %+v, changed %+v", name, code, r.FeaturesLost, r.FeaturesChanged)
+		return
+	}
+	if f := r.FeaturesChanged[0]; f.Before == f.After || !strings.HasPrefix(f.Where, "Data!") {
+		t.Errorf("%s: %+v", name, f)
+	}
+	text, _ := runCLI("", "check", after, "--against", before)
+	if !strings.Contains(text, "0 features lost (1 changed)") || !strings.Contains(text, "\nfeatures changed: rules edited on the cells they cover (not lost):\n") {
+		t.Errorf("%s: text:\n%s", name, text)
+	}
+}

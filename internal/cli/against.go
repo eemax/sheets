@@ -12,6 +12,7 @@ import (
 
 	"github.com/eemax/sheets/internal/book"
 	"github.com/eemax/sheets/internal/diff"
+	"github.com/eemax/sheets/internal/engine"
 	"github.com/eemax/sheets/internal/formula"
 	"github.com/eemax/sheets/internal/grid"
 	"github.com/eemax/sheets/internal/xlsx"
@@ -30,19 +31,22 @@ type againstResult struct {
 	Against string `json:"against"`
 	// ValuesOnly: a CSV file is one of the two, so only values are
 	// compared (no formulas, causes or features).
-	ValuesOnly   bool             `json:"values_only,omitempty"`
-	Summary      againstSummary   `json:"summary"`
-	Changed      []changedCell    `json:"changed"`
-	Moved        []movedValue     `json:"moved"`
-	Unexplained  []movedValue     `json:"unexplained"`
-	FeaturesLost []lostFeature    `json:"features_lost"`
-	Unknown      []unknownValue   `json:"unknown"`
-	Findings     []checkFinding   `json:"findings"`
-	MovedRows    []movedRows      `json:"moved_rows"`
-	Structure    []structureEntry `json:"structure"`
-	Errors       int              `json:"errors"`
-	Warnings     int              `json:"warnings"`
-	Notes        int              `json:"notes"`
+	ValuesOnly   bool           `json:"values_only,omitempty"`
+	Summary      againstSummary `json:"summary"`
+	Changed      []changedCell  `json:"changed"`
+	Moved        []movedValue   `json:"moved"`
+	Unexplained  []movedValue   `json:"unexplained"`
+	FeaturesLost []lostFeature  `json:"features_lost"`
+	// FeaturesChanged are validations and conditional formats edited on
+	// the cells they cover: not lost.
+	FeaturesChanged []changedFeature `json:"features_changed"`
+	Unknown         []unknownValue   `json:"unknown"`
+	Findings        []checkFinding   `json:"findings"`
+	MovedRows       []movedRows      `json:"moved_rows"`
+	Structure       []structureEntry `json:"structure"`
+	Errors          int              `json:"errors"`
+	Warnings        int              `json:"warnings"`
+	Notes           int              `json:"notes"`
 	// Receipt is what --receipt wrote.
 	Receipt *receiptInfo `json:"receipt,omitempty"`
 	// sides are the two versions (earlier, then the file checked), and
@@ -53,14 +57,15 @@ type againstResult struct {
 }
 
 type againstSummary struct {
-	Inputs       int `json:"inputs_changed"`
-	Formulas     int `json:"formulas_changed"`
-	Flagged      int `json:"flagged"`
-	Moved        int `json:"moved"`
-	Unexplained  int `json:"unexplained"`
-	FeaturesLost int `json:"features_lost"`
-	Unknown      int `json:"unknown"`
-	MovedRows    int `json:"moved_rows"`
+	Inputs          int `json:"inputs_changed"`
+	Formulas        int `json:"formulas_changed"`
+	Flagged         int `json:"flagged"`
+	Moved           int `json:"moved"`
+	Unexplained     int `json:"unexplained"`
+	FeaturesLost    int `json:"features_lost"`
+	FeaturesChanged int `json:"features_changed"`
+	Unknown         int `json:"unknown"`
+	MovedRows       int `json:"moved_rows"`
 }
 
 // changedCell is an input or formula that changed.
@@ -88,6 +93,10 @@ type movedValue struct {
 	// Note says where a value came from when sheets computed it (the file
 	// stores none, or one marked as out of date).
 	Note string `json:"note,omitempty"`
+	// Held, for a value unexplained, are the cells that read it and hold
+	// what they held (the sheets calculator getting otherwise from them
+	// now): they did not follow it. What it moved lists it as its cause.
+	Held []string `json:"held,omitempty"`
 }
 
 // unknownValue is a value sheets cannot compare: unknown on one side, or
@@ -363,7 +372,7 @@ func (a *app) readSide(path string, cr *xlsx.CheckResult) (*sideOf, error) {
 // on path, cr its results (nil for a CSV file).
 func (a *app) against(path, before string, res *checkResult, cr *xlsx.CheckResult) (*againstResult, error) {
 	out := &againstResult{File: path, Against: before, Findings: res.Findings,
-		Changed: []changedCell{}, Moved: []movedValue{}, Unexplained: []movedValue{}, FeaturesLost: []lostFeature{},
+		Changed: []changedCell{}, Moved: []movedValue{}, Unexplained: []movedValue{}, FeaturesLost: []lostFeature{}, FeaturesChanged: []changedFeature{},
 		Unknown: []unknownValue{}, MovedRows: []movedRows{}, Structure: []structureEntry{}}
 	B, err := a.readSide(path, cr)
 	if err != nil {
@@ -386,7 +395,7 @@ func (a *app) against(path, before string, res *checkResult, cr *xlsx.CheckResul
 	r.compare()
 	out.sides, out.renamed = [2]*sideOf{A, B}, r.renamed
 	if !out.ValuesOnly {
-		out.FeaturesLost = lostFeatures(r.fa, r.fb, r.renamed, r.tables, r.shiftRef)
+		out.FeaturesLost, out.FeaturesChanged = compareFeatures(r.fa, r.fb, r.renamed, r.tables, r.shiftRef)
 	}
 	s := &out.Summary
 	for _, c := range out.Changed {
@@ -400,6 +409,7 @@ func (a *app) against(path, before string, res *checkResult, cr *xlsx.CheckResul
 		}
 	}
 	s.Moved, s.Unexplained, s.FeaturesLost, s.Unknown = len(out.Moved), len(out.Unexplained), len(out.FeaturesLost), len(out.Unknown)
+	s.FeaturesChanged = len(out.FeaturesChanged)
 	for _, m := range out.MovedRows {
 		s.MovedRows += m.Rows
 	}
@@ -1342,6 +1352,24 @@ func (r *report) prepare(p diff.SheetPair) *job {
 		p.Rows = r.pairAlike(sa, sb, p.Rows, j.cols)
 		ua, ub := sa.Used(), sb.Used()
 		p.Moved = diff.MovedRows(p.Rows, func(q diff.Pair) bool { return rowEmpty(sa, ua, q.Old) && rowEmpty(sb, ub, q.New) })
+	} else if len(p.Blocks) == 0 {
+		// Rows that swapped places, one of them changed (a sort of two rows,
+		// then an edit): nothing else paired out of order, so the rows the
+		// edit changed align as one removed and another added. Alike, they
+		// moved, when that moves no more rows than they are: a row removed
+		// and an alike one added far from it, the rows between moving up,
+		// were removed and added.
+		if rows := r.pairAlike(sa, sb, p.Rows, j.cols); len(rows) < len(p.Rows) {
+			ua, ub := sa.Used(), sb.Used()
+			moved := diff.MovedRows(rows, func(q diff.Pair) bool { return rowEmpty(sa, ua, q.Old) && rowEmpty(sb, ub, q.New) })
+			n := 0
+			for _, m := range moved {
+				n += m.Rows
+			}
+			if n > 0 && n <= 2*(len(p.Rows)-len(rows)) {
+				p.Rows, p.Moved = rows, moved
+			}
+		}
 	}
 	p.Rows = r.pairSpilled(sa, sb, p.Rows)
 	if len(p.Blocks) == 0 && len(j.colsAdded)+len(j.colsRemoved) == 0 {
@@ -1441,10 +1469,33 @@ func (r *report) record(j *job) []removal {
 		removals = append(removals, removalOf(j.colsRemoved, true))
 	}
 	// Rows moved, whole or in a block of columns, as causes: what reads
-	// them, and what a sort spans (every cell there may hold another row's
-	// now).
+	// them by position, and what a sort spans (every cell there may hold
+	// another row's now). A formula reading the whole span as a set (a
+	// total over the rows sorted) does not follow: the rows moved among
+	// themselves.
 	moves := func(ms []diff.Moved, c1, c2, dc int) {
 		lo, hi := 0, 0
+		for _, m := range ms {
+			if lo == 0 || min(m.From, m.To) < lo {
+				lo = min(m.From, m.To)
+			}
+			hi = max(hi, m.From+m.Rows-1, m.To+m.Rows-1)
+		}
+		if lo == 0 {
+			return
+		}
+		span := grid.Range{R1: lo, C1: max(min(c1, c1-dc), 1), R2: hi, C2: map[bool]int{true: grid.MaxCols, false: max(c2, c2-dc)}[c1 == 0]}
+		var carried []grid.Range
+		for _, m := range ms {
+			carried = append(carried, grid.Range{R1: m.To, C1: max(c1, 1), R2: m.To + m.Rows - 1, C2: map[bool]int{true: grid.MaxCols, false: c2}[c1 == 0]})
+		}
+		// The formulas in the rows that moved moved with them; those the span
+		// takes in besides read rows that held (what moved them is told by
+		// the rows they read).
+		moved := func(rg grid.Range, label string, carried []grid.Range) {
+			r.lineSources = append(r.lineSources, xlsx.Source{Sheet: sb.Name, Range: rg, Readers: true, Reordered: span, Across: dc != 0, Carried: carried})
+			r.lineCauses = append(r.lineCauses, label)
+		}
 		cols, wasCols := "", ""
 		if c1 > 0 {
 			cols = grid.ColName(c1) + ":" + grid.ColName(c2)
@@ -1459,17 +1510,10 @@ func (r *report) record(j *job) []removal {
 			if m.From != m.To || dc != 0 {
 				was = " (were " + movedRange(sa.Name, m.From, m.From+m.Rows-1, c1-dc, c2-dc) + ")"
 			}
-			r.structural(sb.Name, grid.Range{R1: m.To, C1: max(c1, 1), R2: m.To + m.Rows - 1, C2: map[bool]int{true: grid.MaxCols, false: c2}[c1 == 0]},
-				"rows moved: "+movedRange(sb.Name, m.To, m.To+m.Rows-1, c1, c2)+was)
-			if lo == 0 || min(m.From, m.To) < lo {
-				lo = min(m.From, m.To)
-			}
-			hi = max(hi, m.From+m.Rows-1, m.To+m.Rows-1)
+			moved(grid.Range{R1: m.To, C1: max(c1, 1), R2: m.To + m.Rows - 1, C2: map[bool]int{true: grid.MaxCols, false: c2}[c1 == 0]},
+				"rows moved: "+movedRange(sb.Name, m.To, m.To+m.Rows-1, c1, c2)+was, carried)
 		}
-		if lo > 0 {
-			r.structural(sb.Name, grid.Range{R1: lo, C1: max(min(c1, c1-dc), 1), R2: hi, C2: map[bool]int{true: grid.MaxCols, false: max(c2, c2-dc)}[c1 == 0]},
-				"rows moved: "+movedRange(sb.Name, lo, hi, min(c1, c1-dc), max(c2, c2-dc)))
-		}
+		moved(span, "rows moved: "+movedRange(sb.Name, lo, hi, min(c1, c1-dc), max(c2, c2-dc)), []grid.Range{span})
 	}
 	moves(j.moved, 0, 0, 0)
 	for _, b := range j.blocks {
@@ -1510,7 +1554,7 @@ func (r *report) compare() {
 			B.wb.Sheets[0].Name = A.wb.Sheets[0].Name
 		}
 	}
-	opts := diff.Options{Moves: true, LostRefs: true, ColumnShifts: true, Dates: true, Spills: true}
+	opts := diff.Options{Moves: true, LostRefs: true, ColumnShifts: true, Dates: true, Spills: true, Ranges: true}
 	al := diff.Align(A.wb, B.wb, opts)
 	r.renamed = map[string]string{}
 	r.formulaSrc = map[xlsx.At]string{}
@@ -1769,6 +1813,13 @@ func (r *report) compare() {
 	// version): what they read changed, whether Excel shrank a reference
 	// or, with nothing left to read, wrote #REF!.
 	var ta *xlsx.Tracer
+	// A formula that moved, as lines removed cannot move it (a MAX that
+	// rose, a SUM that fell though what was removed was below zero), did not
+	// move for them: what else changed moved it.
+	movedAt := map[xlsx.At]*candidate{}
+	for i := range r.candidates {
+		movedAt[r.candidates[i].at] = &r.candidates[i]
+	}
 	touching := func(sheet string, runs [][2]int, cols bool, label func(k int) string) {
 		if ta == nil {
 			ta = xlsx.NewTracer(A.wb)
@@ -1779,6 +1830,9 @@ func (r *report) compare() {
 				continue // its sheet, row or column was removed
 			}
 			here := xlsx.At{Sheet: m.sheet, Row: m.rowOf(at.Row, at.Col), Col: m.col[at.Col]}
+			if c := movedAt[here]; c != nil && !r.removalMoves(A.wb.Sheet(at.Sheet), at, sheet, runs, cols, c) {
+				continue
+			}
 			if _, seen := r.formulaSrc[here]; !seen && tr.Formula(here.Sheet, here.Row, here.Col) {
 				r.formulaSrc[here] = label(k)
 			}
@@ -1838,6 +1892,82 @@ func lessAt(a, b xlsx.At) bool {
 		return a.Row < b.Row
 	}
 	return a.Col < b.Col
+}
+
+// removalMoves tells whether lines removed from a sheet (runs, numbered as
+// before) can move a formula of the old version (on sa, at at) the way its
+// value moved: a MAX only falls for them, and only when they held its
+// value; a MIN only rises, likewise; a COUNT only falls, when they held a
+// number; a SUM moves against the sum of what they held. A formula that is
+// not one such call over references alone can move either way.
+func (r *report) removalMoves(sa *grid.Sheet, at xlsx.At, sheet string, runs [][2]int, cols bool, c *candidate) bool {
+	x := sa.At(at.Row, at.Col)
+	if x == nil || x.Formula == "" || c.before.cell.Kind != grid.Number || c.after.cell.Kind != grid.Number {
+		return true
+	}
+	call, ok := engine.Outer(x.Formula)
+	ws := r.A.wb.Sheet(sheet)
+	if !ok || ws == nil {
+		return true
+	}
+	switch call.Func {
+	case "MAX", "MIN", "COUNT", "COUNTA", "SUM":
+	default:
+		return true
+	}
+	// What the lines removed held, of what it reads.
+	var sum, hi, lo float64
+	numbers, filled := 0, 0
+	for _, ref := range call.Refs {
+		on := ref.Sheet
+		if on == "" {
+			on = sa.Name
+		}
+		if !strings.EqualFold(on, sheet) {
+			continue
+		}
+		rg := grid.Range{R1: ref.Area.R1, C1: ref.Area.C1, R2: ref.Area.R2, C2: ref.Area.C2}
+		for _, run := range runs {
+			cut := grid.Range{R1: run[0], C1: 1, R2: run[1], C2: grid.MaxCols}
+			if cols {
+				cut = grid.Range{R1: 1, C1: run[0], R2: grid.MaxRows, C2: run[1]}
+			}
+			unknown := false
+			ws.Each(rg.Intersect(cut), func(row, col int, _ *grid.Cell) {
+				v := value(r.A.wb, ws, row, col)
+				switch {
+				case !v.known:
+					unknown = true
+				case v.cell.Kind == grid.Number:
+					n := v.cell.Num
+					if numbers == 0 || n > hi {
+						hi = n
+					}
+					if numbers == 0 || n < lo {
+						lo = n
+					}
+					sum += n
+					numbers++
+				}
+				filled++
+			})
+			if unknown {
+				return true
+			}
+		}
+	}
+	d, was := c.after.num-c.before.num, c.before.num
+	switch call.Func {
+	case "MAX":
+		return d < 0 && numbers > 0 && hi >= was
+	case "MIN":
+		return d > 0 && numbers > 0 && lo <= was
+	case "COUNT":
+		return d < 0 && numbers > 0
+	case "COUNTA":
+		return d < 0 && filled > 0
+	}
+	return sum > 0 && d < 0 || sum < 0 && d > 0
 }
 
 // sameRef tells whether a name refers to the same thing, as Excel rewrites
@@ -2253,6 +2383,15 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	// A value that cells changed moved is the work of all of them that reach
 	// it, not only the nearest.
 	var allOf map[xlsx.At]xlsx.Reach
+	// What rows moved reach alone (sorted: the sources they are), for a
+	// value a cell changed reaches first.
+	var lineOf map[xlsx.At]int
+	var sorted []int
+	for n := r.cells; n < len(r.sources); n++ {
+		if r.sources[n].Reordered.R2 > 0 {
+			sorted = append(sorted, n)
+		}
+	}
 	// A value traces through the cell itself, or through the array formula
 	// whose result it was.
 	places := func(c candidate) []xlsx.At {
@@ -2269,13 +2408,12 @@ func (r *report) trace(tr *xlsx.Tracer) {
 		}
 		return 0, false
 	}
-	// causeText says what moved a value whose nearest cause is source k: when
-	// that is a cell changed, each of those that reach it (the first few).
+	// causeText says what moved a value whose nearest cause is source k: the
+	// structure change k is, when it is one, then each of the cells changed
+	// that reach it (the first few): an input that changed is always named,
+	// whatever rows were removed or moved around it.
 	causeText := func(c candidate, k int) string {
-		if k >= r.cells {
-			return r.causes[k]
-		}
-		if allOf == nil {
+		if allOf == nil && r.cells > 0 {
 			allOf = tr.SpreadAll(r.sources[:r.cells], causeListed)
 		}
 		var got xlsx.Reach
@@ -2285,15 +2423,32 @@ func (r *report) trace(tr *xlsx.Tracer) {
 				break
 			}
 		}
-		if len(got.Sources) < 2 && !got.More {
-			return r.causes[k]
+		var labels []string
+		if k >= r.cells {
+			labels = append(labels, r.causes[k])
 		}
-		labels := make([]string, len(got.Sources))
-		for i, n := range got.Sources {
-			labels[i] = r.causes[n]
+		for _, n := range got.Sources {
+			labels = append(labels, r.causes[n])
 		}
 		if got.More {
 			labels = append(labels, "and more")
+		}
+		if len(labels) == 0 {
+			labels = append(labels, r.causes[k])
+		}
+		if k < r.cells && len(sorted) > 0 {
+			// A cell changed is nearest; rows a sort moved may reach it too,
+			// read by position (a lookup, a cell of a sorted row).
+			if lineOf == nil {
+				srcs := make([]xlsx.Source, len(sorted))
+				for i, n := range sorted {
+					srcs[i] = r.sources[n]
+				}
+				lineOf = tr.Spread(srcs)
+			}
+			if n, ok := cause(lineOf, c); ok {
+				labels = append(labels, r.causes[sorted[n]])
+			}
 		}
 		return strings.Join(labels, ", ")
 	}
@@ -2328,17 +2483,21 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	if len(shiftSrc) > 0 {
 		shiftReach = tr.Spread(shiftSrc)
 	}
-	for _, c := range r.candidates {
+	// Each value moved with its cause, or unexplained (nil: unknown, listed
+	// as it is found), in the candidates' order.
+	verdicts := make([]*movedValue, len(r.candidates))
+	var unexplained []int // the candidates unexplained
+	for i, c := range r.candidates {
 		here := cellAt(c.at.Sheet, c.at.Row, c.at.Col)
-		moved := movedValue{Cell: here, Was: c.was, Before: c.before.text, After: c.after.text, Note: c.note}
+		moved := &movedValue{Cell: here, Was: c.was, Before: c.before.text, After: c.after.text, Note: c.note}
 		if c.cause != "" {
 			moved.Cause = c.cause
-			out.Moved = append(out.Moved, moved)
+			verdicts[i] = moved
 			continue
 		}
 		if k, ok := cause(causeOf, c); ok {
 			moved.Cause = causeText(c, k)
-			out.Moved = append(out.Moved, moved)
+			verdicts[i] = moved
 			continue
 		}
 		at := anchorOf(c)
@@ -2352,11 +2511,39 @@ func (r *report) trace(tr *xlsx.Tracer) {
 		}
 		if k, ok := cause(shiftReach, c); ok {
 			moved.Cause = shiftCause[k]
-			out.Moved = append(out.Moved, moved)
+			verdicts[i] = moved
 			continue
 		}
-		out.Unexplained = append(out.Unexplained, moved)
+		verdicts[i] = moved
+		unexplained = append(unexplained, i)
 	}
+	// What follows a value that moved unexplained follows it: a value it
+	// moved moved with it as its cause, and one that holds what it held is
+	// told with it. The values unexplained that none of the others reach are
+	// the ones to look at.
+	rootOf, roots := r.followers(tr, unexplained, anchorOf)
+	isRoot := map[int]bool{}
+	for _, i := range roots {
+		isRoot[i] = true
+	}
+	for _, i := range unexplained {
+		if k, ok := cause(rootOf, r.candidates[i]); ok && !isRoot[i] {
+			root := r.candidates[roots[k]]
+			verdicts[i].Cause = cellAt(root.at.Sheet, root.at.Row, root.at.Col) + ", which moved with nothing upstream changed"
+		}
+	}
+	at := map[int]int{} // each root's place in out.Unexplained
+	for i, v := range verdicts {
+		switch {
+		case v == nil:
+		case isRoot[i]:
+			at[i] = len(out.Unexplained)
+			out.Unexplained = append(out.Unexplained, *v)
+		default:
+			out.Moved = append(out.Moved, *v)
+		}
+	}
+	held := map[int][]string{} // by root
 	// Values that held though what they read changed, whose stored results
 	// the sheets calculator gets otherwise from what they read now: results
 	// left as they were (written without recalculating, or by Excel
@@ -2364,6 +2551,9 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	for _, h := range r.held {
 		k, ok := causeOf[h.at]
 		if !ok {
+			if k, ok := rootOf[h.at]; ok {
+				held[roots[k]] = append(held[roots[k]], cellAt(h.at.Sheet, h.at.Row, h.at.Col))
+			}
 			continue
 		}
 		if d, ok := r.A.differ[h.old]; ok && sameResults(calcValue(r.A.wb, nil, d.Calc), h.calc) {
@@ -2374,6 +2564,50 @@ func (r *report) trace(tr *xlsx.Tracer) {
 			Why: "its result may be out of date (written without recalculating): it holds what it held, though what it reads changed (" +
 				r.causes[k] + "), and the sheets calculator gets " + h.calc.text + " from it now; Excel's result is kept"})
 	}
+	for i, cells := range held {
+		out.Unexplained[at[i]].Held = cells
+	}
+}
+
+// followers works out which of the values that moved unexplained (indexes
+// of candidates) follow others: it gives the roots, those no other reaches
+// (one of a loop, if all are), and the cells the roots reach, each with the
+// index among the roots of the nearest.
+func (r *report) followers(tr *xlsx.Tracer, unexplained []int, anchorOf func(candidate) xlsx.At) (map[xlsx.At]int, []int) {
+	if len(unexplained) == 0 {
+		return nil, nil
+	}
+	sources := func(idx []int) []xlsx.Source {
+		out := make([]xlsx.Source, len(idx))
+		for n, i := range idx {
+			at := anchorOf(r.candidates[i])
+			out[n] = xlsx.Source{Sheet: at.Sheet, Range: grid.Range{R1: at.Row, C1: at.Col, R2: at.Row, C2: at.Col}, Readers: true}
+		}
+		return out
+	}
+	reached := func(m map[xlsx.At]int, idx []int, i int) bool {
+		c := r.candidates[i]
+		for _, at := range []xlsx.At{c.at, anchorOf(c)} {
+			if k, ok := m[at]; ok && idx[k] != i {
+				return true
+			}
+		}
+		return false
+	}
+	all := tr.Spread(sources(unexplained))
+	var roots []int
+	for _, i := range unexplained {
+		if !reached(all, unexplained, i) {
+			roots = append(roots, i)
+		}
+	}
+	if len(roots) == 0 {
+		roots = unexplained[:1]
+	}
+	if len(roots) == len(unexplained) {
+		return all, roots
+	}
+	return tr.Spread(sources(roots)), roots
 }
 
 // shiftCause names what moved a formula a sort or lines added or removed
@@ -2492,7 +2726,11 @@ func (a *app) printAgainst(r *againstResult) {
 		if s.Moved > 0 {
 			moved += " (each with its cause)"
 		}
-		parts = append(parts, moved, grid.FormatNumber(float64(s.Unexplained))+" unexplained", countOf(s.FeaturesLost, "feature")+" lost", grid.FormatNumber(float64(s.Unknown))+" unknown")
+		lost := countOf(s.FeaturesLost, "feature") + " lost"
+		if s.FeaturesChanged > 0 {
+			lost += " (" + grid.FormatNumber(float64(s.FeaturesChanged)) + " changed)"
+		}
+		parts = append(parts, moved, grid.FormatNumber(float64(s.Unexplained))+" unexplained", lost, grid.FormatNumber(float64(s.Unknown))+" unknown")
 	}
 	if s.MovedRows > 0 {
 		parts = append(parts, countOf(s.MovedRows, "row")+" moved")
@@ -2516,7 +2754,7 @@ func (a *app) printAgainst(r *againstResult) {
 	if section("unexplained: values that moved with nothing upstream changed", len(r.Unexplained)) {
 		tw := a.table()
 		for _, m := range r.Unexplained[:min(len(r.Unexplained), againstListed)] {
-			tw.row("  "+withWas(m.Cell, m.Was), change(m.Before, m.After), clipNote(m.Note))
+			tw.row("  "+withWas(m.Cell, m.Was), change(m.Before, m.After), clipNote(unexplainedNote(m)))
 		}
 		tw.Flush()
 		more(len(r.Unexplained))
@@ -2528,6 +2766,14 @@ func (a *app) printAgainst(r *againstResult) {
 		}
 		tw.Flush()
 		more(len(r.FeaturesLost))
+	}
+	if section("features changed: rules edited on the cells they cover (not lost)", len(r.FeaturesChanged)) {
+		tw := a.table()
+		for _, f := range r.FeaturesChanged[:min(len(r.FeaturesChanged), againstListed)] {
+			tw.row("  "+f.Kind, clip(f.Where), change(f.Before, f.After))
+		}
+		tw.Flush()
+		more(len(r.FeaturesChanged))
 	}
 	var flagged, plain []changedCell
 	for _, c := range r.Changed {
@@ -2621,6 +2867,27 @@ func (t *table) Flush() {
 			t.a.printf("%s\n", strings.TrimRight(l, " \n"))
 		}
 	}
+}
+
+// unexplainedNote is what text output says beside a value unexplained:
+// where it came from, and the cells reading it that held.
+func unexplainedNote(m movedValue) string {
+	note := m.Note
+	if len(m.Held) > 0 {
+		cells := strings.Join(m.Held[:min(len(m.Held), causeListed)], ", ")
+		if len(m.Held) > causeListed {
+			cells += " and " + grid.FormatNumber(float64(len(m.Held)-causeListed)) + " more"
+		}
+		h := "read by " + cells + ", which holds what it held"
+		if len(m.Held) > 1 {
+			h = "read by " + cells + ", which hold what they held"
+		}
+		if note != "" {
+			note += "; "
+		}
+		note += h
+	}
+	return note
 }
 
 func withWas(cell, was string) string {

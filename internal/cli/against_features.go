@@ -16,7 +16,33 @@ import (
 // in the same place or by the same name, a name or table by its name. Never
 // one of its kind alone: another validation, another chart on the sheet is
 // no reason to say nothing of the one that is gone. Where a feature was is
-// where the rows and columns added and removed since put it.
+// where the rows and columns added and removed since put it. A validation
+// or conditional format whose cells hold another of its kind now, its rule
+// edited, is changed, not lost.
+
+// changedFeature is a validation or conditional format the new version
+// holds on the same cells as one of the old version (where the rows and
+// columns added and removed put them), of the same kind, whose rule is
+// another: an edit of it (a dropdown's items, a bound, a threshold), not a
+// loss.
+type changedFeature struct {
+	Kind   string `json:"kind"` // validation, conditional_format
+	Where  string `json:"where"`
+	What   string `json:"what,omitempty"` // as it is now
+	Before string `json:"before"`         // its rule, as it was
+	After  string `json:"after"`
+}
+
+// ruleText shows a rule: its type, operator and formulas.
+func ruleText(f xlsx.Feature) string {
+	var parts []string
+	for _, p := range strings.Split(f.Rule, "|") {
+		if p = strings.TrimSpace(p); p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return strings.TrimSpace(typeKey(f.Type) + " " + strings.Join(parts, " "))
+}
 
 // shiftFunc gives a reference of the old version (a range, a cell, or a
 // chart's series as Sheet!$B$2:$B$9; unqualified ones are on home, a sheet
@@ -24,10 +50,18 @@ import (
 // "" when it was removed.
 type shiftFunc func(home, ref string) string
 
-// lostFeatures are what the old version carries that the new one lost. renamed
-// maps each old sheet (lower-cased) to its new name ("" for a sheet removed),
-// tables each Excel table renamed (old name lower-cased) to its new name.
+// lostFeatures are what the old version carries that the new one lost (see
+// compareFeatures).
 func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]string, shift shiftFunc) []lostFeature {
+	lost, _ := compareFeatures(before, after, renamed, tables, shift)
+	return lost
+}
+
+// compareFeatures gives what the old version carries that the new one lost,
+// and the validations and conditional formats changed. renamed maps each old
+// sheet (lower-cased) to its new name ("" for a sheet removed), tables each
+// Excel table renamed (old name lower-cased) to its new name.
+func compareFeatures(before, after []xlsx.Feature, renamed, tables map[string]string, shift shiftFunc) ([]lostFeature, []changedFeature) {
 	if shift == nil {
 		shift = func(_, ref string) string { return ref }
 	}
@@ -217,6 +251,40 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 			}
 		}
 	}
+	// A rule not kept whose cells hold another of its kind now was edited:
+	// changed, the other of its type first.
+	var changed []changedFeature
+	byPlace := map[string][]int{}
+	for i, g := range after {
+		if !used[i] && (g.Kind == xlsx.FeatureValidation || g.Kind == xlsx.FeatureCond) {
+			k := g.Kind + "\x00" + strings.ToLower(g.Sheet) + "\x00" + placeKey(g.Where)
+			byPlace[k] = append(byPlace[k], i)
+		}
+	}
+	for _, sameType := range []bool{true, false} {
+		for i, f := range before {
+			if kept[i] || f.Kind != xlsx.FeatureValidation && f.Kind != xlsx.FeatureCond {
+				continue
+			}
+			home, ok := nowOf(f)
+			p := moved(f, home)
+			if !ok || p == "" {
+				continue
+			}
+			for _, j := range byPlace[f.Kind+"\x00"+strings.ToLower(home)+"\x00"+p] {
+				g := after[j]
+				if used[j] || sameType && typeKey(g.Type) != typeKey(f.Type) {
+					continue
+				}
+				used[j], kept[i] = true, true
+				changed = append(changed, changedFeature{Kind: f.Kind, Where: grid.QuoteSheet(g.Sheet) + "!" + g.Where, What: g.What, Before: ruleText(f), After: ruleText(g)})
+				break
+			}
+		}
+	}
+	if changed == nil {
+		changed = []changedFeature{}
+	}
 	var out []lostFeature
 	for i, f := range before {
 		if kept[i] {
@@ -234,7 +302,7 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 	if out == nil {
 		out = []lostFeature{}
 	}
-	return out
+	return out, changed
 }
 
 // typeKey names a rule's type: a validation of no type allows any value.

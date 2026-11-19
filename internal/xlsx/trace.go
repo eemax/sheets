@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/eemax/sheets/internal/engine"
 	"github.com/eemax/sheets/internal/formula"
 	"github.com/eemax/sheets/internal/grid"
 )
@@ -28,6 +29,19 @@ type Source struct {
 	// Readers: only what reads the cells follows, not the formulas among
 	// them (rows that moved, with their formulas, which read as before).
 	Readers bool
+	// Reordered is the block the cells moved within, among themselves (rows
+	// a sort moved, cells cut and pasted): a formula reading them only as a
+	// set (SUM, MAX, COUNT, an average, a table's column) over the whole of
+	// the block's rows does not follow, as no reordering changes what it
+	// computes. Across: they moved across columns too, so the set must take
+	// in the block's columns as well. Zero for cells that changed.
+	Reordered grid.Range
+	Across    bool
+	// Carried are the cells of the block that moved (as numbered now): a
+	// formula among them moved with what it reads, rewritten as for a copy,
+	// so it does not follow the source (what moved it, if anything, is the
+	// row it now stands in).
+	Carried []grid.Range
 }
 
 // Tracer follows a workbook's formulas forward from cells.
@@ -42,6 +56,7 @@ type Tracer struct {
 	sheets map[string]*grid.Sheet
 	used   map[string]grid.Range // what each sheet uses, by lower-cased name
 	idx    *depIndex             // who reads what, kept for SpreadAll
+	wb     *grid.Workbook
 }
 
 type arrayAt struct {
@@ -52,7 +67,7 @@ type arrayAt struct {
 // NewTracer reads what each formula of a workbook reads.
 func NewTracer(wb *grid.Workbook) *Tracer {
 	t := &Tracer{opaque: map[cellKey]string{}, at: map[cellKey]int{}, arrays: map[cellKey]arrayAt{},
-		anchor: map[cellKey]cellKey{}, names: map[string][]cellKey{}, sheets: map[string]*grid.Sheet{}, used: map[string]grid.Range{}}
+		anchor: map[cellKey]cellKey{}, names: map[string][]cellKey{}, sheets: map[string]*grid.Sheet{}, used: map[string]grid.Range{}, wb: wb}
 	rs := wbResolver(wb)
 	for _, s := range wb.Sheets {
 		t.sheets[strings.ToLower(s.Name)] = s
@@ -193,7 +208,9 @@ func (t *Tracer) Using(name string) []At {
 // other formulas: each it reaches (and each cell of an array formula's
 // result) gets the index of the source that reaches it first, breadth
 // first, so the nearest cause. Formulas whose reads cannot be told
-// (Opaque) are not reached, but a formula given as a source spreads.
+// (Opaque) are not reached, but a formula given as a source spreads. The
+// cells of a source Reordered are not followed by a formula that reads
+// them as a set over the whole block (see Source).
 func (t *Tracer) Spread(sources []Source) map[At]int {
 	x := &depIndex{cells: map[cellKey][]int{}, columns: map[cellKey]*rowTree{}, wide: map[string]map[grid.Range][]int{}}
 	for id, refs := range t.refs {
@@ -205,15 +222,20 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 	type item struct {
 		k   cellKey
 		src int
+		// reordered: a cell of a source Reordered, whose readers are found
+		// without taking them from the index (another way to the cell may
+		// still be followed by all of them).
+		reordered bool
 	}
 	var queue []item
-	// queued: cells whose readers are looked for; reached: formulas (and
-	// array results) that follow a source.
-	queued, reached := map[cellKey]bool{}, map[cellKey]bool{}
+	// queued: cells whose readers are looked for (queuedR: as cells of a
+	// source Reordered); reached: formulas (and array results) that follow a
+	// source.
+	queued, queuedR, reached := map[cellKey]bool{}, map[cellKey]bool{}, map[cellKey]bool{}
 	push := func(k cellKey, src int) {
 		if !queued[k] {
 			queued[k] = true
-			queue = append(queue, item{k, src})
+			queue = append(queue, item{k, src, false})
 		}
 	}
 	var reach func(k cellKey, src int)
@@ -248,19 +270,133 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 					reach(k, i) // a formula changed: what it computes follows
 					continue
 				}
+				if s.Reordered.R2 > 0 {
+					if !queued[k] && !queuedR[k] {
+						queuedR[k] = true
+						queue = append(queue, item{k, i, true})
+					}
+					continue
+				}
 				push(k, i)
 			}
 		}
 	}
+	free := map[[2]int]bool{} // by formula and source: reads the source's block as a set
 	for len(queue) > 0 {
 		it := queue[0]
 		queue = queue[1:]
-		x.readers(it.k, func(id int) {
-			f := t.fs[id]
-			reach(keyOf(f.sheet, f.row, f.col), it.src)
+		if !it.reordered {
+			x.readers(it.k, func(id int) {
+				f := t.fs[id]
+				reach(keyOf(f.sheet, f.row, f.col), it.src)
+			})
+			continue
+		}
+		if queued[it.k] {
+			continue // reached another way too: followed as that
+		}
+		x.readersOf(it.k, func(id int) {
+			src := sources[it.src]
+			if f := t.fs[id]; strings.EqualFold(f.sheet, src.Sheet) {
+				for _, rg := range src.Carried {
+					if rg.Contains(f.row, f.col) {
+						return
+					}
+				}
+			}
+			key := [2]int{id, it.src}
+			isFree, ok := free[key]
+			if !ok {
+				isFree = t.orderFree(id, src)
+				free[key] = isFree
+			}
+			if !isFree {
+				f := t.fs[id]
+				reach(keyOf(f.sheet, f.row, f.col), it.src)
+			}
 		})
 	}
 	return out
+}
+
+// orderFree tells whether a formula reads what it reads of a source's
+// block (Source.Reordered) only as a set over all of its rows (and, Across,
+// its columns): ranges given whole to SUM, MAX, COUNT and the like, those a
+// SUMIF or SUMPRODUCT pairs spanning the same rows within the block.
+func (t *Tracer) orderFree(id int, s Source) bool {
+	f := t.fs[id]
+	reads, ok := engine.OrderReads(f.calc, func(sheet, n string) (engine.RefArg, bool) { return t.nameRef(f.sheet, sheet, n) })
+	if !ok {
+		return false
+	}
+	p := s.Reordered
+	type groupRef struct {
+		on bool
+		rg grid.Range
+	}
+	groups := map[int][]groupRef{}
+	touched := map[int]bool{}
+	read := false
+	for _, r := range reads {
+		sheet := r.Sheet
+		if sheet == "" {
+			sheet = f.sheet
+		}
+		rg := grid.Range{R1: r.Area.R1, C1: r.Area.C1, R2: r.Area.R2, C2: r.Area.C2}
+		on := strings.EqualFold(sheet, s.Sheet)
+		hit := on && !rg.Intersect(p).Empty()
+		if r.Group > 0 {
+			groups[r.Group] = append(groups[r.Group], groupRef{on, rg})
+			touched[r.Group] = touched[r.Group] || hit
+		}
+		if !hit {
+			continue
+		}
+		read = true
+		if !r.Set || rg.R1 > p.R1 || rg.R2 < p.R2 || s.Across && (rg.C1 > p.C1 || rg.C2 < p.C2) {
+			return false
+		}
+	}
+	for g, refs := range groups {
+		if !touched[g] {
+			continue
+		}
+		for _, x := range refs {
+			if s.Across || !x.on || x.rg.R1 != refs[0].rg.R1 || x.rg.R2 != refs[0].rg.R2 || x.rg.C1 < p.C1 || x.rg.C2 > p.C2 {
+				return false
+			}
+		}
+	}
+	return read
+}
+
+// nameRef resolves a defined name a formula on home uses (qualified by
+// sheet, or not) to the reference it stands for.
+func (t *Tracer) nameRef(home, sheet, name string) (engine.RefArg, bool) {
+	var found *grid.DefinedName
+	for i, n := range t.wb.Names {
+		if !strings.EqualFold(n.Name, name) {
+			continue
+		}
+		scope := sheet
+		if scope == "" {
+			scope = home
+		}
+		switch {
+		case strings.EqualFold(n.Scope, scope):
+			found = &t.wb.Names[i]
+		case n.Scope == "" && found == nil:
+			found = &t.wb.Names[i]
+		}
+	}
+	if found == nil {
+		return engine.RefArg{}, false
+	}
+	r, ok := engine.Reference(strings.TrimPrefix(found.Ref, "="))
+	if ok && r.Sheet == "" && found.Scope != "" {
+		r.Sheet = found.Scope
+	}
+	return r, ok
 }
 
 // Reach is the sources that reach a cell: the indexes of the lowest few, in
