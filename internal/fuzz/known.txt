@@ -211,3 +211,26 @@ bug full-keeps-array-metadata: write,set,do editors; repro long 70255300604; det
 # =IF(N("p")=0,'Data'!C2:C3*10), is #VALUE! in the full editor's file and
 # 637.4 in the streaming one's).
 bug intersection-kept: script editors; repro long 91548805029; detail ![A-Z]+[0-9]+ \(=IF\(N\("p"\)=0,[^()]*:[^()]*\)\): stream holds (number [^,]*|error "#VALUE!"), full holds (number [^,]*|error "#VALUE!")$; edit \.(insert|delete)\(
+
+# New (fix round 3: the pools of runs from seed 2,000,000 hold notes, and the
+# reach invariant judges what a sheet holds besides cells). Two bugs of notes,
+# found by the first long runs on them.
+#
+# The streaming editor writes the Excel 2010 elements of a note's drawing
+# (<x:Anchor>, <x:AutoFill>, <x:Row>, <x:Column>) with the prefix x, where
+# openpyxl's file declares the namespace as ns2 (the whole drawing uses ns0,
+# ns1 and ns2): after rows or columns are inserted or deleted, the part is not
+# well-formed (the prefix "x" is not declared), and Excel calls the file
+# corrupt. Seed 2000031's run: `sheets rows insert book.xlsx 'Data!3' -n 3` on
+# a workbook whose notes openpyxl wrote. About a seventh of long mode's
+# findings in a 4-minute run: it ends each sequence that reaches it.
+bug stream-note-prefix: rows-insert,rows-delete,cols-insert,cols-delete,script,do xml; repro long 200003100051; detail stream editor: xl/drawings/commentsDrawing[0-9]+\.vml: <v:shape>: the prefix "[vx]" is not declared$
+# A sheet copied that holds a note: the next edit of the workbook loses the
+# note of the sheet it was copied from (XlsxWriter's files; both sheets keep
+# the one comments part, and the next edit saves one of them), by either
+# editor, or by only the full one (the editors invariant's face). After
+# `sheets sheet copy book.xlsx Data Backup`, `sheets set book.xlsx 'Backup!K2' x`
+# leaves Data!C1's note nowhere. (openpyxl's: the copy holds no note at all,
+# which no invariant judges: a sheet made as a copy is all in the reach.)
+bug sheet-copy-note: set,write,clear,copy,move,sort,replace,rows-insert,rows-delete,cols-insert,cols-delete,sheet-rename,sheet-add,sheet-copy,script,do reach; repro long 200003100025; detail : outside the edit's reach, the note "(?:[^"\\]|\\.)*" on [A-Z]+[0-9]+ is not there as it was: the edit's shifts give the note "(?:[^"\\]|\\.)*" on [A-Z]+[0-9]+, and the sheet holds nothing of its kind$
+bug sheet-copy-note: set,write,clear,copy,move,sort,replace,rows-insert,rows-delete,cols-insert,cols-delete,sheet-rename,sheet-add,sheet-copy,script,do editors; repro long 200003100415; detail ![^!]*the (streaming|full) editor's file holds note [A-Z]+[0-9]+ ".*", the (streaming|full) editor's does not$

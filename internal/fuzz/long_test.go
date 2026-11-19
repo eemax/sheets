@@ -614,6 +614,19 @@ func TestKnownFaces(t *testing.T) {
 		// A formula read by its row, moved by a script's insert (seed 915488).
 		{"script", "editors", `R&D!C3 (=IF(N("p")=0,'Data'!C2:C3*2)): stream holds number 6, full holds number 0.58`, script(`ws.getRange("H7").setFormula("=IF(N(\"p\")=0,NOT(F7))");` + "\n" + `ws.getRange("1:1").insert("Down");`), "intersection-kept"},
 		{"script", "editors", `Notes!C1 (=IF(N("p")=0,'Data'!C2:C3*10)): stream holds number 637.4, full holds error "#VALUE!"`, script(`ws.getRange("1:1").delete("Up");`), "intersection-kept"},
+		// Notes (fix round 3): the streaming editor's drawing prefix, and a note
+		// lost after a sheet was copied.
+		{"rows-insert", "xml", `stream editor: xl/drawings/commentsDrawing1.vml: <v:shape>: the prefix "x" is not declared`, plain("rows-insert"), "stream-note-prefix"},
+		{"cols-delete", "xml", `stream editor: xl/drawings/commentsDrawing1.vml: <v:shape>: the prefix "v" is not declared`, plain("cols-delete"), "stream-note-prefix"},
+		{"rows-insert", "xml", `stream editor: xl/worksheets/sheet1.xml: <row>: the prefix "x" is not declared`, plain("rows-insert"), ""},
+		{"set", "xml", `stream editor: xl/drawings/commentsDrawing1.vml: <v:shape>: the prefix "x" is not declared`, plain("set"), ""},
+		{"clear", "reach", `Data: outside the edit's reach, the note "check this" on C1 is not there as it was: the edit's shifts give the note "check this" on C1, and the sheet holds nothing of its kind`, plain("clear"), "sheet-copy-note"},
+		{"do", "reach", `Q 2027: outside the edit's reach, the note "say \"hi\"" on F1 is not there as it was: the edit's shifts give the note "say \"hi\"" on F1, and the sheet holds nothing of its kind`, plain("do"), "sheet-copy-note"},
+		{"set", "editors", `Data!the streaming editor's file holds note D1 "check this" "\"check this\" false" "" "", the full editor's does not`, plain("set"), "sheet-copy-note"},
+		{"rows-insert", "editors", `Data!the full editor's file holds note B4 "check this" "\"check this\" false" "" "", the streaming editor's does not`, plain("rows-insert"), "sheet-copy-note"},
+		// A note's text changed, or a note made, is another bug.
+		{"set", "reach", `Data: outside the edit's reach, the note "check this" on C1 is not there as it was: the edit's shifts give the note "check this" on C1, and the sheet holds note "other" on C1`, plain("set"), ""},
+		{"set", "reach", `Data: outside the edit's reach, the edit made a note "check this" on C1 it does not name`, plain("set"), ""},
 		// New: not a known bug's.
 		{"script", "editors", `Notes!C1 (=IF(N("p")=0,'Data'!C2:C3*10)): stream holds number 637.4, full holds error "#REF!"`, script(`ws.getRange("1:1").delete("Up");`), ""},
 		{"script", "editors", `R&D!C3 (=IF(N("p")=0,SUM('Data'!C2:C3))): stream holds number 6, full holds number 0.58`, script(`ws.getRange("1:1").insert("Down");`), ""},
