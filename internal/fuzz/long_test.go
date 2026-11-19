@@ -575,6 +575,10 @@ func TestKnownFaces(t *testing.T) {
 		{"replace", "reach", `Data!E1: outside the edit's reach, it held text "1200", and holds text "Column5" now`, plain("replace"), "table-header-renamed"},
 		{"script", "editors", `Q 2026!F4: stream holds number 2, full holds text "!"`, Edit{Class: "script", Args: []string{"script", FileArg, "-e", "const ws = workbook.getWorksheet(\"Q 2026\");\nws.getRange(\"E4\").setFormula(\"=IF(N(\\\"d\\\")=0,SEQUENCE(1,2))\");\nws.getRange(\"F2\").setFormula(\"=IF(N(\\\"d\\\")=0,A2:A4&\\\"!\\\")\");\n"}}, "map-order"},
 		{"write", "editors", `R&D 2!E4: stream holds number 2, full holds text ""`, Edit{Class: "write", Args: []string{"write", FileArg, "R&D 2!D2", "--from", "tsv"}, Stdin: "=IF(N(\"p\")=0,OR(F2,D2>250))\t=IF(N(\"d\")=0,A2:A4&\"!\")\n=IF(N(\"d\")=0,SEQUENCE(1,2))\n"}, "map-order"},
+		// A script's paste over a dynamic array an earlier edit set: a formula
+		// in one editor's file, none in the other's (seed 720212).
+		{"script", "editors", `Data!H7: stream has =IF(N("p")=0,IF(#REF!>1000,1,"")), full has =`, script(`ws.getRange("F4").copyFrom("H5:J8");` + "\n" + `ws.getRange("H5").moveTo("F13");`), "map-order"},
+		{"script", "editors", `Data!H6: stream has =, full has =IF(N("p")=0,IF(#REF!>1000,1,""))`, script(`ws.getRange("F4").copyFrom("H5:J8");` + "\n" + `ws.getRange("H5").moveTo("F13");`), "map-order"},
 		{"replace", "kinds", `stream editor: sheet1.xml K12: =IF(N("d")=0,PRODUCT(IF(#REF!:#REF!>3,#REF!:#REF!))) is stored as a plain formula, not a dynamic array`, plain("replace"), "replace-loses-kind"},
 		// A batch or a script holding an insert or a delete (the audit's seed
 		// 664355, fuzzer-long's audit f1.1).
@@ -620,6 +624,10 @@ func TestKnownFaces(t *testing.T) {
 		{"script", "kinds", `stream editor: sheet1.xml U2: =IF(N("l")=0,UPPER(A2:A4)) is stored as a dynamic array, not a legacy array`, script(`ws.getRange("U2").moveTo("U5");`), ""},
 		{"set", "xml", `stream editor: xl/worksheets/sheet1.xml: XML syntax error on line 2: illegal character code U+0001`, plain("set"), ""},
 		{"script", "editors", `Q 2026!C3: stream holds nothing, full holds text "Apple"`, script(`ws.getRange("C2").copyFrom("A1:C4");`), ""},
+		// A formula lost by a script with no paste, or one rewritten otherwise
+		// by each editor in a paste.
+		{"script", "editors", `Data!H7: stream has =IF(N("p")=0,IF(#REF!>1000,1,"")), full has =`, script(`ws.getRange("H5").moveTo("F13");`), ""},
+		{"script", "editors", `Data!I3: stream has =IF(N("p")=0,B4:B5*10), full has =IF(N("p")=0,#REF!*10)`, script(`ws.getRange("F4").copyFrom("H5:J8");`), ""},
 		{"move", "reach", `Data!G6: outside the edit's reach, its formula =B6*2 is rewritten as =E6*2, and the edit's shift of references gives =B6*2`, plain("move"), ""},
 	} {
 		f := Finding{Signature: Signature{tc.class, tc.invariant, 4001600827, true}, Detail: tc.detail, Edits: []Edit{tc.edit}}

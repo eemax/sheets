@@ -98,9 +98,15 @@ bug sort-editors: do,script editors; repro long 701600; detail : stream holds .+
 # (ws.getRange("C2").copyFrom("A1:C4")): Q 2026!C4 holds "Lime" or nothing;
 # its repro shows it about one replay in two, so a repro is replayed up to
 # 10 times. A script setting E4 (=SEQUENCE(1,2)) and F2 (=A2:A4&"!"), and a
-# write of three arrays over E4 (seed 62001), the same.
-bug map-order: copy,move,do,script repeat; repro 100139; detail editor: the same edit on the same bytes saved two different workbooks: 
+# write of three arrays over E4 (seed 62001), the same. A script's paste over
+# a dynamic array an earlier edit set shows it as a formula in one editor's
+# file and none in the other's (seed 720212: a set lays =B2:B4*2 at Data!H5,
+# over H5:H7, and a script's ws.getRange("F4").copyFrom("H5:J8") pastes J8's
+# formula onto H7: H7 holds it in the streaming editor's file and not in the
+# full one's, or the other way, in two replays of four).
+bug map-order: copy,move,do,script repeat; repro 100139; detail editor: the same edit on the same bytes saved two different workbooks:
 bug map-order: set,write,do,script editors; repro long 701746; detail : stream holds .*, full holds ; edit (?s)N\(\\*"d\\*"\).*(N\(\\*"d\\*"\)|copyFrom\()
+bug map-order: script editors; repro long 72021203186; detail ![A-Z]+[0-9]+: stream has =(, full has =.+|.+, full has =)$; edit copyFrom\(
 
 # Known (README, other seeds' findings: script kinds): a script that inserts
 # rows or columns leaves a legacy array with a dynamic array's cell metadata:
