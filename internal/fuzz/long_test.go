@@ -624,6 +624,15 @@ func TestKnownFaces(t *testing.T) {
 		{"do", "reach", `Q 2027: outside the edit's reach, the note "say \"hi\"" on F1 is not there as it was: the edit's shifts give the note "say \"hi\"" on F1, and the sheet holds nothing of its kind`, plain("do"), "sheet-copy-note"},
 		{"set", "editors", `Data!the streaming editor's file holds note D1 "check this" "\"check this\" false" "" "", the full editor's does not`, plain("set"), "sheet-copy-note"},
 		{"rows-insert", "editors", `Data!the full editor's file holds note B4 "check this" "\"check this\" false" "" "", the streaming editor's does not`, plain("rows-insert"), "sheet-copy-note"},
+		// A dynamic array spilling over a merge replaces the merge's text.
+		{"set", "reach", `Data!A18: outside the edit's reach, it held text "Remarks", and holds boolean false now`, plain("set"), "spill-into-merge"},
+		{"write", "reach", `Data!A17: outside the edit's reach, it held text "Remarks", and holds text "ÅÄÖ 日本語" now`, plain("write"), "spill-into-merge"},
+		{"do", "reach", `Data!A12: outside the edit's reach, it held text "Remarks", and holds number 60 now`, plain("do"), "spill-into-merge"},
+		{"set", "reach", `Data!A18: outside the edit's reach, it held text "Apple", and holds boolean false now`, plain("set"), ""},
+		{"set", "reach", `Data!B18: outside the edit's reach, it held text "Remarks", and holds boolean false now`, plain("set"), ""},
+		// A paste over arrays in a batch (a copy line), seed 2394518.
+		{"do", "editors", `Data!O15: stream holds nothing, full holds text "say \"hi\""`, batch("set 'Data!S6' '=IF(N(\"d\")=0,SUM(IF(B2:B6>3,B2:B6)))'\ncopy 'Data!A2:A3' 'Data!O14'\n"), "map-order"},
+		{"do", "editors", `Data!O15: stream holds nothing, full holds text "say \"hi\""`, batch("set 'Data!S6' '=IF(N(\"p\")=0,SUM(B2:B6))'\ncopy 'Data!A2:A3' 'Data!O14'\n"), ""},
 		// A note's text changed, or a note made, is another bug.
 		{"set", "reach", `Data: outside the edit's reach, the note "check this" on C1 is not there as it was: the edit's shifts give the note "check this" on C1, and the sheet holds note "other" on C1`, plain("set"), ""},
 		{"set", "reach", `Data: outside the edit's reach, the edit made a note "check this" on C1 it does not name`, plain("set"), ""},

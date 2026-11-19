@@ -743,6 +743,8 @@ func (s *session) stepNow(e Edit, i int) (outcome, error) {
 			o.broken = append(o.broken, violation{"reach", msg})
 		} else if msg := s.reachedFile(m, prev, wb, before[0], after[0]); msg != "" {
 			o.broken = append(o.broken, violation{"reach", msg})
+		} else if msg := s.editorsFile(wb, after); msg != "" {
+			o.broken = append(o.broken, violation{"editors", msg})
 		}
 	}
 	s.cur = wb
@@ -764,9 +766,6 @@ func (s *session) stepNow(e Edit, i int) (outcome, error) {
 // edit, when the sequence goes on from it. A file that does not open for
 // editing is not judged here (the next edit would refuse it).
 func (s *session) reachedFile(m *model, prev, wb *grid.Workbook, before, after []byte) string {
-	if m.why != "" {
-		return ""
-	}
 	b := s.objs
 	if b == nil || !bytes.Equal(s.objsFor, before) {
 		var err error
@@ -779,7 +778,34 @@ func (s *session) reachedFile(m *model, prev, wb *grid.Workbook, before, after [
 		return ""
 	}
 	s.objs, s.objsFor = a, after
-	return m.reachedFile(wb, b, a)
+	return m.reachedFile(wb, b, a) // "" when the model cannot read the edit
+}
+
+// editorsFile compares the validations, conditional formats and looks of the
+// two editors' files (the editors invariant, for what the reader gives no
+// cells for). A file that does not open for editing is not judged here.
+func (s *session) editorsFile(wb *grid.Workbook, after [2][]byte) string {
+	a := s.objs // the streaming copy's, read by reachedFile
+	if a == nil || !bytes.Equal(s.objsFor, after[0]) {
+		return ""
+	}
+	full, err := readBytes(after[1])
+	if err != nil {
+		return ""
+	}
+	b, err := readFileObjects(after[1], full)
+	if err != nil {
+		return ""
+	}
+	name := func(k string) string {
+		for _, sh := range wb.Sheets {
+			if strings.ToLower(sh.Name) == k {
+				return sh.Name
+			}
+		}
+		return k
+	}
+	return compareFileObjects(a, b, name)
 }
 
 // streamed tells whether the streaming editor could take an edit itself, on

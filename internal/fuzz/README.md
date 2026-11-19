@@ -220,10 +220,71 @@ They judge files, never a command's output text.
      cells change with its formula, and with an edit that reaches into it or
      cuts through it.
 
+   **Objects** (fix round 3, the audit's f2.1). The invariant judged cells
+   only: values, formulas, number formats and defined names. A table grown by
+   three rows, a merge or a note made out of nothing, a validation or a
+   conditional format changed, a chart's references, a hidden row, a cell's
+   fill, were never a finding, though the code that shifts, moves and copies
+   them is the code most likely to slip (the audit found no live bug of this
+   kind on the committed pool: it found the hole). The reach invariant judges
+   them now (`objects.go`, `reach_objects.go`), from the grid reader
+   (merges, tables, notes, links, charts, the filter, hidden rows and columns,
+   a sheet's visibility) and from the file, with sheets' own readers
+   (validations, conditional formats, the look of each cell: one open of the
+   file per edit, 1.3 ms). Each object outside the reach stands as it did,
+   followed through the edit's shifts the way a cell is:
+   - a span (a merge, a table, the filter, the cells of a validation or a
+     conditional format) goes with the lines inserted or deleted before it,
+     grows when lines are inserted inside it and shrinks when they are
+     deleted from it (a merge cut to one cell goes: Excel keeps none); a
+     cell's object (a note, a link) moves with its cell and goes with its row
+     or column; a hidden row or column moves like a line;
+   - what reads cells (a table's calculated column, a chart's series, a
+     validation's or a conditional format's rule) is rewritten as a formula
+     is (`shifted`); the rest is kept letter for letter. A link's place
+     (`Data!B2`) is the text it was typed as: Excel does not follow it when
+     rows are inserted or a sheet is renamed;
+   - a validation's or a conditional format's cells are judged, not its
+     ranges (sheets writes `A2:B12` as `A2:A12 B2:B12` after a move far
+     away: 30 false findings in the first run on pools with objects);
+   - an object the edit's reach lies on may change (a set into a merge, a
+     clear over a note, a validation cut by a move: what is left of it is its
+     own); a table, a chart, hidden lines and a sheet's visibility may not
+     (a table's column names follow its header cells: a replace may rename
+     one). The rows an insert adds are in the reach for cells, and hold no
+     object of what was there;
+   - a sheet made as a copy is new, and not judged.
+   The editors invariant compares the grid's objects of the two files too, so
+   a slip in the streaming editor's own shifting shows there, and one both
+   editors share here.
+
+   **Not judged, and bugs** (the README's list of follow-ups, filed at
+   integration): a **note's author** (the full editor writes every note again
+   with the author `Author`, where the file had `fuzz` or none, and the
+   streaming editor leaves the file's own; `sheets note --list` then shows
+   `[Author] check this`), and where a **chart's anchor** stands (the
+   streaming editor leaves a chart where it was when rows are inserted or
+   deleted above it, `Data!Q4` after row 2 was deleted, and the full editor
+   moves it with its cells to `Q3`, as Excel's default does). Judged, each
+   ends every sequence that reaches it, at the first edit the full editor
+   takes on a workbook with a note or a chart: the first default run that
+   judged a chart's anchor made 33 findings of it in its 2,000 edits (25 by
+   the editors invariant, 8 by this one) among 67 new, and the first long run
+   that judged a note's author 37 of notes, the author's and the lost notes'
+   together, among its 252. A note's text, and a chart's series, type and
+   size, are judged.
+
    So a slip that writes a cell the edit does not name, moves one it should
    not, loses or rewrites a formula elsewhere (or shifts a reference other
    than the edit does), recomputes one with nothing it reads changed, or
-   shows a cell another way, is a finding. `TestReach` holds 78 cases, right
+   shows a cell another way, or changes an object outside the reach, is a
+   finding. `TestReachObjects` holds 38 cases of objects, right and wrong (a
+   table grown, a merge made, a note changed, a hidden row moved, a chart not
+   shifted, the shifts of rows, columns and a rename), `TestReachFile` 12 of
+   validations, conditional formats and looks, `TestReachObjectsPool` the
+   audit's repro (a table grown by 3 rows, a merge, a note: each found), and
+   `TestReachObjectsKept` the rules a long run taught it (a link's place, a
+   merge cut to one cell, a note's author). `TestReach` holds 80 cases, right
    and wrong (18 of them the shifts, 10 the names, 3 a replace's numbers, 2
    two dynamic arrays whose results meet),
    `TestReachFormats` the formats (and a replace reading a date),
@@ -664,6 +725,19 @@ fuzzer for a time, not a count, over pools it makes fresh.
   about half a second to make. (`--pool-only` leaves out the must-refuse
   cases, which are made from the committed pool's files: another seed may
   hold none that fits a case.)
+- **Objects, for runs from seed 2,000,000** (`ObjectsFromRun`; fix round 3):
+  `fuzzgen.py --objects` adds what the reach invariant judges beside cells,
+  each by chance to a file: a merge (40% of the files), a note (25%), a link to the web
+  or to a cell (40%), a hidden column (40%) and row (30%), a styled header
+  (50%). A fresh run's default seed is above it. The flag is not given for a
+  smaller seed, and without it the script makes the files it always made, byte
+  for byte (the committed pool's, and 40 of 40 for seed 5, compared with the
+  script before), so every repro in known.txt, all of runs below it, replays
+  on the pool it was found on: the first version changed the pools of every
+  seed, which would have left the long repros found before it showing nothing.
+  The extras come from a random stream of their own, so the cells and the
+  other objects are the same either way. The mutants run seed 7, as before:
+  pools without objects.
 - **The variables:** `SHEETS_FUZZ_TIME` (default 10m; the run finishes the
   sequence it is in), `SHEETS_FUZZ_SEED` (default a fresh one, printed),
   `SHEETS_FUZZ_EDITS` (a cap), `SHEETS_FUZZ_UNTIL=new` (stop at the first

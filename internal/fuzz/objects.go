@@ -122,8 +122,9 @@ func gridObjects(s *grid.Sheet) []object {
 	return out
 }
 
-// lines are the rows (or columns) a sheet hides, one by one; false when there
-// are too many to follow (a sheet whose columns F onward are hidden).
+// hiddenLines are the rows (or columns) a sheet hides, one by one; false when
+// there are too many to follow (a sheet whose columns F onward are hidden:
+// those are not judged).
 func hiddenLines(runs []grid.Run) (map[int]bool, bool) {
 	out := map[int]bool{}
 	for _, r := range runs {
@@ -252,4 +253,79 @@ func sqrefParts(sqref string) []grid.Range {
 		}
 	}
 	return out
+}
+
+// compareFileObjects says how the validations, conditional formats and looks
+// two editors saved differ: the first difference, "" when they hold the same.
+// A rule's cells are compared, not its ranges (see object.cover), and the
+// look of each cell one by one.
+func compareFileObjects(stream, full *fileObjects, name func(k string) string) string {
+	var keys []string
+	seen := map[string]bool{}
+	for _, f := range []*fileObjects{stream, full} {
+		for k := range f.objects {
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+		for k := range f.looks {
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		group := func(f *fileObjects) map[string][]grid.Range {
+			out := map[string][]grid.Range{}
+			for _, o := range f.objects[k] {
+				key := o.kind + "\x00" + o.refs + "\x00" + o.fixed
+				out[key] = append(out[key], o.rg)
+			}
+			return out
+		}
+		a, b := group(stream), group(full)
+		var gs []string
+		for g := range a {
+			gs = append(gs, g)
+		}
+		for g := range b {
+			if _, ok := a[g]; !ok {
+				gs = append(gs, g)
+			}
+		}
+		sort.Strings(gs)
+		for _, g := range gs {
+			if at, ok := sameCover(a[g], b[g], nil); !ok {
+				kind, rest, _ := strings.Cut(g, "\x00")
+				rule, _, _ := strings.Cut(rest, "\x00")
+				return fmt.Sprintf("%s!%s %q: the streaming editor's file holds it over %s, the full editor's over %s (they differ at %s)",
+					name(k), kind, rule, listRanges(a[g]), listRanges(b[g]), grid.CellName(at[0], at[1]))
+			}
+		}
+		la, lb := stream.looks[k], full.looks[k]
+		var ps [][2]int
+		for p := range la {
+			ps = append(ps, p)
+		}
+		for p := range lb {
+			if _, ok := la[p]; !ok {
+				ps = append(ps, p)
+			}
+		}
+		sort.Slice(ps, func(i, j int) bool {
+			if ps[i][0] != ps[j][0] {
+				return ps[i][0] < ps[j][0]
+			}
+			return ps[i][1] < ps[j][1]
+		})
+		for _, p := range ps {
+			if la[p] != lb[p] {
+				return fmt.Sprintf("%s!%s: the streaming editor's file shows it as [%s], the full editor's as [%s]", name(k), grid.CellName(p[0], p[1]), la[p], lb[p])
+			}
+		}
+	}
+	return ""
 }

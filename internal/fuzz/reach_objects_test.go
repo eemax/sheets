@@ -456,3 +456,46 @@ func TestReachObjectsKept(t *testing.T) {
 		t.Errorf("a note lost: %q", got)
 	}
 }
+
+// TestCompareFileObjects: the editors invariant compares the validations,
+// conditional formats and looks of the two files: the cells a rule covers (a
+// sqref written as two ranges is the same), its rule, and each cell's look.
+func TestCompareFileObjects(t *testing.T) {
+	name := func(k string) string { return "Data" }
+	two := func(f *fileObjects) *fileObjects {
+		v := f.objects["data"][0]
+		v.rg = grid.Range{R1: 2, C1: 2, R2: 3, C2: 2}
+		w := v
+		w.rg = grid.Range{R1: 4, C1: 2, R2: 5, C2: 2}
+		f.objects["data"] = append([]object{v, w}, f.objects["data"][1:]...)
+		return f
+	}
+	for _, tc := range []struct {
+		name    string
+		other   func() *fileObjects
+		wantErr string
+	}{
+		{"the same", func() *fileObjects { return fileBook(0) }, ""},
+		{"a range in two", func() *fileObjects { return two(fileBook(0)) }, ""},
+		{"a validation over fewer cells", func() *fileObjects {
+			f := fileBook(0)
+			f.objects["data"][0].rg.R2 = 4
+			return f
+		}, `Data!validation "list a,b": the streaming editor's file holds it over B2:B5, the full editor's over B2:B4 (they differ at B5)`},
+		{"a rule read another way", func() *fileObjects {
+			f := fileBook(0)
+			f.objects["data"][1].refs = "=$B3>10"
+			return f
+		}, `Data!conditional format "=$B2>10": the streaming editor's file holds it over B2:C5, the full editor's over nothing (they differ at B2)`},
+		{"a look", func() *fileObjects {
+			f := fileBook(0)
+			f.looks["data"][[2]int{1, 1}] = "bold fill=#DDEBF7"
+			return f
+		}, `Data!A1: the streaming editor's file shows it as [bold], the full editor's as [bold fill=#DDEBF7]`},
+	} {
+		got := compareFileObjects(fileBook(0), tc.other(), name)
+		if tc.wantErr == "" && got != "" || tc.wantErr != "" && !strings.Contains(got, tc.wantErr) {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.wantErr)
+		}
+	}
+}

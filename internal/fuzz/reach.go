@@ -47,6 +47,11 @@ import (
 // not, loses or rewrites a formula elsewhere (or shifts a reference other
 // than the edit does), or shows a cell another way is a finding, as is a
 // formula whose value changes with nothing it reads changed.
+//
+// What a sheet holds besides cells (merges, tables, notes, links, charts, the
+// filter, hidden rows and columns, validations, conditional formats, the look
+// of a cell) is judged the same way, by what the edit's shifts do to each
+// (objects.go, reach_objects.go): the reach says where an edit may change one.
 type reach struct {
 	before *grid.Workbook
 	sheets map[string]*grid.Sheet // the sheets before, by lower-case name
