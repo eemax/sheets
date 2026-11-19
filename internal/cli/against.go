@@ -627,8 +627,8 @@ func lineRange(sheet string, from, to int, cols bool) string {
 	return q + strconv.Itoa(from) + ":" + strconv.Itoa(to)
 }
 
-// pairReplaced pairs, in order, the rows removed and added in the same
-// place: a row whose every value changed is changed, not replaced.
+// pairReplaced pairs, in order, the rows (or columns) removed and added in
+// the same place: a row whose every value changed is changed, not replaced.
 func pairReplaced(rows []diff.Pair) []diff.Pair {
 	var out []diff.Pair
 	for i := 0; i < len(rows); {
@@ -783,7 +783,7 @@ func folded(f string) string {
 // formulas themselves): a row a result grew into or shrank out of.
 func (r *report) spillOnly(s *grid.Sheet, u grid.Range, row int) bool {
 	n := 0
-	for c := u.C1; c <= u.C2; c++ {
+	for c := u.C1; c <= min(u.C2, s.RowLen(row)); c++ {
 		cell := s.At(row, c)
 		if cell == nil || cell.IsEmpty() {
 			continue
@@ -804,7 +804,7 @@ func rowEmpty(s *grid.Sheet, u grid.Range, row int) bool {
 	if row < u.R1 || row > u.R2 {
 		return true
 	}
-	for c := u.C1; c <= u.C2; c++ {
+	for c := u.C1; c <= min(u.C2, s.RowLen(row)); c++ {
 		if cell := s.At(row, c); cell != nil && !cell.IsEmpty() {
 			return false
 		}
@@ -1007,7 +1007,7 @@ func (r *report) pasted(j *job, rows []diff.Pair) []diff.Pair {
 	// The columns it spans, and where it was and went empty there.
 	c1, c2 := 0, 0
 	for row := o1; row <= o2; row++ {
-		for c := ua.C1; c <= ua.C2; c++ {
+		for c := ua.C1; c <= min(ua.C2, sa.RowLen(row)); c++ {
 			if !empty(sa, row, c) {
 				if c1 == 0 || c < c1 {
 					c1 = c
@@ -1017,7 +1017,7 @@ func (r *report) pasted(j *job, rows []diff.Pair) []diff.Pair {
 		}
 	}
 	cols := func(s *grid.Sheet, row int) bool {
-		for c := c1; c <= c2; c++ {
+		for c := c1; c <= min(c2, s.RowLen(row)); c++ {
 			if !empty(s, row, c) {
 				return false
 			}
@@ -1070,7 +1070,7 @@ func (r *report) pasted(j *job, rows []diff.Pair) []diff.Pair {
 		case other[row] > 0:
 			q.New = other[row]
 		}
-		if was[row] != q.New && !r.holds(sa, q.Old, sb, q.New, j.cols, move) {
+		if was[row] != q.New && !r.holds(sa, q.Old, sb, q.New, j.held(), move) {
 			return rows
 		}
 		out = append(out, q)
@@ -1295,6 +1295,10 @@ type job struct {
 	pasteDC int
 	cells   *cellCut
 	cut     []formula.Move
+	// heldCols are the columns of cols that hold a cell on either side, as
+	// worked out for heldOf of them (held).
+	heldCols [][2]int
+	heldOf   int
 }
 
 // blockJob is columns whose rows a sort moved on its own (diff.Block): its
@@ -1305,6 +1309,22 @@ type blockJob struct {
 	rows   []diff.Pair
 	moved  []diff.Moved
 	c1, c2 int
+}
+
+// held gives the columns compared that hold a cell on either side (see
+// diff.Columns): the cells of the others are empty on both.
+func (j *job) held() [][2]int {
+	if j.heldCols == nil || j.heldOf != len(j.cols) {
+		ha, hb := diff.Columns(j.sa), diff.Columns(j.sb)
+		j.heldCols = [][2]int{}
+		for _, c := range j.cols {
+			if ha[c[0]] || hb[c[1]] {
+				j.heldCols = append(j.heldCols, c)
+			}
+		}
+		j.heldOf = len(j.cols)
+	}
+	return j.heldCols
 }
 
 // lineCount counts the lines a job has added and removed.
@@ -1328,7 +1348,9 @@ func rowBlank(s *grid.Sheet, row int, cols [][2]int, pick int) bool {
 func (r *report) prepare(p diff.SheetPair) *job {
 	sa, sb := p.Old, p.New
 	j := &job{sa: sa, sb: sb}
-	p.Rows = pairReplaced(p.Rows)
+	// A row, or a column, whose every value changed is changed, not one
+	// removed and another added in its place.
+	p.Rows, p.Cols = pairReplaced(p.Rows), pairReplaced(p.Cols)
 	inBlock := map[int]bool{}
 	for _, b := range p.Blocks {
 		for _, c := range b.Cols {
@@ -1349,7 +1371,7 @@ func (r *report) prepare(p diff.SheetPair) *job {
 		// Rows sorted and changed too: alike, they moved. Of all the rows
 		// paired now, those whose rank among them changed are the rows
 		// moved.
-		p.Rows = r.pairAlike(sa, sb, p.Rows, j.cols)
+		p.Rows = r.pairAlike(sa, sb, p.Rows, j.held())
 		ua, ub := sa.Used(), sb.Used()
 		p.Moved = diff.MovedRows(p.Rows, func(q diff.Pair) bool { return rowEmpty(sa, ua, q.Old) && rowEmpty(sb, ub, q.New) })
 	} else if len(p.Blocks) == 0 {
@@ -1359,7 +1381,7 @@ func (r *report) prepare(p diff.SheetPair) *job {
 		// moved, when that moves no more rows than they are: a row removed
 		// and an alike one added far from it, the rows between moving up,
 		// were removed and added.
-		if rows := r.pairAlike(sa, sb, p.Rows, j.cols); len(rows) < len(p.Rows) {
+		if rows := r.pairAlike(sa, sb, p.Rows, j.held()); len(rows) < len(p.Rows) {
 			ua, ub := sa.Used(), sb.Used()
 			moved := diff.MovedRows(rows, func(q diff.Pair) bool { return rowEmpty(sa, ua, q.Old) && rowEmpty(sb, ub, q.New) })
 			n := 0
@@ -1730,7 +1752,7 @@ func (r *report) compare() {
 			if q.Old == 0 || q.New == 0 {
 				continue
 			}
-			for _, c := range j.cols {
+			for _, c := range j.held() {
 				pair(q.Old, c[0], q.New, c[1])
 			}
 		}
@@ -1797,6 +1819,15 @@ func (r *report) compare() {
 		case !ok:
 			out.Structure = append(out.Structure, structureEntry{"name added", n.Name + " = " + n.Ref})
 			using(n.Name, "name "+n.Name+" added")
+		case strings.EqualFold(o.Ref, n.Ref):
+			// As it was, though what it refers to moved: a tool that adds
+			// or removes rows without rewriting names (openpyxl's
+			// insert_rows), as a formula left as it was is flagged.
+			if want, ok := r.stale(o.Ref, ""); ok {
+				why := strings.ReplaceAll(strings.ReplaceAll(r.staleWhy(o.Ref, ""), "what it reads", "what it refers to"), "the cells it reads", "the cells it refers to")
+				out.Structure = append(out.Structure, structureEntry{"name not rewritten", n.Name + " = " + n.Ref + ": its reference is as it was, though " + why + ": Excel writes " + want})
+				using(n.Name, "name "+n.Name+" not rewritten (Excel writes "+want+")")
+			}
 		case !r.sameRef(o.Ref, n.Ref):
 			out.Structure = append(out.Structure, structureEntry{"name changed", n.Name + ": " + o.Ref + " → " + n.Ref})
 			using(n.Name, "name "+n.Name+" changed")

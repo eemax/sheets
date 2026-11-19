@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // What check --against gives as the cause of a value that moved: the cause
@@ -404,5 +405,96 @@ func changedOK(t *testing.T, name, after, before string) {
 	text, _ := runCLI("", "check", after, "--against", before)
 	if !strings.Contains(text, "0 features lost (1 changed)") || !strings.Contains(text, "\nfeatures changed: rules edited on the cells they cover (not lost):\n") {
 		t.Errorf("%s: text:\n%s", name, text)
+	}
+}
+
+// A row inserted above what a defined name refers to by a tool that leaves
+// names as they were (openpyxl's insert_rows): the name is flagged, with
+// what Excel writes, and the values it moved are its doing, not the row's
+// (f5.4). Inserted by sheets, which rewrites it, nothing is said of it.
+func TestAgainstCausesNameNotRewritten(t *testing.T) {
+	dir, fixture := causesFixture(t)
+	before := edited(t, fixture, filepath.Join(dir, "taxed.xlsx"), []string{"set", "Data!E2", "=D2*TaxRate"}, []string{"check", "--fix"})
+	rewrote := edited(t, before, filepath.Join(dir, "sheets.xlsx"), []string{"rows", "insert", "Summary!1"})
+	r, _ := against(t, rewrote, before)
+	for _, e := range r.Structure {
+		if strings.Contains(e.Where, "TaxRate") {
+			t.Errorf("rewritten by sheets: %+v", e)
+		}
+	}
+	if _, ok := causes(r)["Data!E2"]; ok {
+		t.Errorf("rewritten by sheets: Data!E2 moved: %+v", r.Moved)
+	}
+	stale := filepath.Join(dir, "stale.xlsx")
+	rewriteParts(t, rewrote, stale, func(name string, b []byte) []byte {
+		if name == "xl/workbook.xml" {
+			was := b
+			if b = bytes.Replace(b, []byte("Summary!$B$2</definedName>"), []byte("Summary!$B$1</definedName>"), 1); bytes.Equal(b, was) {
+				t.Fatalf("no name in %s", b)
+			}
+		}
+		return b
+	})
+	r, _ = against(t, stale, before)
+	found := false
+	for _, e := range r.Structure {
+		if e.Change == "name not rewritten" {
+			found = true
+			if !strings.HasPrefix(e.Where, "TaxRate = Summary!$B$1: its reference is as it was") || !strings.HasSuffix(e.Where, "Excel writes Summary!$B$2") {
+				t.Errorf("structure: %+v", e)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no name flagged: %+v", r.Structure)
+	}
+	if got := causes(r)["Data!E2"]; !strings.HasPrefix(got, "name TaxRate not rewritten (Excel writes Summary!$B$2)") {
+		t.Errorf("Data!E2's cause %q (%+v, unexplained %+v)", got, r.Moved, r.Unexplained)
+	}
+}
+
+// A used range that spans the grid (A1:B1 and XFD1048576): check --against
+// compares the cells there are, not the rectangle, in a few seconds on
+// either side and either way round (f5.7); so does sheets diff.
+func TestAgainstCausesWholeGrid(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	small := func(name string, a int, far bool) string {
+		path := filepath.Join(dir, name)
+		if out, code := runCLI("", "set", path, "S!A1", fmt.Sprint(a), "S!B1", "=A1*2"); code != 0 {
+			t.Fatal(out)
+		}
+		if !far {
+			return path
+		}
+		grid := filepath.Join(dir, "far-"+name)
+		rewriteSheet(t, path, grid, func(b []byte) []byte {
+			b = regexp.MustCompile(`<dimension ref="[^"]*"/>`).ReplaceAll(b, []byte(`<dimension ref="A1:XFD1048576"/>`))
+			return bytes.Replace(b, []byte("</sheetData>"), []byte(`<row r="1048576"><c r="XFD1048576"><v>5</v></c></row></sheetData>`), 1)
+		})
+		return grid
+	}
+	b, a, plain := small("b.xlsx", 1, true), small("a.xlsx", 3, true), small("p.xlsx", 1, false)
+	for _, c := range [][2]string{{a, b}, {b, a}, {a, plain}, {plain, a}} {
+		start := time.Now()
+		r, _ := against(t, c[0], c[1])
+		took := time.Since(start)
+		t.Logf("%s against %s: %s", filepath.Base(c[0]), filepath.Base(c[1]), took.Round(time.Millisecond))
+		if took > 5*time.Second*raceSlow {
+			t.Errorf("%s against %s: %s", filepath.Base(c[0]), filepath.Base(c[1]), took)
+		}
+		if r.Summary.Unexplained != 0 || r.Summary.FeaturesLost != 0 {
+			t.Errorf("%s against %s: %+v", filepath.Base(c[0]), filepath.Base(c[1]), r.Summary)
+		}
+		if got := causes(r)["S!B1"]; c[0] != plain && c[1] != plain && got != "input S!A1" {
+			t.Errorf("%s against %s: S!B1's cause %q (%+v)", filepath.Base(c[0]), filepath.Base(c[1]), got, r.Changed)
+		}
+	}
+	start := time.Now()
+	if out, code := runCLI("", "diff", b, a); code != 0 || !strings.Contains(out, "A1  1 → 3") {
+		t.Errorf("diff: exit %d: %s", code, out)
+	}
+	if took := time.Since(start); took > 5*time.Second*raceSlow {
+		t.Errorf("diff: %s", took)
 	}
 }

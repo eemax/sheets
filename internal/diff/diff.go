@@ -674,9 +674,10 @@ func alignSheet(A, B side, opts Options) sheetAlign {
 	} else {
 		colSteps = alignColumns(A, B, ra, rb, ca, cb, opts.LostRefs)
 	}
-	pairs := matched(colSteps)
-
-	// Rows, over the matched columns.
+	// Rows, over the matched columns that either side holds a cell in: a
+	// column empty on both sides keys every row alike (a used range that
+	// spans the grid, A1 and XFD1048576, holds two columns).
+	pairs := held(A.s, B.s, matched(colSteps))
 	sig := func(x side, rows int, pick int) ([]uint64, []bool) {
 		out := make([]uint64, rows)
 		blank := make([]bool, rows)
@@ -732,6 +733,34 @@ func alignSheet(A, B side, opts Options) sheetAlign {
 	return sheetAlign{cols: colSteps, rows: pairUpSkipping(ra, rb, matches, similar, skipA, skipB), moved: moved, placed: placed}
 }
 
+// held keeps the column pairs that hold a cell (a value, a formula or a
+// format) on either side: those that hold none compare alike in every row.
+func held(sa, sb *grid.Sheet, pairs [][2]int) [][2]int {
+	ha, hb := Columns(sa), Columns(sb)
+	out := pairs[:0:0]
+	for _, p := range pairs {
+		if ha[p[0]] || hb[p[1]] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// Columns gives the columns of a sheet that hold a cell: a value, a formula
+// or a format. It reads the cells stored, not the used range's rectangle.
+func Columns(s *grid.Sheet) map[int]bool {
+	out := map[int]bool{}
+	u := s.Used()
+	for r := u.R1; r <= u.R2; r++ {
+		for c := 1; c <= s.RowLen(r); c++ {
+			if x := s.At(r, c); !x.IsEmpty() || x.Fmt != 0 {
+				out[c] = true
+			}
+		}
+	}
+	return out
+}
+
 // matched are the column pairs in both versions, 1-based.
 func matched(colSteps []step) [][2]int {
 	var pairs [][2]int
@@ -758,7 +787,7 @@ func sheet(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.Sheet,
 			d.ColsRemoved = addLine(d.ColsRemoved, st.a+1, "")
 		}
 	}
-	pairs := matched(al.cols)
+	pairs := held(sa, sb, matched(al.cols))
 	rowSteps := al.rows
 
 	type colRun struct {
@@ -843,25 +872,32 @@ func sheet(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.Sheet,
 // alignColumns aligns columns by their first values (usually the header),
 // which inserting rows further down does not disturb.
 func alignColumns(A, B side, ra, rb, ca, cb int, lostRefs bool) []step {
-	head := func(x side, rows, c int) []string {
-		var vals []string
-		for r := 1; r <= rows && len(vals) < 20; r++ {
-			if k := x.key(r, c); k != "" {
-				vals = append(vals, k)
+	// The first values of each column, from the top: read off the cells
+	// stored, row by row, so a column that holds nothing costs nothing.
+	heads := func(x side, rows, cols int) [][]string {
+		out := make([][]string, cols)
+		full := 0
+		for r := 1; r <= rows && full < cols; r++ {
+			for c := 1; c <= min(cols, x.s.RowLen(r)); c++ {
+				if len(out[c-1]) >= 20 {
+					continue
+				}
+				if k := x.key(r, c); k != "" {
+					if out[c-1] = append(out[c-1], k); len(out[c-1]) == 20 {
+						full++
+					}
+				}
 			}
 		}
-		return vals
+		return out
 	}
-	ha := make([][]string, ca)
-	hb := make([][]string, cb)
+	ha, hb := heads(A, ra, ca), heads(B, rb, cb)
 	sa := make([]uint64, ca)
 	sb := make([]uint64, cb)
 	for c := 0; c < ca; c++ {
-		ha[c] = head(A, ra, c+1)
 		sa[c] = hash(ha[c][:min(3, len(ha[c]))]...)
 	}
 	for c := 0; c < cb; c++ {
-		hb[c] = head(B, rb, c+1)
 		sb[c] = hash(hb[c][:min(3, len(hb[c]))]...)
 	}
 	similar := func(i, j int) bool {
@@ -914,7 +950,7 @@ func addLine(list []Lines, n int, content string) []Lines {
 func rowContent(x side, row, cols int) string {
 	var parts []string
 	last := 0
-	for c := 1; c <= cols; c++ {
+	for c := 1; c <= min(cols, x.s.RowLen(row)); c++ { // the cells stored: past them all is empty
 		r := repr(x, row, c)
 		parts = append(parts, r)
 		if r != "" {

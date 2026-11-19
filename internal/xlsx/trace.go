@@ -226,6 +226,10 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 		// without taking them from the index (another way to the cell may
 		// still be followed by all of them).
 		reordered bool
+		// wide: the source's cells are too many to look up one by one (rows
+		// added across a sheet whose used range spans the grid): its readers
+		// are found by what each formula reads.
+		wide bool
 	}
 	var queue []item
 	// queued: cells whose readers are looked for (queuedR: as cells of a
@@ -235,7 +239,7 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 	push := func(k cellKey, src int) {
 		if !queued[k] {
 			queued[k] = true
-			queue = append(queue, item{k, src, false})
+			queue = append(queue, item{k: k, src: src})
 		}
 	}
 	var reach func(k cellKey, src int)
@@ -263,6 +267,10 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 			// what a formula reading them can find changed.
 			rg = rg.Intersect(grid.Range{R1: 1, C1: 1, R2: u.R2, C2: u.C2})
 		}
+		if !rg.Empty() && rg.Rows()*rg.Cols() > wideSource {
+			queue = append(queue, item{src: i, wide: true})
+			continue
+		}
 		for r := rg.R1; r <= rg.R2; r++ {
 			for c := rg.C1; c <= rg.C2; c++ {
 				k := keyOf(s.Sheet, r, c)
@@ -273,7 +281,7 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 				if s.Reordered.R2 > 0 {
 					if !queued[k] && !queuedR[k] {
 						queuedR[k] = true
-						queue = append(queue, item{k, i, true})
+						queue = append(queue, item{k: k, src: i, reordered: true})
 					}
 					continue
 				}
@@ -282,9 +290,51 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 		}
 	}
 	free := map[[2]int]bool{} // by formula and source: reads the source's block as a set
+	// follows tells whether a formula reading a source's cells follows it.
+	follows := func(id, src int) bool {
+		s := sources[src]
+		if s.Reordered.R2 == 0 {
+			return true
+		}
+		if f := t.fs[id]; strings.EqualFold(f.sheet, s.Sheet) {
+			for _, rg := range s.Carried {
+				if rg.Contains(f.row, f.col) {
+					return false
+				}
+			}
+		}
+		key := [2]int{id, src}
+		isFree, ok := free[key]
+		if !ok {
+			isFree = t.orderFree(id, s)
+			free[key] = isFree
+		}
+		return !isFree
+	}
 	for len(queue) > 0 {
 		it := queue[0]
 		queue = queue[1:]
+		if it.wide {
+			s := sources[it.src]
+			rg := s.Range
+			if u, ok := t.used[strings.ToLower(s.Sheet)]; ok {
+				rg = rg.Intersect(grid.Range{R1: 1, C1: 1, R2: u.R2, C2: u.C2})
+			}
+			for id, f := range t.fs {
+				k := keyOf(f.sheet, f.row, f.col)
+				if !s.Readers && strings.EqualFold(f.sheet, s.Sheet) && rg.Contains(f.row, f.col) {
+					reach(k, it.src)
+					continue
+				}
+				for _, ref := range t.refs[id] {
+					if strings.EqualFold(ref.Sheet, s.Sheet) && !ref.Range.Intersect(rg).Empty() && follows(id, it.src) {
+						reach(k, it.src)
+						break
+					}
+				}
+			}
+			continue
+		}
 		if !it.reordered {
 			x.readers(it.k, func(id int) {
 				f := t.fs[id]
@@ -296,21 +346,7 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 			continue // reached another way too: followed as that
 		}
 		x.readersOf(it.k, func(id int) {
-			src := sources[it.src]
-			if f := t.fs[id]; strings.EqualFold(f.sheet, src.Sheet) {
-				for _, rg := range src.Carried {
-					if rg.Contains(f.row, f.col) {
-						return
-					}
-				}
-			}
-			key := [2]int{id, it.src}
-			isFree, ok := free[key]
-			if !ok {
-				isFree = t.orderFree(id, src)
-				free[key] = isFree
-			}
-			if !isFree {
+			if follows(id, it.src) {
 				f := t.fs[id]
 				reach(keyOf(f.sheet, f.row, f.col), it.src)
 			}
@@ -318,6 +354,10 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 	}
 	return out
 }
+
+// wideSource is how many cells a source may span for Spread to look up the
+// readers of each: past it, it reads each formula's references instead.
+const wideSource = 1 << 20
 
 // orderFree tells whether a formula reads what it reads of a source's
 // block (Source.Reordered) only as a set over all of its rows (and, Across,
