@@ -965,3 +965,48 @@ func TestAgainstCausesRemovedSize(t *testing.T) {
 		t.Errorf("a COUNT that fell by 3: exit %d, cause %q, unexplained %+v", code, m, r.Unexplained)
 	}
 }
+
+// A blank row inserted every few rows of a long table, and one input changed
+// (f1.3): the total over the table moved for the input, and the blank rows
+// are looked through together, not one run at a time (each used to cost a
+// whole pass over the sheet: minutes at 150,000 rows).
+func TestAgainstCausesAddedRunsFast(t *testing.T) {
+	const rows, every = 20000, 10
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	build := func(path string, gaps bool) {
+		var b strings.Builder
+		b.WriteString("Item\tUnits\tPrice\tRevenue\n")
+		n := 1
+		for i := 0; i < rows; i++ {
+			if gaps && i > 0 && i%every == 0 {
+				b.WriteString("\n")
+				n++
+			}
+			units := i%7 + 1
+			if gaps && i == 3 {
+				units = 100
+			}
+			n++
+			fmt.Fprintf(&b, "I%d\t%d\t10\t=B%d*C%d\n", i, units, n, n)
+		}
+		if out, code := runCLI(b.String(), "write", path, "Data!A1"); code != 0 {
+			t.Fatalf("write: %s", out)
+		}
+		if out, code := runCLI("", "set", path, "Summary!A1", "Total", "Summary!B1", fmt.Sprintf("=SUM(Data!D2:D%d)", n)); code != 0 {
+			t.Fatalf("set: %s", out)
+		}
+	}
+	before, after := filepath.Join(dir, "b.xlsx"), filepath.Join(dir, "a.xlsx")
+	build(before, false)
+	build(after, true)
+	start := time.Now()
+	r, code := against(t, after, before)
+	took := time.Since(start)
+	if m := causes(r)["Summary!B1"]; m != "input Data!B5" || r.Summary.Inputs != 1 || len(r.Unexplained) != 0 || code != 0 {
+		t.Errorf("exit %d, %+v, Summary!B1 cause %q, unexplained %+v", code, r.Summary, m, r.Unexplained)
+	}
+	if limit := 5 * time.Second * raceSlow; took > limit {
+		t.Errorf("check --against with %d runs of rows added took %s, over %s", rows/every-1, took.Round(time.Millisecond), limit)
+	}
+}

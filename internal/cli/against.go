@@ -2830,23 +2830,34 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	// direct is the source that moved a value among the changes that reach
 	// it: the nearest, unless that is rows or columns added that could not
 	// have moved it (an empty row inserted in a total's range), when it is the
-	// nearest of the others (the cells changed, rows moved).
-	spreads := map[string]map[xlsx.At]int{} // by the sources left out
-	without := func(left []int) map[xlsx.At]int {
+	// nearest of the others (the cells changed, rows moved). What lines added
+	// can move is told of all those of a sheet at once (additionMoves), so
+	// they are left out by sheet, and orientation: a total with a blank row
+	// inserted every few rows is looked through once, not once for each.
+	spreads := map[string]map[xlsx.At]int{} // by the lines left out
+	without := func(left []addedLines) map[xlsx.At]int {
 		key := fmt.Sprint(left)
 		if m, ok := spreads[key]; ok {
 			return m
 		}
 		srcs := append([]xlsx.Source{}, r.sources...)
-		for _, n := range left {
-			srcs[n].Range = grid.Range{R1: 1, C1: 1, R2: 0, C2: 0}
+		for n, a := range r.lineAdded {
+			for _, l := range left {
+				if a == l {
+					srcs[lineBase+n].Range = grid.Range{R1: 1, C1: 1, R2: 0, C2: 0}
+				}
+			}
 		}
 		spreads[key] = tr.Spread(srcs)
 		return spreads[key]
 	}
+	kinds := map[addedLines]bool{} // the sheets and orientations rows and columns were added on
+	for _, a := range r.lineAdded {
+		kinds[a] = true
+	}
 	direct := func(c candidate) (int, bool) {
-		var left []int
-		for len(left) <= len(r.lineAdded) {
+		var left []addedLines
+		for len(left) <= len(kinds) {
 			m := causeOf
 			if len(left) > 0 {
 				m = without(left)
@@ -2874,8 +2885,13 @@ func (r *report) trace(tr *xlsx.Tracer) {
 			if moves {
 				return k, true
 			}
-			left = append(left, k)
-			sort.Ints(left)
+			left = append(left, a)
+			sort.Slice(left, func(i, j int) bool {
+				if left[i].sheet != left[j].sheet {
+					return left[i].sheet < left[j].sheet
+				}
+				return !left[i].cols && left[j].cols
+			})
 		}
 		return 0, false
 	}
