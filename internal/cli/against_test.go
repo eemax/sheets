@@ -24,25 +24,39 @@ func TestLostFeatures(t *testing.T) {
 	f := func(kind, sheet, where, what string) xlsx.Feature {
 		return xlsx.Feature{Kind: kind, Sheet: sheet, Where: where, What: what}
 	}
+	// A validation or conditional format by its type and rule, a chart by its
+	// type and the data it shows.
+	rule := func(kind, sheet, where, what, typ, rule string) xlsx.Feature {
+		return xlsx.Feature{Kind: kind, Sheet: sheet, Where: where, What: what, Type: typ, Rule: rule}
+	}
+	chart := func(sheet, where string, series ...string) xlsx.Feature {
+		return xlsx.Feature{Kind: xlsx.FeatureChart, Sheet: sheet, Where: where, What: "column chart", Type: "column", Series: series}
+	}
+	whole := func(where string) xlsx.Feature {
+		return rule(xlsx.FeatureValidation, "Data", where, "whole validation", "whole", "between|0|100")
+	}
+	decimal := func(where string) xlsx.Feature {
+		return rule(xlsx.FeatureValidation, "Data", where, "decimal validation", "decimal", "greaterThanOrEqual|0")
+	}
 	before := []xlsx.Feature{
-		f(xlsx.FeatureValidation, "Data", "B2:B6", "whole validation"),
-		f(xlsx.FeatureValidation, "Data", "C2:C6", "list validation"),
-		f(xlsx.FeatureChart, "Data", "F2", "column chart"),
-		f(xlsx.FeatureCond, "Old", "A1:A3", "formula rule"),
+		whole("B2:B6"),
+		rule(xlsx.FeatureValidation, "Data", "C2:C6", "list validation", "list", "between|Summary!$D$2:$D$6"),
+		chart("Data", "F2", "Data!$D$2:$D$6"),
+		rule(xlsx.FeatureCond, "Old", "A1:A3", "formula rule", "expression", "$A1>5"),
 		f(xlsx.FeatureName, "", "Rate", "Data!$B$1"),
 		f(xlsx.FeatureName, "", "Gone", "Data!$B$2"),
 		f(xlsx.FeatureTable, "Data", "A1:D6", "Sales"),
 		f(xlsx.FeatureShape, "Removed", "A1", "TextBox 1"),
 	}
 	after := []xlsx.Feature{
-		f(xlsx.FeatureValidation, "Data", "B2:B7", "whole validation"), // grew with a row
-		f(xlsx.FeatureChart, "Data", "G2", "column chart"),             // moved
-		f(xlsx.FeatureCond, "New", "A1:A3", "formula rule"),            // its sheet renamed
+		whole("B2:B7"),                        // grew with a row
+		chart("Data", "G2", "Data!$D$2:$D$6"), // moved
+		rule(xlsx.FeatureCond, "New", "A1:A3", "formula rule", "expression", "$A1>5"), // its sheet renamed
 		f(xlsx.FeatureName, "", "rate", "Data!$B$1"),
 		f(xlsx.FeatureName, "", "Other", "Data!$B$2"), // a name is matched by name
 		f(xlsx.FeatureTable, "Data", "A1:D7", "Sales"),
 	}
-	got := lostFeatures(before, after, map[string]string{"data": "Data", "old": "New", "removed": ""})
+	got := lostFeatures(before, after, map[string]string{"data": "Data", "old": "New", "removed": ""}, nil, nil)
 	want := []lostFeature{
 		{Kind: xlsx.FeatureValidation, Where: "Data!C2:C6", What: "list validation"},
 		{Kind: xlsx.FeatureName, Where: "Gone", What: "Data!$B$2"},
@@ -51,21 +65,144 @@ func TestLostFeatures(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("lost\n got %+v\nwant %+v", got, want)
 	}
-	if got := lostFeatures(nil, after, nil); got == nil || len(got) != 0 {
+	if got := lostFeatures(nil, after, nil, nil, nil); got == nil || len(got) != 0 {
 		t.Errorf("nothing before: %+v", got)
 	}
 	// Both validations grew with a row inserted, then the whole one was
 	// cleared: the one lost is the whole one, not the decimal one, which is
 	// now in another place.
-	got = lostFeatures([]xlsx.Feature{f(xlsx.FeatureValidation, "Data", "B2:B6", "whole validation"), f(xlsx.FeatureValidation, "Data", "C2:C6", "decimal validation")},
-		[]xlsx.Feature{f(xlsx.FeatureValidation, "Data", "C2:C7", "decimal validation")}, map[string]string{"data": "Data"})
+	got = lostFeatures([]xlsx.Feature{whole("B2:B6"), decimal("C2:C6")}, []xlsx.Feature{decimal("C2:C7")}, map[string]string{"data": "Data"}, nil, nil)
 	if want := []lostFeature{{Kind: xlsx.FeatureValidation, Where: "Data!B2:B6", What: "whole validation"}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("lost after a move\n got %+v\nwant %+v", got, want)
 	}
-	// A validation that changed its type in place is not lost.
-	if got := lostFeatures([]xlsx.Feature{f(xlsx.FeatureValidation, "Data", "B2:B6", "whole validation")},
-		[]xlsx.Feature{f(xlsx.FeatureValidation, "Data", "B2:B7", "decimal validation")}, nil); len(got) != 0 {
-		t.Errorf("changed: %+v", got)
+	// A column deleted took the whole validation: the decimal one now where it
+	// was is not it.
+	deleted := func(home, ref string) string {
+		return map[string]string{"B2:B6": "", "C2:C6": "B2:B6"}[ref]
+	}
+	got = lostFeatures([]xlsx.Feature{whole("B2:B6"), decimal("C2:C6")}, []xlsx.Feature{decimal("B2:B6")}, map[string]string{"data": "Data"}, nil, deleted)
+	if want := []lostFeature{{Kind: xlsx.FeatureValidation, Where: "Data!B2:B6", What: "whole validation"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("lost with a column\n got %+v\nwant %+v", got, want)
+	}
+	// Another of its kind is no reason to say nothing of the one that is gone:
+	// a validation that changed its type, or its formula, is not the one it was.
+	for name, now := range map[string]xlsx.Feature{
+		"its type":     decimal("B2:B7"),
+		"its formula":  rule(xlsx.FeatureValidation, "Data", "B2:B6", "whole validation", "whole", "between|0|200"),
+		"its operator": rule(xlsx.FeatureValidation, "Data", "B2:B6", "whole validation", "whole", "notBetween|0|100"),
+	} {
+		if got := lostFeatures([]xlsx.Feature{whole("B2:B6")}, []xlsx.Feature{now}, nil, nil, nil); len(got) != 1 {
+			t.Errorf("changed %s: %+v", name, got)
+		}
+	}
+	// A conditional format replaced by another kind (a banding rule) is lost,
+	// whatever else the sheet holds.
+	cond := rule(xlsx.FeatureCond, "Data", "D2:D6", "cell value rule", "cellIs", "greaterThan|140")
+	band := rule(xlsx.FeatureCond, "Data", "A2:D6", "formula rule", "expression", "MOD(ROW(),2)=0")
+	if got := lostFeatures([]xlsx.Feature{cond}, []xlsx.Feature{band}, nil, nil, nil); len(got) != 1 || got[0].Kind != xlsx.FeatureCond {
+		t.Errorf("replaced conditional format: %+v", got)
+	}
+	// A chart added does not stand for the one dropped, though it is of its
+	// type: it shows other data, and is somewhere else. One of the same data
+	// is the chart, moved.
+	old := chart("Data", "F2", "Data!$D$2:$D$6")
+	if got := lostFeatures([]xlsx.Feature{old}, []xlsx.Feature{chart("Data", "H20", "Data!$B$2:$B$6")}, nil, nil, nil); len(got) != 1 || got[0].Kind != xlsx.FeatureChart {
+		t.Errorf("chart replaced by another: %+v", got)
+	}
+	if got := lostFeatures([]xlsx.Feature{old}, []xlsx.Feature{chart("Data", "H20", "Data!$D$2:$D$6")}, nil, nil, nil); len(got) != 0 {
+		t.Errorf("chart moved: %+v", got)
+	}
+	// The same place, other data: the chart's data was edited.
+	if got := lostFeatures([]xlsx.Feature{old}, []xlsx.Feature{chart("Data", "F2", "Data!$D$2:$D$9")}, nil, nil, nil); len(got) != 0 {
+		t.Errorf("chart edited in place: %+v", got)
+	}
+	// Rows inserted above it moved its data and its place: where the lines
+	// added put them, it is where it was.
+	shifted := func(home, ref string) string {
+		return map[string]string{"F2": "F5", "Data!$D$2:$D$6": "Data!$D$5:$D$9"}[ref]
+	}
+	if got := lostFeatures([]xlsx.Feature{old}, []xlsx.Feature{chart("Data", "F5", "Data!$D$5:$D$9")}, nil, nil, shifted); len(got) != 0 {
+		t.Errorf("chart after rows inserted: %+v", got)
+	}
+	// An Excel table renamed is the table, by its columns; with none renamed,
+	// another table is no stand-in.
+	tbl := func(name, where string) xlsx.Feature {
+		return xlsx.Feature{Kind: xlsx.FeatureTable, Sheet: "Data", Where: where, What: name, Rule: "Region|Units"}
+	}
+	renamedTo := tableRenames([]xlsx.Feature{tbl("Sales", "A1:B3")}, []xlsx.Feature{tbl("Sales2", "A1:B3")}, nil)
+	if !reflect.DeepEqual(renamedTo, map[string]string{"sales": "Sales2"}) {
+		t.Errorf("table renames: %v", renamedTo)
+	}
+	if got := lostFeatures([]xlsx.Feature{tbl("Sales", "A1:B3")}, []xlsx.Feature{tbl("Sales2", "A1:B3")}, nil, renamedTo, nil); len(got) != 0 {
+		t.Errorf("table renamed: %+v", got)
+	}
+	if got := lostFeatures([]xlsx.Feature{tbl("Sales", "A1:B3")}, []xlsx.Feature{tbl("Sales2", "A1:B3")}, nil, nil, nil); len(got) != 1 {
+		t.Errorf("table by another name: %+v", got)
+	}
+	other := tbl("Other", "A1:B3")
+	other.Rule = "Item|Price"
+	if got := tableRenames([]xlsx.Feature{tbl("Sales", "A1:B3")}, []xlsx.Feature{other}, nil); len(got) != 0 {
+		t.Errorf("a table of other columns is no rename: %v", got)
+	}
+	// A shape or picture is kept by its place, or by its name elsewhere; one
+	// of another name in another place is not it.
+	shape := f(xlsx.FeatureShape, "Data", "F2", "TextBox 2")
+	if got := lostFeatures([]xlsx.Feature{shape}, []xlsx.Feature{f(xlsx.FeatureShape, "Data", "F2", "Shape 1")}, nil, nil, nil); len(got) != 0 {
+		t.Errorf("shape renamed in place: %+v", got)
+	}
+	if got := lostFeatures([]xlsx.Feature{shape}, []xlsx.Feature{f(xlsx.FeatureShape, "Data", "H9", "TextBox 2")}, nil, nil, nil); len(got) != 0 {
+		t.Errorf("shape moved: %+v", got)
+	}
+	if got := lostFeatures([]xlsx.Feature{shape}, []xlsx.Feature{f(xlsx.FeatureShape, "Data", "H9", "Other")}, nil, nil, nil); len(got) != 1 {
+		t.Errorf("another shape: %+v", got)
+	}
+}
+
+// ruleKey compares what a rule tests: the cells its formulas read are no part
+// of it (rows and columns added or removed rewrite them), a sheet renamed no
+// more; the text it matches and the numbers it compares with are.
+func TestRuleKey(t *testing.T) {
+	same := [][2]string{
+		{"between|Summary!$D$2:$D$6", "between|Facts!$D$3:$D$7"},
+		{"expression|$B2>$C2", "expression|$B5 > $C5"},
+		{"greaterThan|140", "GREATERTHAN|140"},
+		{"between|'Q 2026'!A1:A9", "between|Q!A1:A12"},
+		{"between|Sales[Units]", "between|Sales2[Units]"},
+		{"between|SUM(B2:B6)>5", "between|sum(C3:C9)>5"},
+	}
+	for _, c := range same {
+		if ruleKey(c[0]) != ruleKey(c[1]) {
+			t.Errorf("%q and %q differ: %q, %q", c[0], c[1], ruleKey(c[0]), ruleKey(c[1]))
+		}
+	}
+	differ := [][2]string{
+		{"greaterThan|140", "greaterThan|150"},
+		{"between|0|100", "between|0|1000"},
+		{`between|"Yes,No"`, `between|"Yes,Maybe"`},
+		{`between|"A1,B2"`, `between|"A1,B3"`},
+		{"expression|$B2>$C2", "expression|$B2<$C2"},
+		{"expression|$B2>5", "expression|$B2>$C2"},
+		{"between|LOG10(B2)", "between|LOG2(B2)"},
+	}
+	for _, c := range differ {
+		if ruleKey(c[0]) == ruleKey(c[1]) {
+			t.Errorf("%q and %q are alike: %q", c[0], c[1], ruleKey(c[0]))
+		}
+	}
+}
+
+func TestRenameTable(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"SUM(Sales[Units])", "SUM(Sales2[Units])"},
+		{"SUM(SALES[[#This Row],[Units]])+Sales[@Units]", "SUM(Sales2[[#This Row],[Units]])+Sales2[@Units]"},
+		{`"Sales[x]"&Sales[Units]`, `"Sales[x]"&Sales2[Units]`},
+		{"MySales[Units]", "MySales[Units]"},
+		{"Data!Sales[Units]", "Data!Sales[Units]"},
+		{"Sales", "Sales"},
+	} {
+		if got := renameTable(c.in, "sales", "Sales2"); got != c.want {
+			t.Errorf("%s: %s, want %s", c.in, got, c.want)
+		}
 	}
 }
 
@@ -186,25 +323,25 @@ func TestLostChartsheet(t *testing.T) {
 		return xlsx.Feature{Kind: xlsx.FeatureChart, Sheet: sheet, What: "bar chart", Chartsheet: true}
 	}
 	before := []xlsx.Feature{chart("Chart1")}
-	got := lostFeatures(before, nil, map[string]string{"data": "Data"})
+	got := lostFeatures(before, nil, map[string]string{"data": "Data"}, nil, nil)
 	want := []lostFeature{{Kind: xlsx.FeatureChart, Where: "Chart1", What: "bar chart on a chart sheet"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("lost\n got %+v\nwant %+v", got, want)
 	}
-	if got := lostFeatures(before, before, nil); len(got) != 0 {
+	if got := lostFeatures(before, before, nil, nil, nil); len(got) != 0 {
 		t.Errorf("kept: %+v", got)
 	}
-	if got := lostFeatures(before, []xlsx.Feature{chart("Chart 1")}, nil); len(got) != 0 {
+	if got := lostFeatures(before, []xlsx.Feature{chart("Chart 1")}, nil, nil, nil); len(got) != 0 {
 		t.Errorf("renamed: %+v", got)
 	}
 	// Two chart sheets, one lost: the one left keeps its own.
 	two := []xlsx.Feature{chart("A"), chart("B")}
-	if got := lostFeatures(two, []xlsx.Feature{chart("B")}, nil); len(got) != 1 || got[0].Where != "A" {
+	if got := lostFeatures(two, []xlsx.Feature{chart("B")}, nil, nil, nil); len(got) != 1 || got[0].Where != "A" {
 		t.Errorf("one of two: %+v", got)
 	}
 	// A chart on a worksheet is not matched by a chart sheet's.
 	onSheet := xlsx.Feature{Kind: xlsx.FeatureChart, Sheet: "Data", Where: "F2", What: "bar chart"}
-	if got := lostFeatures([]xlsx.Feature{onSheet}, before, map[string]string{"data": "Data"}); len(got) != 1 {
+	if got := lostFeatures([]xlsx.Feature{onSheet}, before, map[string]string{"data": "Data"}, nil, nil); len(got) != 1 {
 		t.Errorf("a chart on a sheet and one on a chart sheet: %+v", got)
 	}
 }

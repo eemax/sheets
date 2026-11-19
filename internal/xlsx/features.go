@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
+	"html"
 	"path"
 	"regexp"
 	"strconv"
@@ -35,6 +36,17 @@ type Feature struct {
 	// Chartsheet: it is on a chart sheet (a sheet that is one chart), which
 	// has no cells and no anchor.
 	Chartsheet bool `json:"chart_sheet,omitempty"`
+	// Type is the kind of rule or chart the file names: a validation's type
+	// (whole, list, custom), a conditional format's (cellIs, expression),
+	// a chart's (column, stacked column).
+	Type string `json:"type,omitempty"`
+	// Rule is what a validation or conditional format says, as written:
+	// its operator and formulas, joined by "|" (a text it matches, a rank
+	// it keeps); for a table, its column names, joined by "|".
+	Rule string `json:"rule,omitempty"`
+	// Series are a chart's data, one reference to the values of each
+	// series (Data!$B$2:$B$6).
+	Series []string `json:"series,omitempty"`
 }
 
 // Feature kinds.
@@ -49,13 +61,21 @@ const (
 )
 
 var (
-	validationTag = regexp.MustCompile(`<(?:x:)?dataValidation\b[^>]*>`)
-	x14Validation = regexp.MustCompile(`(?s)<x14:dataValidation\b([^>]*)>.*?</x14:dataValidation>`)
+	// A rule's element: its attributes, and what it holds (empty when it is
+	// closed on itself).
+	validationEl  = regexp.MustCompile(`(?s)<(?:x:)?dataValidation\b([^>]*?)(?:/>|>(.*?)</(?:x:)?dataValidation>)`)
+	x14Validation = regexp.MustCompile(`(?s)<x14:dataValidation\b([^>]*)>(.*?)</x14:dataValidation>`)
 	condTag       = regexp.MustCompile(`(?s)<(?:x:)?conditionalFormatting\b([^>]*)>(.*?)</(?:x:)?conditionalFormatting>`)
-	ruleTag       = regexp.MustCompile(`<(?:x:)?cfRule\b[^>]*>`)
-	x14CfRule     = regexp.MustCompile(`<x14:cfRule\b[^>]*>`)
+	cfRuleEl      = regexp.MustCompile(`(?s)<(?:x:)?cfRule\b([^>]*?)(?:/>|>(.*?)</(?:x:)?cfRule>)`)
+	x14CfRule     = regexp.MustCompile(`(?s)<x14:cfRule\b([^>]*?)(?:/>|>(.*?)</x14:cfRule>)`)
 	x14RuleID     = regexp.MustCompile(`<x14:id>([^<]*)</x14:id>`)
 	attrRe        = regexp.MustCompile(`\b([\w:]+)="([^"]*)"`)
+	// The formulas of a rule, in either namespace (an extension's are in
+	// xm:f inside), and the tags among their text.
+	ruleFormulaEl = regexp.MustCompile(`(?s)<(?:\w+:)?(formula[123]?)\b[^>]*>(.*?)</(?:\w+:)?formula[123]?>`)
+	tagEl         = regexp.MustCompile(`<[^>]*>`)
+	// A column of an Excel table.
+	tableColumnTag = regexp.MustCompile(`<(?:\w+:)?tableColumn\b[^>]*>`)
 )
 
 // attrsOf reads the attributes of a start tag as written.
@@ -153,25 +173,29 @@ func Features(data []byte) ([]Feature, error) {
 func sheetRules(sheet string, b []byte) []Feature {
 	s := string(b)
 	var out []Feature
-	for _, tag := range validationTag.FindAllString(s, -1) {
-		a := attrsOf(tag)
-		out = append(out, Feature{Kind: FeatureValidation, Sheet: sheet, Where: a["sqref"], What: validationWhat(a["type"])})
+	for _, m := range validationEl.FindAllStringSubmatch(s, -1) {
+		a := attrsOf("<v " + m[1] + ">")
+		out = append(out, Feature{Kind: FeatureValidation, Sheet: sheet, Where: a["sqref"], What: validationWhat(a["type"]),
+			Type: a["type"], Rule: validationRule(a, m[2])})
 	}
 	for _, m := range x14Validation.FindAllStringSubmatch(s, -1) {
 		a := attrsOf("<v " + m[1] + ">")
 		where := ""
-		if sq := x14Sqref.FindStringSubmatch(m[0]); sq != nil {
+		if sq := x14Sqref.FindStringSubmatch(m[2]); sq != nil {
 			where = strings.TrimSpace(sq[1])
 		}
-		out = append(out, Feature{Kind: FeatureValidation, Sheet: sheet, Where: where, What: validationWhat(a["type"])})
+		out = append(out, Feature{Kind: FeatureValidation, Sheet: sheet, Where: where, What: validationWhat(a["type"]),
+			Type: a["type"], Rule: validationRule(a, m[2])})
 	}
 	// A rule of Excel 2010's list that one of the main list points to
 	// (x14:id) is part of that rule, not one of its own.
 	linked := map[string]bool{}
 	for _, m := range condTag.FindAllStringSubmatch(s, -1) {
 		a := attrsOf("<c " + m[1] + ">")
-		for _, rule := range ruleTag.FindAllString(m[2], -1) {
-			out = append(out, Feature{Kind: FeatureCond, Sheet: sheet, Where: a["sqref"], What: condWhat(attrsOf(rule)["type"])})
+		for _, rule := range cfRuleEl.FindAllStringSubmatch(m[2], -1) {
+			ra := attrsOf("<r " + rule[1] + ">")
+			out = append(out, Feature{Kind: FeatureCond, Sheet: sheet, Where: a["sqref"], What: condWhat(ra["type"]),
+				Type: ra["type"], Rule: condRule(ra, rule[2])})
 		}
 		for _, id := range x14RuleID.FindAllStringSubmatch(m[2], -1) {
 			linked[strings.TrimSpace(id[1])] = true
@@ -182,13 +206,59 @@ func sheetRules(sheet string, b []byte) []Feature {
 		if sq := x14Sqref.FindStringSubmatch(blk); sq != nil {
 			where = strings.TrimSpace(sq[1])
 		}
-		for _, rule := range x14CfRule.FindAllString(blk, -1) {
-			a := attrsOf(rule)
+		for _, rule := range x14CfRule.FindAllStringSubmatch(blk, -1) {
+			a := attrsOf("<r " + rule[1] + ">")
 			if linked[a["id"]] {
 				continue
 			}
-			out = append(out, Feature{Kind: FeatureCond, Sheet: sheet, Where: where, What: condWhat(a["type"])})
+			out = append(out, Feature{Kind: FeatureCond, Sheet: sheet, Where: where, What: condWhat(a["type"]),
+				Type: a["type"], Rule: condRule(a, rule[2])})
 		}
+	}
+	return out
+}
+
+// formulasOf reads the formulas a rule holds, in order, as written (without
+// a leading =, tags and entities taken out).
+func formulasOf(body string) []string {
+	var out []string
+	for _, m := range ruleFormulaEl.FindAllStringSubmatch(body, -1) {
+		f := strings.TrimSpace(html.UnescapeString(tagEl.ReplaceAllString(m[2], "")))
+		out = append(out, strings.TrimPrefix(f, "="))
+	}
+	return out
+}
+
+// validationRule is what a validation says: its operator (between, unless
+// it names another) and its formulas.
+func validationRule(a map[string]string, body string) string {
+	op := a["operator"]
+	if op == "" {
+		op = "between"
+	}
+	return strings.Join(append([]string{op}, formulasOf(body)...), "|")
+}
+
+// condRule is what a conditional format's rule says: its operator, the text
+// or rank it matches (named, when it has one) and its formulas.
+func condRule(a map[string]string, body string) string {
+	var parts []string
+	if a["operator"] != "" {
+		parts = append(parts, a["operator"])
+	}
+	for _, k := range []string{"text", "timePeriod", "rank", "percent", "bottom"} {
+		if a[k] != "" {
+			parts = append(parts, k+"="+a[k])
+		}
+	}
+	return strings.Join(append(parts, formulasOf(body)...), "|")
+}
+
+// tableColumns lists the column names of an Excel table's part, in order.
+func tableColumns(data []byte) []string {
+	var out []string
+	for _, tag := range tableColumnTag.FindAll(data, -1) {
+		out = append(out, html.UnescapeString(attrsOf(string(tag))["name"]))
 	}
 	return out
 }
@@ -296,7 +366,14 @@ func (p *pkg) drawn(sheet, drawingPart string) []Feature {
 							what += " " + strconv.Quote(c.Title)
 						}
 					}
-					out = append(out, Feature{Kind: FeatureChart, Sheet: sheet, Where: w, What: what})
+					f := Feature{Kind: FeatureChart, Sheet: sheet, Where: w, What: what}
+					if c, ok := charts[w]; ok {
+						f.Type = c.Type
+						for _, sr := range c.Shown().Series {
+							f.Series = append(f.Series, sr.Values)
+						}
+					}
+					out = append(out, f)
 				case kind == "pic":
 					out = append(out, Feature{Kind: FeaturePicture, Sheet: sheet, Where: w, What: name})
 				default:

@@ -662,3 +662,63 @@ model["A2"] = "x"
 model["C2"] = "=Data!C2:C3*2"
 model["D2"] = "=C2+1"
 wb.save(f"{out}/against_legacy.xlsx")
+
+# against_addchart.xlsx: against_before.xlsx loaded by openpyxl, a chart of
+# other data (Units) added at H20 and another validation (a list typed in,
+# E2:E6) with it, and saved. The round trip drops the grouped chart, the text
+# box and the list read from Summary (in the 2010 extension list) all the
+# same, though a chart and a list validation are now on the sheet.
+from openpyxl.chart import BarChart, Reference
+from openpyxl.worksheet.datavalidation import DataValidation
+
+wb = openpyxl.load_workbook(f"{out}/against_before.xlsx")
+ws = wb["Data"]
+units = BarChart()
+units.type = "col"
+units.add_data(Reference(ws, min_col=2, min_row=1, max_row=6), titles_from_data=True)
+ws.add_chart(units, "H20")
+dv = DataValidation(type="list", formula1='"North,South,East,West"')
+ws.add_data_validation(dv)
+dv.add("E2:E6")
+wb.save(f"{out}/against_addchart.xlsx")
+
+# against_table.xlsx: an Excel table (Sales, Data!A1:B3) that two formulas
+# read by its name. against_table_renamed.xlsx: the table renamed Sales2,
+# with the formulas as Excel rewrites them for it.
+from openpyxl.worksheet.table import Table
+
+wb = openpyxl.Workbook()
+ws = wb.active
+ws.title = "Data"
+for row in (("Region", "Units"), ("North", 5), ("South", 7)):
+    ws.append(row)
+ws.add_table(Table(displayName="Sales", ref="A1:B3"))
+total = wb.create_sheet("Sum")
+total["A1"] = "=SUM(Sales[Units])"
+total["A2"] = "=Sales[[#This Row],[Units]]"
+wb.save(f"{out}/against_table.xlsx")
+table = ws.tables["Sales"]
+table.name = table.displayName = "Sales2"
+total["A1"] = "=SUM(Sales2[Units])"
+total["A2"] = "=Sales2[[#This Row],[Units]]"
+wb.save(f"{out}/against_table_renamed.xlsx")
+
+# against_block.xlsx: a table (Data!A1:D4) with a block of cells beside it
+# (H1:J4) that formulas read, Sum's among them. against_blockcut.xlsx: openpyxl
+# cuts the block and pastes it below the table, in other columns
+# (move_range, Data!H1:J4 to A30), and leaves the formulas reading the cells
+# as they were, which Excel would have rewritten.
+wb = openpyxl.Workbook()
+ws = wb.active
+ws.title = "Data"
+for row in (("Item", "Units", "Price", "Total"), ("a", 3, 5, "=B2*C2"), ("b", 4, 6, "=B3*C3"), ("c", 5, 7, "=B4*C4")):
+    ws.append(row)
+for r, row in enumerate((("Key", "Qty", "Cost"), ("x", 10, "=I2*B2"), ("y", 20, "=I3*B3"), ("z", 30, "=SUM(J2:J3)+I4")), 1):
+    for c, v in enumerate(row, 8):
+        ws.cell(r, c, v)
+total = wb.create_sheet("Sum")
+total["A1"] = "=SUM(Data!I2:I4)"
+total["A2"] = "=Data!D2+Data!J2"
+wb.save(f"{out}/against_block.xlsx")
+ws.move_range("H1:J4", rows=29, cols=-7)
+wb.save(f"{out}/against_blockcut.xlsx")

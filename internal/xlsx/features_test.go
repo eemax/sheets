@@ -31,11 +31,11 @@ func TestFeatures(t *testing.T) {
 	// XlsxWriter's file, as Excel saves it: a chart grouped with a text
 	// box, a list validation in the 2010 extension list.
 	want := []Feature{
-		{Kind: FeatureValidation, Sheet: "Data", Where: "B2:B6", What: "whole validation"},
-		{Kind: FeatureValidation, Sheet: "Data", Where: "C2:C6", What: "decimal validation"},
-		{Kind: FeatureValidation, Sheet: "Data", Where: "A2:A6", What: "list validation"},
-		{Kind: FeatureCond, Sheet: "Data", Where: "D2:D6", What: "cell value rule"},
-		{Kind: FeatureChart, Sheet: "Data", Where: "F2", What: "column chart"},
+		{Kind: FeatureValidation, Sheet: "Data", Where: "B2:B6", What: "whole validation", Type: "whole", Rule: "between|0|1000"},
+		{Kind: FeatureValidation, Sheet: "Data", Where: "C2:C6", What: "decimal validation", Type: "decimal", Rule: "greaterThanOrEqual|0"},
+		{Kind: FeatureValidation, Sheet: "Data", Where: "A2:A6", What: "list validation", Type: "list", Rule: "between|Summary!$D$2:$D$6"},
+		{Kind: FeatureCond, Sheet: "Data", Where: "D2:D6", What: "cell value rule", Type: "cellIs", Rule: "greaterThan|140"},
+		{Kind: FeatureChart, Sheet: "Data", Where: "F2", What: "column chart", Type: "column", Series: []string{"Data!$D$2:$D$6"}},
 		{Kind: FeatureShape, Sheet: "Data", Where: "F2", What: "TextBox 2"},
 		{Kind: FeatureName, Where: "TaxRate", What: "Summary!$B$1"},
 	}
@@ -126,7 +126,7 @@ func TestTracer(t *testing.T) {
 // A chart on a chart sheet (a sheet that is one chart, with no anchor) is a
 // feature of that sheet; deleting the sheet takes it away.
 func TestFeaturesChartsheet(t *testing.T) {
-	want := []Feature{{Kind: FeatureChart, Sheet: "Chart1", What: "bar chart", Chartsheet: true}}
+	want := []Feature{{Kind: FeatureChart, Sheet: "Chart1", What: "bar chart", Chartsheet: true, Type: "bar", Series: []string{"Data!$A$1:$A$3"}}}
 	if got := featuresOf(t, "against_chartsheet.xlsx"); !reflect.DeepEqual(got, want) {
 		t.Errorf("against_chartsheet.xlsx:\n got %+v\nwant %+v", got, want)
 	}

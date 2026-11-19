@@ -473,6 +473,63 @@ exec sheets validate novalid.xlsx Data!B2:B7 --clear
 stdout ', 1 feature lost, '
 stdout '^  validation  Data!B2:B6  whole validation$'
 
+# A feature lost is matched only with one of its kind and its identity (a
+# validation or conditional format's type and formula, a chart's type and
+# place or data): another of its kind on the sheet hides nothing. fmt
+# replaces a conditional format with its own banding rule: the cell value rule
+# is lost. Deleting a column takes the whole-number validation on it, not the
+# decimal one that moves into its place.
+cp against_before.xlsx fmt.xlsx
+exec sheets fmt fmt.xlsx
+! exec sheets check fmt.xlsx --against against_before.xlsx
+stdout ', 1 feature lost, '
+stdout '^  conditional_format  Data!D2:D6  cell value rule$'
+! exec sheets --json check fmt.xlsx --against against_before.xlsx
+stdout '"features_lost":\[\{"kind":"conditional_format","where":"Data!D2:D6","what":"cell value rule"\}\]'
+cp against_before.xlsx delcol.xlsx
+exec sheets cols delete delcol.xlsx Data!B
+! exec sheets check delcol.xlsx --against against_before.xlsx
+stdout ', 1 feature lost, '
+stdout '^  validation  Data!B2:B6  whole validation$'
+! stdout 'decimal validation'
+! exec sheets --json check delcol.xlsx --against against_before.xlsx
+stdout '"features_lost":\[\{"kind":"validation","where":"Data!B2:B6","what":"whole validation"\}\]'
+# openpyxl's round trip with a chart of other data and another list validation
+# added: the grouped chart, the text box and the list read from Summary are
+# lost all the same.
+fixture against_addchart.xlsx
+! exec sheets check against_addchart.xlsx --against against_before.xlsx
+stdout ', 3 features lost, '
+stdout '^  validation  Data!A2:A6  list validation$'
+stdout '^  chart       Data!F2     column chart$'
+stdout '^  shape       Data!F2     TextBox 2$'
+# Nothing lost when rows are inserted above all of them: the chart's data and
+# the validations' ranges follow.
+cp against_before.xlsx above.xlsx
+exec sheets rows insert above.xlsx Data!1 -n 3
+exec sheets check above.xlsx --against against_before.xlsx
+stdout ', 0 features lost, '
+
+# An Excel table renamed (same range, same columns) is followed: the formulas
+# reading it by name, which Excel rewrites for the rename, are no changes and
+# the table is not lost.
+fixture against_table.xlsx against_table_renamed.xlsx
+cp against_table.xlsx tbl.xlsx
+cp against_table_renamed.xlsx tbl2.xlsx
+exec sheets check --fix tbl.xlsx
+exec sheets check --fix tbl2.xlsx
+exec sheets check tbl2.xlsx --against tbl.xlsx
+stdout '^tbl2.xlsx against tbl.xlsx: 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown$'
+stdout '^  table renamed: Sales → Sales2$'
+exec sheets --json check tbl2.xlsx --against tbl.xlsx
+stdout '"features_lost":\[\],'
+stdout '"structure":\[\{"change":"table renamed","where":"Sales → Sales2"\}\]'
+# A table of the same name left as it was is nothing; one gone is lost.
+exec sheets check tbl.xlsx --against tbl.xlsx
+stdout ', 0 features lost, '
+! exec sheets check against_openpyxl.xlsx --against against_table.xlsx
+stdout '^  table  Data!A1:B3  Sales$'
+
 # A sheet removed is the cause of what read it, whether its formulas were
 # left as they were (openpyxl deletes the sheet: they now read nothing) or
 # rewritten with #REF! (sheets and Excel): none is unexplained, and the
@@ -534,6 +591,74 @@ stdout ': 0 inputs changed, 6 formulas changed, 8 computed values moved \(each w
 stdout '^  Data!B7  =SUM\(B2:B6\) → =SUM\(B2:B6\)  \(its text is as it was, though the cells it reads were cut and pasted elsewhere: Excel writes =SUM\(B12:B16\)\)$'
 stdout '^  Summary!B7  =Data!B2 → =Data!B2  \(.*: Excel writes =Data!B12\)$'
 stdout '^  Data!12:16, were 2:6$'
+! stdout 'structure:'
+
+# Cells cut and pasted from beside a table to empty rows (sheets move,
+# Excel's cut and paste): a side block read by a formula, moved below the
+# table. The cells moved, the formula follows them as Excel rewrites it; no
+# input or formula changed, and no rows added.
+cp against_before.xlsx side.xlsx
+exec sheets set side.xlsx Data!H1 Notes Data!H2 10 Data!H3 20 Summary!C2 '=SUM(Data!H2:H3)'
+cp side.xlsx side2.xlsx
+exec sheets move side2.xlsx Data!H1:H3 Data!H30
+exec sheets check side2.xlsx --against side.xlsx
+stdout '^side2.xlsx against side.xlsx: 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown, 3 rows moved$'
+stdout '^  Data!H30:H32, were H1:H3$'
+! stdout 'structure:'
+exec sheets --json check side2.xlsx --against side.xlsx
+stdout '"changed":\[\],'
+stdout '"moved_rows":\[\{"sheet":"Data","from":1,"to":30,"rows":3,"columns":"H:H"\}\]'
+stdout '"structure":\[\]'
+# The same, into other columns (sheets move's own example: Sales!H1:J20 to
+# Sales!A30), with formulas inside the block reading cells in it and beside
+# it; and moved back.
+exec sheets set blk.xlsx Sales!A1 Item Sales!B1 Units Sales!C1 Price Sales!D1 Total Sales!A2 a Sales!B2 3 Sales!C2 5 Sales!D2 '=B2*C2' Sales!A3 b Sales!B3 4 Sales!C3 6 Sales!D3 '=B3*C3' Sales!A4 c Sales!B4 5 Sales!C4 7 Sales!D4 '=B4*C4' Sales!H1 Key Sales!I1 Qty Sales!J1 Cost Sales!H2 x Sales!I2 10 Sales!J2 '=I2*Sales!B2' Sales!H3 y Sales!I3 20 Sales!J3 '=I3*Sales!B3' Sales!H4 z Sales!I4 30 Sales!J4 '=SUM(J2:J3)+I4' Summary!A1 '=SUM(Sales!I2:I4)' Summary!A2 '=SUM(Sales!J2:J4)' Summary!A3 '=Sales!D2+Sales!J2'
+cp blk.xlsx blk2.xlsx
+exec sheets move blk2.xlsx Sales!H1:J4 Sales!A30
+exec sheets check blk2.xlsx --against blk.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown, 4 rows moved$'
+stdout '^  Sales!A30:C33, were H1:J4$'
+! stdout 'structure:'
+exec sheets --json check blk2.xlsx --against blk.xlsx
+stdout '"moved_rows":\[\{"sheet":"Sales","from":1,"to":30,"rows":4,"columns":"A:C","was_columns":"H:J"\}\]'
+cp blk2.xlsx blk3.xlsx
+exec sheets move blk3.xlsx Sales!A30:C33 Sales!H1
+exec sheets check blk3.xlsx --against blk2.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown, 4 rows moved$'
+stdout '^  Sales!H1:J4, were A30:C33$'
+# A block cut with an input changed beside it: the block moved, the input
+# changed.
+cp side.xlsx side3.xlsx
+exec sheets move side3.xlsx Data!H1:H3 Data!H30
+exec sheets set side3.xlsx Data!B3 10
+exec sheets check side3.xlsx --against side.xlsx
+stdout ': 1 input changed, 0 formulas changed, '
+stdout '^  Data!B3  input  7 → 10$'
+stdout '^  Data!H30:H32, were H1:H3$'
+# A sort of a table with blank cells is still a sort: the blanks that moved
+# with their rows are no block cut.
+exec sheets set blanks.xlsx Data!A1 Name Data!B1 Note Data!C1 Score Data!A2 a Data!C2 5 Data!A3 b Data!B3 hi Data!C3 3 Data!A4 c Data!C4 9 Data!A5 d Data!B5 yo Data!C5 1 Data!A6 e Data!C6 7
+cp blanks.xlsx blanks2.xlsx
+exec sheets sort blanks2.xlsx Data!A1:C6 Score
+exec sheets check blanks2.xlsx --against blanks.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown, 4 rows moved$'
+stdout '^  Data!2, were 5$'
+! stdout '^changed:'
+# Cleared and not pasted anywhere, it is a change; pasted with a value
+# changed, the cells are not the cells that were.
+cp blk.xlsx clear.xlsx
+exec sheets clear clear.xlsx Sales!I2
+exec sheets check clear.xlsx --against blk.xlsx
+stdout '^  Sales!I2  input  10 → \(empty\)$'
+! stdout 'rows moved'
+# openpyxl's move_range leaves the formulas reading the cells as they were:
+# each is flagged, with what Excel writes.
+fixture against_block.xlsx against_blockcut.xlsx
+! exec sheets check against_blockcut.xlsx --against against_block.xlsx
+stdout ': 0 inputs changed, 5 formulas changed, 5 computed values moved \(each with its cause\), 0 unexplained,'
+stdout '^  Data!C31 \(was J2\)  =I2\*B2 → =I2\*B2  \(its text is as it was, though the cells it reads were cut and pasted elsewhere: Excel writes =B31\*B2\)$'
+stdout '^  Sum!A1  =SUM\(Data!I2:I4\) → =SUM\(Data!I2:I4\)  \(.*: Excel writes =SUM\(Data!B31:B33\)\)$'
+stdout '^  Data!A30:C33, were H1:J4$'
 ! stdout 'structure:'
 
 # A value that comes from outside the workbook (RTD: a server's) moves with

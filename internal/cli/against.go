@@ -106,7 +106,11 @@ type movedRows struct {
 	// Columns are the columns that moved, as A:D, when a sort of a range
 	// left the cells beside it where they were; "" for whole rows.
 	Columns string `json:"columns,omitempty"`
-	c1, c2  int
+	// WasColumns are the columns they were in, when cells were cut and
+	// pasted into other columns (Columns are where they are now).
+	WasColumns   string `json:"was_columns,omitempty"`
+	c1, c2       int
+	wasC1, wasC2 int
 }
 
 // structureEntry is a sheet added, removed or renamed, rows or columns
@@ -354,17 +358,17 @@ func (a *app) against(path, before string, res *checkResult, cr *xlsx.CheckResul
 	}
 	out.ValuesOnly = A.csv || B.csv
 	r := &report{out: out, A: A, B: B, arrays: arrays{}}
-	r.compare()
 	if !out.ValuesOnly {
-		fa, err := xlsx.Features(A.data)
-		if err != nil {
+		if r.fa, err = xlsx.Features(A.data); err != nil {
 			return nil, fmt.Errorf("%s: %w", before, err)
 		}
-		fb, err := xlsx.Features(B.data)
-		if err != nil {
+		if r.fb, err = xlsx.Features(B.data); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
-		out.FeaturesLost = lostFeatures(fa, fb, r.renamed)
+	}
+	r.compare()
+	if !out.ValuesOnly {
+		out.FeaturesLost = lostFeatures(r.fa, r.fb, r.renamed, r.tables, r.shiftRef)
 	}
 	s := &out.Summary
 	for _, c := range out.Changed {
@@ -413,6 +417,12 @@ type report struct {
 	edits   []lineEdit
 	renames [][2]string
 	arrays  arrays
+	// fa and fb are the features each version carries; tables the Excel
+	// tables renamed (old name lower-cased to new), tableRenames the same in
+	// order.
+	fa, fb       []xlsx.Feature
+	tables       map[string]string
+	tableRenames [][2]string
 	// anyLines: some sheet had lines added or removed; anyCut: cells cut and
 	// pasted.
 	anyLines, anyCut bool
@@ -440,6 +450,19 @@ type lineMap struct {
 	// pasteC1 to pasteC2 (0 for whole rows).
 	pasted           map[int]bool
 	pasteC1, pasteC2 int
+	// pasteDC is how many columns right the cells cut and pasted went; cells
+	// is the block of them when it is among others that stayed (as numbered
+	// before).
+	pasteDC int
+	cells   grid.Range
+}
+
+// pastedAt tells whether an old cell was cut and pasted elsewhere.
+func (m *lineMap) pastedAt(row, col int) bool {
+	if m.cells.R1 > 0 {
+		return m.cells.Contains(row, col)
+	}
+	return m.pasted[row]
 }
 
 // blockMap is lineMap's for the columns of a block (diff.Block): the old
@@ -552,7 +575,7 @@ func (r *report) structural(sheet string, rg grid.Range, label string) {
 // heldNumber notes rows that moved yet kept their numbers: the rows around
 // them moved, or rows were added or removed above them.
 func heldNumber(m movedRows) string {
-	if m.From == m.To {
+	if m.From == m.To && m.c1 == m.wasC1 {
 		return " (its number held; the rows around it moved)"
 	}
 	return ""
@@ -1033,28 +1056,159 @@ func (r *report) pasted(j *job, rows []diff.Pair) []diff.Pair {
 // rewrites them for a move, or as they were.
 func (r *report) holds(sa *grid.Sheet, ra int, sb *grid.Sheet, rb int, cols [][2]int, m formula.Move) bool {
 	for _, c := range cols {
-		x, y := sa.At(ra, c[0]), sb.At(rb, c[1])
-		xe, ye := x == nil || x.IsEmpty(), y == nil || y.IsEmpty()
-		switch {
-		case xe && ye:
-		case xe != ye:
-			return false
-		case x.Formula != "" && y.Formula != "":
-			// As Excel rewrites it, or as it was (openpyxl's move_range: the
-			// check of its formula flags that).
-			f := formula.MoveRefs(r.renamedIn(x.Formula), sb.Name, sb.Name, m)
-			pa, _ := formula.Pattern(folded(f), rb, c[1])
-			pb, _ := formula.Pattern(folded(y.Formula), rb, c[1])
-			if pa != pb && folded(x.Formula) != folded(y.Formula) {
-				return false
-			}
-		case x.Formula != "" || y.Formula != "":
-			return false
-		case !sameResults(value(r.A.wb, sa, ra, c[0]), value(r.B.wb, sb, rb, c[1])):
+		if !r.holdsCell(sa, ra, c[0], sb, rb, c[1], m) {
 			return false
 		}
 	}
 	return true
+}
+
+// holdsCell tells whether a cell holds what another held, a formula as
+// Excel rewrites it for a move, or as it was.
+func (r *report) holdsCell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int, m formula.Move) bool {
+	x, y := sa.At(ra, ca), sb.At(rb, cb)
+	xe, ye := x == nil || x.IsEmpty(), y == nil || y.IsEmpty()
+	switch {
+	case xe && ye:
+	case xe != ye:
+		return false
+	case x.Formula != "" && y.Formula != "":
+		// As Excel rewrites it, or as it was (openpyxl's move_range: the
+		// check of its formula flags that).
+		f := formula.MoveRefs(r.renamedIn(x.Formula), sb.Name, sb.Name, m)
+		pa, _ := formula.Pattern(folded(f), rb, cb)
+		pb, _ := formula.Pattern(folded(y.Formula), rb, cb)
+		if pa != pb && folded(x.Formula) != folded(y.Formula) {
+			return false
+		}
+	case x.Formula != "" || y.Formula != "":
+		return false
+	case !sameResults(value(r.A.wb, sa, ra, ca), value(r.B.wb, sb, rb, cb)):
+		return false
+	}
+	return true
+}
+
+// cutCells finds cells cut and pasted among others that stayed (sheets move,
+// Excel's cut and paste of a block beside a table, or below it): cells that
+// vacated one rectangle of the sheet and filled another of the same size,
+// each holding what it held, formulas as Excel rewrites them for the move,
+// while the cells around stayed where they were (a few may have changed).
+// Pairing rows as they align, such a sheet has cells emptied where the block
+// was and rows added where it went, or the rows of the block taken for a
+// sort. It records the block in j, and pairs the rows and columns as they
+// are numbered.
+func (r *report) cutCells(j *job) bool {
+	sa, sb := j.sa, j.sb
+	ua, ub := sa.Used(), sb.Used()
+	if ua.R2 == 0 || ub.R2 == 0 {
+		return false
+	}
+	// The cells that went empty, and those that were filled.
+	var src, dst grid.Range
+	grow := func(rg *grid.Range, row, col int) {
+		if rg.R1 == 0 {
+			*rg = grid.Range{R1: row, C1: col, R2: row, C2: col}
+			return
+		}
+		rg.R1, rg.C1, rg.R2, rg.C2 = min(rg.R1, row), min(rg.C1, col), max(rg.R2, row), max(rg.C2, col)
+	}
+	sa.Each(ua, func(row, col int, _ *grid.Cell) {
+		if empty(sb, row, col) {
+			grow(&src, row, col)
+		}
+	})
+	sb.Each(ub, func(row, col int, _ *grid.Cell) {
+		if empty(sa, row, col) {
+			grow(&dst, row, col)
+		}
+	})
+	if src.R1 == 0 || dst.R1 == 0 || src.Rows() != dst.Rows() || src.Cols() != dst.Cols() {
+		return false
+	}
+	dr, dc := dst.R1-src.R1, dst.C1-src.C1
+	if src.R1 <= dst.R2 && dst.R1 <= src.R2 && src.C1 <= dst.C2 && dst.C1 <= src.C2 {
+		return false // the two overlap: not told from cells changed
+	}
+	move := formula.Move{From: sb.Name, Src: src, To: sb.Name, DR: dr, DC: dc}
+	for row := src.R1; row <= src.R2; row++ {
+		for col := src.C1; col <= src.C2; col++ {
+			if !empty(sb, row, col) || !empty(sa, row+dr, col+dc) || !r.holdsCell(sa, row, col, sb, row+dr, col+dc, move) {
+				return false
+			}
+		}
+	}
+	// The cells around stayed: a sort moves the cells of many rows, and a
+	// few others changed is a block cut among edits.
+	others := 0
+	sa.Each(ua, func(row, col int, x *grid.Cell) {
+		if others > cutOthers || src.Contains(row, col) || dst.Contains(row, col) {
+			return
+		}
+		y := sb.At(row, col)
+		if y == nil || y.IsEmpty() {
+			others = cutOthers + 1
+			return
+		}
+		same := x.Formula == y.Formula && (x.Formula != "" || x.Kind == y.Kind && x.Num == y.Num && x.Text == y.Text && x.Bool == y.Bool)
+		if !same && x.Formula != "" && y.Formula != "" {
+			f := formula.MoveRefs(r.renamedIn(x.Formula), sb.Name, sb.Name, move)
+			same = folded(f) == folded(y.Formula)
+		}
+		if !same {
+			others++
+		}
+	})
+	if others > cutOthers {
+		return false
+	}
+	// Moved straight down or up with nothing else in the rows it spans or
+	// below (or straight across, in the columns): that is as well rows (or
+	// columns) added or removed above it, which move all there is.
+	if dc == 0 || dr == 0 {
+		lo := map[bool]int{true: min(src.R1, dst.R1), false: min(src.C1, dst.C1)}[dc == 0]
+		beyond := func(s *grid.Sheet, u grid.Range, block grid.Range) bool {
+			found := false
+			s.Each(u, func(row, col int, _ *grid.Cell) {
+				if found || block.Contains(row, col) {
+					return
+				}
+				found = dc == 0 && row >= lo || dc != 0 && col >= lo
+			})
+			return found
+		}
+		if !beyond(sa, ua, src) && !beyond(sb, ub, dst) {
+			return false
+		}
+	}
+	n := max(ua.R2, ub.R2)
+	j.rows = make([]diff.Pair, 0, n)
+	for row := 1; row <= n; row++ {
+		j.rows = append(j.rows, diff.Pair{Old: row, New: row})
+	}
+	j.cols, j.colsAdded, j.colsRemoved, j.moved, j.blocks = nil, nil, nil, nil, nil
+	for col := 1; col <= max(ua.C2, ub.C2); col++ {
+		j.cols = append(j.cols, [2]int{col, col})
+	}
+	j.pasted = []diff.Moved{{From: src.R1, To: dst.R1, Rows: src.Rows()}}
+	if dc != 0 || src.C1 > min(ua.C1, ub.C1) || src.C2 < max(ua.C2, ub.C2) {
+		j.pasteC1, j.pasteC2, j.pasteDC = dst.C1, dst.C2, dc // the cells, not whole rows
+	}
+	j.cut = []formula.Move{move}
+	j.cells = &cellCut{src: src, dst: dst, dr: dr, dc: dc}
+	return true
+}
+
+// cutOthers is how many cells beside a block cut and pasted may have changed
+// (edits made with it) for it still to be the block that moved.
+const cutOthers = 5
+
+// cellCut is a block of cells cut and pasted among others that stayed (the
+// cells compare through it, not as the rows pair): where it was and went, and
+// how far.
+type cellCut struct {
+	src, dst grid.Range // as numbered before and now
+	dr, dc   int
 }
 
 // runs joins line numbers into runs.
@@ -1087,7 +1241,12 @@ type job struct {
 	// it (on the sheet as now named).
 	pasted           []diff.Moved
 	pasteC1, pasteC2 int
-	cut              []formula.Move
+	// pasteDC is how many columns right the cells went (negative: left), and
+	// cells the block, when it is cells cut and pasted among others that
+	// stayed rather than rows.
+	pasteDC int
+	cells   *cellCut
+	cut     []formula.Move
 }
 
 // blockJob is columns whose rows a sort moved on its own (diff.Block): its
@@ -1151,6 +1310,9 @@ func (r *report) prepare(p diff.SheetPair) *job {
 		if p.Rows = r.pasted(j, p.Rows); len(j.pasted) > 0 {
 			p.Moved = nil // the rows cut and pasted, not sorted
 		}
+	}
+	if len(j.pasted) == 0 && len(p.Moved) == 0 && r.cutCells(j) {
+		return j // its rows and columns pair as numbered: nothing added or removed
 	}
 	j.rows, j.moved = p.Rows, p.Moved
 	for _, b := range p.Blocks {
@@ -1243,17 +1405,21 @@ func (r *report) record(j *job) []removal {
 	// Rows moved, whole or in a block of columns, as causes: what reads
 	// them, and what a sort spans (every cell there may hold another row's
 	// now).
-	moves := func(ms []diff.Moved, c1, c2 int) {
+	moves := func(ms []diff.Moved, c1, c2, dc int) {
 		lo, hi := 0, 0
-		cols := ""
+		cols, wasCols := "", ""
 		if c1 > 0 {
 			cols = grid.ColName(c1) + ":" + grid.ColName(c2)
+			if dc != 0 {
+				wasCols = grid.ColName(c1-dc) + ":" + grid.ColName(c2-dc)
+			}
 		}
 		for _, m := range ms {
-			out.MovedRows = append(out.MovedRows, movedRows{Sheet: sb.Name, From: m.From, To: m.To, Rows: m.Rows, Columns: cols, c1: c1, c2: c2})
+			out.MovedRows = append(out.MovedRows, movedRows{Sheet: sb.Name, From: m.From, To: m.To, Rows: m.Rows, Columns: cols, WasColumns: wasCols,
+				c1: c1, c2: c2, wasC1: c1 - dc, wasC2: c2 - dc})
 			was := ""
-			if m.From != m.To {
-				was = " (were " + movedRange(sa.Name, m.From, m.From+m.Rows-1, c1, c2) + ")"
+			if m.From != m.To || dc != 0 {
+				was = " (were " + movedRange(sa.Name, m.From, m.From+m.Rows-1, c1-dc, c2-dc) + ")"
 			}
 			r.structural(sb.Name, grid.Range{R1: m.To, C1: max(c1, 1), R2: m.To + m.Rows - 1, C2: map[bool]int{true: grid.MaxCols, false: c2}[c1 == 0]},
 				"rows moved: "+movedRange(sb.Name, m.To, m.To+m.Rows-1, c1, c2)+was)
@@ -1263,15 +1429,15 @@ func (r *report) record(j *job) []removal {
 			hi = max(hi, m.From+m.Rows-1, m.To+m.Rows-1)
 		}
 		if lo > 0 {
-			r.structural(sb.Name, grid.Range{R1: lo, C1: max(c1, 1), R2: hi, C2: map[bool]int{true: grid.MaxCols, false: c2}[c1 == 0]},
-				"rows moved: "+movedRange(sb.Name, lo, hi, c1, c2))
+			r.structural(sb.Name, grid.Range{R1: lo, C1: max(min(c1, c1-dc), 1), R2: hi, C2: map[bool]int{true: grid.MaxCols, false: max(c2, c2-dc)}[c1 == 0]},
+				"rows moved: "+movedRange(sb.Name, lo, hi, min(c1, c1-dc), max(c2, c2-dc)))
 		}
 	}
-	moves(j.moved, 0, 0)
+	moves(j.moved, 0, 0, 0)
 	for _, b := range j.blocks {
-		moves(b.moved, b.c1, b.c2)
+		moves(b.moved, b.c1, b.c2, 0)
 	}
-	moves(j.pasted, j.pasteC1, j.pasteC2)
+	moves(j.pasted, j.pasteC1, j.pasteC2, j.pasteDC)
 	return removals
 }
 
@@ -1332,6 +1498,23 @@ func (r *report) compare() {
 		}
 	}
 	sort.Slice(r.renames, func(i, j int) bool { return r.renames[i][0] < r.renames[j][0] })
+	if !out.ValuesOnly {
+		// An Excel table renamed: its structured references are rewritten.
+		r.tables = tableRenames(r.fa, r.fb, r.renamed)
+		for from, to := range r.tables {
+			r.tableRenames = append(r.tableRenames, [2]string{from, to})
+		}
+		sort.Slice(r.tableRenames, func(i, j int) bool { return r.tableRenames[i][0] < r.tableRenames[j][0] })
+		for _, rn := range r.tableRenames {
+			from := rn[0]
+			for _, f := range r.fa {
+				if f.Kind == xlsx.FeatureTable && strings.ToLower(f.What) == rn[0] {
+					from = f.What
+				}
+			}
+			out.Structure = append(out.Structure, structureEntry{"table renamed", from + " → " + rn[1]})
+		}
+	}
 	edits := func() []lineEdit {
 		var es []lineEdit
 		for _, j := range jobs {
@@ -1342,7 +1525,7 @@ func (r *report) compare() {
 		return es
 	}
 	r.setEdits(edits())
-	if !out.ValuesOnly && (r.anyLines || r.anyCut || len(r.renames) > 0) {
+	if !out.ValuesOnly && (r.anyLines || r.anyCut || len(r.renames) > 0 || len(r.tables) > 0) {
 		// A sheet whose formulas read another that lines were added to or
 		// removed from, or that was renamed: its rows are keyed by their
 		// formulas, which Excel rewrote, so they pair again with the old
@@ -1395,7 +1578,10 @@ func (r *report) compare() {
 			continue
 		}
 		m := &lineMap{sheet: j.sb.Name, row: map[int]int{}, col: map[int]int{}, moved: map[int]bool{}, pasted: map[int]bool{},
-			pasteC1: j.pasteC1, pasteC2: j.pasteC2}
+			pasteC1: j.pasteC1, pasteC2: j.pasteC2, pasteDC: j.pasteDC}
+		if j.cells != nil {
+			m.cells = j.cells.src
+		}
 		for _, mv := range j.moved {
 			for k := 0; k < mv.Rows; k++ {
 				m.moved[mv.From+k] = true
@@ -1448,6 +1634,9 @@ func (r *report) compare() {
 		// pair compares two cells paired by their rows, unless the result of
 		// an array formula holds either and its formula's cell compares it.
 		pair := func(ra, ca, rb, cb int) {
+			if c := j.cells; c != nil && (c.src.Contains(ra, ca) || c.dst.Contains(rb, cb)) {
+				return // cells cut and pasted: they compare where they went
+			}
 			if a, b := oldIn[[2]int{ra, ca}], newIn[[2]int{rb, cb}]; a || b {
 				if a && b || a && empty(j.sb, rb, cb) || b && empty(j.sa, ra, ca) {
 					return
@@ -1470,6 +1659,13 @@ func (r *report) compare() {
 				}
 				for _, c := range b.cols {
 					pair(q.Old, c[0], q.New, c[1])
+				}
+			}
+		}
+		if c := j.cells; c != nil {
+			for row := c.src.R1; row <= c.src.R2; row++ {
+				for col := c.src.C1; col <= c.src.C2; col++ {
+					r.cell(j.sa, row, col, j.sb, row+c.dr, col+c.dc)
 				}
 			}
 		}
@@ -1824,18 +2020,34 @@ func (r *report) setEdits(edits []lineEdit) {
 // sure set, the rows added or removed within what a sort moved are left
 // out: where they were cannot be told, as the sort took the rows elsewhere.
 func (r *report) replay(old, home string, sure bool) (string, bool) {
-	if !r.anyLines && !r.anyCut && len(r.renames) == 0 {
+	if !r.anyLines && !r.anyCut && len(r.renames) == 0 && len(r.tables) == 0 {
 		return "", false
 	}
 	return r.shifted(r.renamedIn(old), home, sure, ""), true
 }
 
-// renamedIn rewrites a formula for the sheets renamed.
+// renamedIn rewrites a formula for the sheets and Excel tables renamed.
 func (r *report) renamedIn(f string) string {
 	for _, rn := range r.renames {
 		f = formula.RenameSheet(f, rn[0], rn[1])
 	}
+	for _, rn := range r.tableRenames {
+		f = renameTable(f, rn[0], rn[1])
+	}
 	return f
+}
+
+// shiftRef gives a reference of the old version as the rows and columns added
+// and removed move it (lostFeatures): "" when they removed it.
+func (r *report) shiftRef(home, ref string) string {
+	if !r.anyLines {
+		return ref
+	}
+	g := r.lined(r.renamedIn(ref), home, false, "")
+	if strings.Contains(g, "#REF!") {
+		return ""
+	}
+	return g
 }
 
 // shifted rewrites a formula (its sheets' names as now) for the lines added
@@ -2097,16 +2309,16 @@ func (r *report) trace(tr *xlsx.Tracer) {
 // moved, or whose references Excel rewrote for them.
 func (r *report) shiftCause(c candidate) string {
 	s := c.shift
-	if m := r.lines[strings.ToLower(s.sheet)]; m != nil && (m.movedAt(s.row, s.col) || m.pasted[s.row]) {
-		c1, c2 := 0, 0
+	if m := r.lines[strings.ToLower(s.sheet)]; m != nil && (m.movedAt(s.row, s.col) || m.pastedAt(s.row, s.col)) {
+		c1, c2, dc := 0, 0, 0
 		if b := m.block(s.col); b != nil {
 			c1, c2 = b.c1, b.c2
-		} else if m.pasted[s.row] {
-			c1, c2 = m.pasteC1, m.pasteC2
+		} else if m.pastedAt(s.row, s.col) {
+			c1, c2, dc = m.pasteC1, m.pasteC2, m.pasteDC
 		}
 		was := ""
-		if s.row != c.at.Row {
-			was = " (were " + movedRange(s.sheet, s.row, s.row, c1, c2) + ")"
+		if s.row != c.at.Row || dc != 0 {
+			was = " (were " + movedRange(s.sheet, s.row, s.row, c1-dc, c2-dc) + ")"
 		}
 		return "rows moved: " + movedRange(c.at.Sheet, c.at.Row, c.at.Row, c1, c2) + was
 	}
@@ -2189,92 +2401,6 @@ func (r *report) unknownSources(tr *xlsx.Tracer) []xlsx.Source {
 		})
 	}
 	return srcs
-}
-
-// lostFeatures are what the old version carries that the new one lost: a
-// feature matches one of its kind on the same sheet (renamed or not) in
-// the same place, or, failing that, the same feature anywhere on that sheet
-// (it moved or grew), or, failing that, one of its kind there (it changed);
-// names and tables match by name.
-func lostFeatures(before, after []xlsx.Feature, renamed map[string]string) []lostFeature {
-	used := make([]bool, len(after))
-	sheetOf := func(f xlsx.Feature) (string, bool) {
-		if f.Sheet == "" {
-			return "", true
-		}
-		to, ok := renamed[strings.ToLower(f.Sheet)]
-		if ok && to == "" {
-			return "", false // its sheet was removed
-		}
-		if !ok {
-			to = f.Sheet
-		}
-		return strings.ToLower(to), true
-	}
-	identity := func(f xlsx.Feature) string {
-		switch f.Kind {
-		case xlsx.FeatureName:
-			return strings.ToLower(f.Where)
-		case xlsx.FeatureTable:
-			return strings.ToLower(f.What)
-		}
-		return strings.ToLower(f.Where)
-	}
-	// pass 0 matches the same place; 1 the same feature (its What) anywhere
-	// on the sheet; 2 any of its kind there.
-	match := func(f xlsx.Feature, pass int) bool {
-		sheet, ok := sheetOf(f)
-		if !ok {
-			return false
-		}
-		loose := pass > 0
-		for i, g := range after {
-			if used[i] || g.Kind != f.Kind || pass == 1 && !strings.EqualFold(g.What, f.What) {
-				continue
-			}
-			if loose && f.Chartsheet && g.Chartsheet {
-				// A chart sheet is no worksheet, so a rename of it is not
-				// followed: its chart is the one chart sheet left.
-				used[i] = true
-				return true
-			}
-			if strings.ToLower(g.Sheet) != sheet {
-				continue
-			}
-			named := f.Kind == xlsx.FeatureName || f.Kind == xlsx.FeatureTable
-			if identity(g) == identity(f) || loose && !named {
-				used[i] = true
-				return true
-			}
-		}
-		return false
-	}
-	kept := make([]bool, len(before))
-	for pass := 0; pass < 3; pass++ {
-		for i, f := range before {
-			if !kept[i] {
-				kept[i] = match(f, pass)
-			}
-		}
-	}
-	var out []lostFeature
-	for i, f := range before {
-		if kept[i] {
-			continue
-		}
-		where, what := f.Where, f.What // a name of the workbook
-		if f.Sheet != "" {
-			where = grid.QuoteSheet(f.Sheet) + "!" + f.Where
-		}
-		if f.Chartsheet {
-			where, what = grid.QuoteSheet(f.Sheet), strings.TrimSpace(what+" on a chart sheet")
-		}
-		out = append(out, lostFeature{Kind: f.Kind, Where: where, What: what})
-	}
-	if out == nil {
-		out = []lostFeature{}
-	}
-	return out
 }
 
 // againstFails tells whether --against exits 1: values moved with no
@@ -2372,7 +2498,7 @@ func (a *app) printAgainst(r *againstResult) {
 	}
 	if section("rows moved (as by a sort; not changes)", len(r.MovedRows)) {
 		for _, m := range r.MovedRows[:min(len(r.MovedRows), againstListed)] {
-			a.printf("  %s, were %s%s\n", movedRange(m.Sheet, m.To, m.To+m.Rows-1, m.c1, m.c2), strings.TrimPrefix(movedRange(m.Sheet, m.From, m.From+m.Rows-1, m.c1, m.c2), grid.QuoteSheet(m.Sheet)+"!"), heldNumber(m))
+			a.printf("  %s, were %s%s\n", movedRange(m.Sheet, m.To, m.To+m.Rows-1, m.c1, m.c2), strings.TrimPrefix(movedRange(m.Sheet, m.From, m.From+m.Rows-1, m.wasC1, m.wasC2), grid.QuoteSheet(m.Sheet)+"!"), heldNumber(m))
 		}
 		more(len(r.MovedRows))
 	}
