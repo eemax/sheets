@@ -47,9 +47,9 @@ const (
 
 // spot is a cell a change is at, in both versions.
 type spot struct {
-	after, before     place
-	kind              string // what it is, for the preview's caption
-	unknown, computed bool
+	after, before place
+	kind          string // what it is, for the preview's caption
+	unknown       bool
 }
 
 type place struct {
@@ -295,6 +295,13 @@ func regions(spots []spot) (out []*region, left int, where []string) {
 
 // writeReceipt writes the receipt to path, and its pictures beside it.
 func (a *app) writeReceipt(path string, r *againstResult) (*receiptInfo, error) {
+	if fi, err := os.Stat(path); err == nil {
+		for _, f := range []string{r.File, r.Against} {
+			if g, err := os.Stat(f); err == nil && os.SameFile(fi, g) {
+				return nil, fmt.Errorf("--receipt %s is %s, which it would overwrite: name a .md file", path, f)
+			}
+		}
+	}
 	info := &receiptInfo{File: path, Previews: []receiptPreview{}}
 	base := strings.TrimSuffix(path, filepath.Ext(path))
 	var b bytes.Buffer
