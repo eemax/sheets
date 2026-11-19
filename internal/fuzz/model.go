@@ -292,6 +292,9 @@ func (m *model) command(w []string, stdin string) {
 		}
 		if w[0] == "move" {
 			m.r.touch(src, from)
+			// The source holds nothing afterwards, minus the target, which the
+			// touch below takes out.
+			m.r.vacate(src, from)
 			m.r.move(src, dst, from, to.R1-from.R1, to.C1-from.C1) // what reads the cells follows them
 		}
 		m.r.touch(dst, grid.Range{R1: to.R1, C1: to.C1, R2: to.R1 + from.Rows() - 1, C2: to.C1 + from.Cols() - 1})
@@ -616,6 +619,7 @@ func (m *model) script(code string) {
 			if sm[2] == "moveTo" {
 				m.clearRect(k, from)
 				m.r.touch(k, from)
+				m.r.vacate(k, from)
 				m.r.move(k, k, from, to.R1-from.R1, to.C1-from.C1)
 			}
 			for _, p := range cells {

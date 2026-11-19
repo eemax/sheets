@@ -75,6 +75,13 @@ type reach struct {
 	// copies are the sheets the edit made as copies (lower case, as named
 	// now): a sheet copied takes its names along.
 	copies map[string]bool
+	// vacated are the cells a move left, by sheet, where they stand now, minus
+	// what a later line of the edit reached (a batch's set into them): the
+	// move's source outside its target. The model knows what they hold, which
+	// is nothing: a move that leaves its values behind acts as a copy, and
+	// sits wholly in the reach, so no other judgement would see it (fuzzer-long's
+	// audit, f3.2).
+	vacated map[string][]grid.Range
 }
 
 // xform is one rewrite of references an edit makes, as Excel makes it:
@@ -117,7 +124,7 @@ type region struct {
 }
 
 func newReach(wb *grid.Workbook) *reach {
-	rc := &reach{before: wb, sheets: map[string]*grid.Sheet{}, at: map[string]map[[2]int]origin{}, rects: map[string][]grid.Range{}, solid: map[string][]grid.Range{}, fresh: map[string][]grid.Range{}, member: map[origin][]*region{}, copies: map[string]bool{}}
+	rc := &reach{before: wb, sheets: map[string]*grid.Sheet{}, at: map[string]map[[2]int]origin{}, rects: map[string][]grid.Range{}, solid: map[string][]grid.Range{}, fresh: map[string][]grid.Range{}, member: map[origin][]*region{}, copies: map[string]bool{}, vacated: map[string][]grid.Range{}}
 	for _, s := range wb.Sheets {
 		k := strings.ToLower(s.Name)
 		rc.sheets[k] = s
@@ -162,6 +169,13 @@ func (rc *reach) touchLines(k string, rg grid.Range, solid bool) {
 	rc.rects[k] = append(rc.rects[k], rg)
 	if solid {
 		rc.solid[k] = append(rc.solid[k], rg)
+		if len(rc.vacated[k]) > 0 {
+			var left []grid.Range
+			for _, v := range rc.vacated[k] {
+				left = append(left, without(v, rg)...)
+			}
+			rc.vacated[k] = left
+		}
 	} else {
 		rc.fresh[k] = append(rc.fresh[k], rg)
 	}
@@ -299,7 +313,7 @@ func (rc *reach) shift(k string, cols bool, at, to, n int) {
 		}
 		return rg, ok
 	}
-	for _, list := range []map[string][]grid.Range{rc.rects, rc.solid, rc.fresh} {
+	for _, list := range []map[string][]grid.Range{rc.rects, rc.solid, rc.fresh, rc.vacated} {
 		var rects []grid.Range
 		for _, rg := range list[k] {
 			if g, ok := span(rg); ok {
@@ -342,11 +356,12 @@ func (rc *reach) rename(from, to string) {
 		return
 	}
 	rc.xforms = append(rc.xforms, xform{kind: 'r', sheet: from, to: to})
-	rc.at[to], rc.rects[to], rc.solid[to], rc.fresh[to] = rc.at[from], rc.rects[from], rc.solid[from], rc.fresh[from]
+	rc.at[to], rc.rects[to], rc.solid[to], rc.fresh[to], rc.vacated[to] = rc.at[from], rc.rects[from], rc.solid[from], rc.fresh[from], rc.vacated[from]
 	delete(rc.at, from)
 	delete(rc.rects, from)
 	delete(rc.solid, from)
 	delete(rc.fresh, from)
+	delete(rc.vacated, from)
 	if rc.copies[from] {
 		rc.copies[to] = true
 		delete(rc.copies, from)
@@ -366,6 +381,38 @@ func (rc *reach) copied(k string) {
 	}
 	rc.copies[k] = true
 	rc.touch(k, whole)
+}
+
+// vacate says the cells of a range of a sheet (lower case, as it stands now)
+// are left by a move and hold nothing, but what a later line of the edit
+// writes there (reached cuts that out of the list).
+func (rc *reach) vacate(k string, rg grid.Range) {
+	if rc == nil || rg.Empty() {
+		return
+	}
+	rc.vacated[k] = append(rc.vacated[k], rg)
+}
+
+// without is the parts of a that b does not cover, as ranges.
+func without(a, b grid.Range) []grid.Range {
+	x := a.Intersect(b)
+	if x.Empty() {
+		return []grid.Range{a}
+	}
+	var out []grid.Range
+	if a.R1 < x.R1 {
+		out = append(out, grid.Range{R1: a.R1, C1: a.C1, R2: x.R1 - 1, C2: a.C2})
+	}
+	if x.R2 < a.R2 {
+		out = append(out, grid.Range{R1: x.R2 + 1, C1: a.C1, R2: a.R2, C2: a.C2})
+	}
+	if a.C1 < x.C1 {
+		out = append(out, grid.Range{R1: x.R1, C1: a.C1, R2: x.R2, C2: x.C1 - 1})
+	}
+	if x.C2 < a.C2 {
+		out = append(out, grid.Range{R1: x.R1, C1: x.C2 + 1, R2: x.R2, C2: a.C2})
+	}
+	return out
 }
 
 // move follows a block of cells, src on sheet from (lower case), to sheet to,
@@ -1094,6 +1141,38 @@ func (rc *reach) check(after *grid.Workbook, sheets map[string]bool, order []str
 			}
 			msg = fmt.Sprintf("%s: outside the edit's reach, it was empty, and holds %s now", name(k, p), describe(*cl))
 		})
+		if msg != "" {
+			return msg
+		}
+	}
+	// The cells a move vacated hold nothing (f3.2): not a value left behind,
+	// not a formula. The cells a table's header takes its names from are the
+	// table's (a header cleared is named again), and those an array fills are
+	// its.
+	for _, k := range order {
+		s := now[k]
+		if s == nil || len(rc.vacated[k]) == 0 {
+			continue
+		}
+		msg := ""
+		for _, v := range rc.vacated[k] {
+			s.Each(v, func(r, c int, cl *grid.Cell) {
+				if msg != "" {
+					return
+				}
+				for _, t := range s.Tables {
+					if t.Range.R1 == r && t.Range.C1 <= c && c <= t.Range.C2 {
+						return
+					}
+				}
+				for _, a := range arrays[k] {
+					if a.Contains(r, c) {
+						return
+					}
+				}
+				msg = fmt.Sprintf("%s: a move left it, and it holds %s now (what a move leaves holds nothing)", name(k, [2]int{r, c}), describe(*cl))
+			})
+		}
 		if msg != "" {
 			return msg
 		}
