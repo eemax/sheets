@@ -43,6 +43,13 @@ type againstResult struct {
 	Errors       int              `json:"errors"`
 	Warnings     int              `json:"warnings"`
 	Notes        int              `json:"notes"`
+	// Receipt is what --receipt wrote.
+	Receipt *receiptInfo `json:"receipt,omitempty"`
+	// sides are the two versions (earlier, then the file checked), and
+	// renamed the sheets renamed (old name lower-cased, new name; "" for
+	// a sheet removed), for the receipt.
+	sides   [2]*sideOf
+	renamed map[string]string
 }
 
 type againstSummary struct {
@@ -284,6 +291,9 @@ type sideOf struct {
 	// Excel's): by cellAt, lower-cased.
 	differ map[string]xlsx.Difference
 	csv    bool
+	// fixed is the file with the results sheets computes stored (nil when
+	// that changes nothing), which the receipt's pictures are drawn from.
+	fixed []byte
 }
 
 func (x *sideOf) unknownWhy(sheet string, row, col int) string {
@@ -334,6 +344,8 @@ func (a *app) readSide(path string, cr *xlsx.CheckResult) (*sideOf, error) {
 	}
 	if cr.FixError != "" {
 		x.wb = cr.Before // values computed as read
+	} else {
+		x.fixed = cr.Data
 	}
 	for _, c := range cr.Changes {
 		switch c.Kind {
@@ -371,6 +383,7 @@ func (a *app) against(path, before string, res *checkResult, cr *xlsx.CheckResul
 		}
 	}
 	r.compare()
+	out.sides, out.renamed = [2]*sideOf{A, B}, r.renamed
 	if !out.ValuesOnly {
 		out.FeaturesLost = lostFeatures(r.fa, r.fb, r.renamed, r.tables, r.shiftRef)
 	}

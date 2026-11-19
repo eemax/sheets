@@ -825,6 +825,34 @@ func TestCheckAgainstLarge(t *testing.T) {
 	}
 	t.Logf("output, %d lines:\n%s", len(lines), out)
 
+	// The receipt of it: bounded too, its pictures at most three ranges of
+	// at most receiptRows rows, the rest counted.
+	{
+		receipt := filepath.Join(dir, "receipt.md")
+		start = time.Now()
+		js, code := run("", "--json", "check", after, "--against", before, "--receipt", receipt)
+		t.Logf("check --against --receipt on %d rows: %s", rows, time.Since(start).Round(time.Millisecond))
+		var r againstResult
+		if err := json.Unmarshal([]byte(js), &r); err != nil || code != 0 || r.Receipt == nil {
+			t.Fatalf("receipt (exit %d): %v", code, err)
+		}
+		md := string(mustRead(t, receipt))
+		if len(md) > 30000 {
+			t.Errorf("receipt not bounded: %d bytes", len(md))
+		}
+		if len(r.Receipt.Previews) != receiptPreviews || r.Receipt.Previews[1].After != "Summary!A1:C3" || r.Receipt.Unshown == 0 || !strings.Contains(md, "… and 14975 more: `sheets --json check") {
+			t.Errorf("receipt: %d previews, %d not pictured:\n%s", len(r.Receipt.Previews), r.Receipt.Unshown, md)
+		}
+		for _, p := range r.Receipt.Previews {
+			for _, img := range []string{p.BeforeImage, p.AfterImage} {
+				if fi, err := os.Stat(img); err != nil || fi.Size() > 1<<20 {
+					t.Errorf("picture %s: %v", img, err)
+				}
+			}
+		}
+		t.Logf("receipt, %d bytes", len(md))
+	}
+
 	// Every tenth formula broken, not an input changed: 15,000 findings and
 	// 15,000 formulas changed, flagged; the text stays as short.
 	broken := filepath.Join(dir, "broken.xlsx")
