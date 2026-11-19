@@ -510,3 +510,54 @@ func TestAgainstRegressEmptyRowConditional(t *testing.T) {
 		t.Errorf("an empty row deleted: exit %d, %+v, unexplained %+v", code, r.Summary, r.Unexplained)
 	}
 }
+
+// The last row of a table of two columns (or with two of three cells set)
+// deleted and a cell set in its place is one row removed and the cell typed in
+// when what reads the rows shows they were removed, as with three: the formulas
+// Excel rewrote are no change, and the name and the Excel table of an openpyxl
+// file are no mistake (f2.1 of the last audit). Edited in place, with one cell
+// cleared and the others set, no row deleted, it is each cell changed, with the
+// formulas as they were, and in a CSV file.
+func TestAgainstRegressTwoColumnLast(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	reads := []string{"set", "Summary!A1", "=SUM(Data!B2:B6)", "Summary!A2", "=COUNTA(Data!A2:A6)"}
+	two := regressBook(t, dir, "two.xlsx", "Region\tUnits\nNorth\t5\nSouth\t7\nEast\t3\nWest\t9\nMid\t4\n", reads, []string{"check", "--fix"})
+	three := regressBook(t, dir, "three.xlsx", regressTable, reads, []string{"check", "--fix"})
+	totals := filepath.Join(dir, "totals.xlsx")
+	if err := os.WriteFile(totals, mustRead(t, filepath.Join("..", "xlsx", "testdata", "against_totals.xlsx")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, before string
+		cmds         [][]string
+		removed      bool // one row removed (Data!6) and the cells typed in
+		inputs       int
+	}{
+		{"two columns, deleted and set", two, [][]string{{"rows", "delete", "Data!6"}, {"set", "Data!B6", "77"}}, true, 1},
+		{"two columns, edited in place", two, [][]string{{"clear", "Data!A6"}, {"set", "Data!B6", "77"}}, false, 2},
+		{"three columns, two cells set", three, [][]string{{"rows", "delete", "Data!6"}, {"set", "Data!A6", "Zed", "Data!B6", "77"}}, true, 2},
+		{"three columns, one cell cleared", three, [][]string{{"clear", "Data!C6"}, {"set", "Data!A6", "Zed", "Data!B6", "77"}}, false, 3},
+		{"an openpyxl file with a name and a table, deleted and set", totals, [][]string{{"rows", "delete", "Data!6"}, {"set", "Data!B6", "77"}}, true, 1},
+		{"an openpyxl file, edited in place", totals, [][]string{{"clear", "Data!A6"}, {"set", "Data!B6", "77"}}, false, 2},
+	} {
+		after := edited(t, c.before, filepath.Join(dir, "a.xlsx"), c.cmds...)
+		r, code := against(t, after, c.before)
+		var lines []string
+		for _, e := range r.Structure {
+			lines = append(lines, e.Change+" "+strings.SplitN(e.Where, " in ", 2)[0])
+		}
+		if s := r.Summary; s.Inputs != c.inputs || s.Formulas != 0 || s.Flagged != 0 || s.Unexplained != 0 || s.FeaturesLost != 0 || s.FeaturesChanged != 0 ||
+			code != 0 || c.removed && (len(lines) != 1 || lines[0] != "row removed Data!6") || !c.removed && len(lines) != 0 {
+			t.Errorf("%s: exit %d, %+v, structure %q, changed %+v", c.name, code, s, lines, r.Changed)
+		}
+	}
+	// A CSV file, where nothing reads the row: each cell changed, the cleared one named.
+	b, a := filepath.Join(dir, "b.csv"), filepath.Join(dir, "a.csv")
+	writeText(t, b, "Region,Units\nNorth,5\nSouth,7\nEast,3\nWest,9\nMid,4\n")
+	writeText(t, a, "Region,Units\nNorth,5\nSouth,7\nEast,3\nWest,9\n,77\n")
+	r, code := against(t, a, b)
+	if got := changedOf(r); r.Summary.Inputs != 2 || len(r.Structure) != 0 || code != 0 || got["a!A6"] != [2]string{`"Mid"`, ""} || got["a!B6"] != [2]string{"4", "77"} {
+		t.Errorf("csv: exit %d, %+v, structure %+v, changed %+v", code, r.Summary, r.Structure, r.Changed)
+	}
+}

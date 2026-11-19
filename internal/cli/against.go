@@ -1704,12 +1704,14 @@ func (r *report) prepare(p diff.SheetPair) *job {
 	}
 	// A row removed and a row added in the same place at the end are the row
 	// removed and cells typed in where it was, when the new row holds none of
-	// what the old one did and the old one held more (a row deleted, then a
-	// cell set in the row now at that index, with nothing to move up into its
-	// place): one row removed and the cells typed in, not every cell of the
-	// row changed. The values alike are the row's cells cleared and typed over
-	// where they are, so the rows stay removed only when what reads them shows
-	// it (typedRemoved; notTyped names the sheets where nothing does).
+	// what the old one did and the old one held a cell it does not (a row
+	// deleted, then a cell set in the row now at that index, with nothing to
+	// move up into its place): one row removed and the cells typed in, not every
+	// cell of the row changed. The values alike are the row's cells cleared and
+	// typed over where they are, so the rows stay removed only when what reads
+	// them shows it (typedRemoved; notTyped names the sheets where nothing does):
+	// no count of the cells cleared stands for that, in a table of two columns
+	// there is one.
 	typed, typedFrom := map[int]bool{}, map[int]bool{}
 	p.Rows = pairReplaced(p.Rows, func(o, n int, last bool) bool {
 		if !last || r.notTyped[strings.ToLower(sa.Name)] || len(p.Blocks) > 0 || len(j.colsAdded)+len(j.colsRemoved) > 0 {
@@ -1728,7 +1730,7 @@ func (r *report) prepare(p diff.SheetPair) *job {
 				cleared++
 			}
 		}
-		if held > 0 && same == 0 && cleared >= 2 {
+		if held > 0 && same == 0 && cleared >= 1 {
 			typed[n], typedFrom[o] = true, true
 			return true
 		}
