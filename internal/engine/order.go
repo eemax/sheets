@@ -173,19 +173,43 @@ func OrderReads(text string, name func(sheet, n string) (RefArg, bool)) ([]Order
 				return
 			case fn == "SUMIF" || fn == "AVERAGEIF" || fn == "SUMIFS" || fn == "AVERAGEIFS" || fn == "MAXIFS" ||
 				fn == "MINIFS" || fn == "COUNTIFS" || fn == "SUMPRODUCT":
-				groups++
-				for i, a := range n.args {
-					paired := true
+				paired := func(i int) bool {
 					switch fn {
 					case "SUMIF", "AVERAGEIF":
-						paired = i != 1
+						return i != 1
 					case "COUNTIFS":
-						paired = i%2 == 0
+						return i%2 == 0
 					case "SUMIFS", "AVERAGEIFS", "MAXIFS", "MINIFS":
-						paired = i == 0 || i%2 == 1
+						return i == 0 || i%2 == 1
 					}
-					if paired {
-						arg(a, true, groups)
+					return true
+				}
+				// The ranges it pairs cell by cell are a set together only when
+				// each of them is a reference, or references combined cell by cell:
+				// an array constant or a call among them (SUMPRODUCT(B2:B6,{1;2;3}),
+				// weights by position; ROW(B2:B6)) pairs the others' cells with
+				// what does not move with them, so they are read by position.
+				whole := true
+				for i, a := range n.args {
+					if !paired(i) {
+						continue
+					}
+					if _, isRef := refArg(a); isRef || a.kind == nName {
+						continue
+					}
+					if ranged := false; elementwise(a, &ranged) && ranged {
+						continue
+					}
+					whole = false
+				}
+				g := 0
+				if whole {
+					groups++
+					g = groups
+				}
+				for i, a := range n.args {
+					if whole && paired(i) {
+						arg(a, true, g)
 					} else {
 						arg(a, false, 0)
 					}

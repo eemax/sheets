@@ -54,6 +54,43 @@ func TestOrderReadsElementwise(t *testing.T) {
 	}
 }
 
+// A call that pairs ranges cell by cell reads them as a set only when each of
+// them is a reference, or references combined cell by cell (report-causes
+// f5.3): an array constant or a call among them weighs the others' cells by
+// position, so none of them is a set, and no group holds them.
+func TestAgainstRegressOrderReadsConstant(t *testing.T) {
+	none := func(string, string) (RefArg, bool) { return RefArg{}, false }
+	for _, c := range []struct {
+		formula string
+		set     []bool // of each read, in order
+	}{
+		{"=SUMPRODUCT(Data!B2:B6,{1;2;3;4;5})", []bool{false}},
+		{"=SUMPRODUCT({1;2;3;4;5},B2:B6,C2:C6)", []bool{false, false}},
+		{"=SUMPRODUCT(B2:B6,ROW(B2:B6))", []bool{false, false}},
+		{"=SUMPRODUCT(B2:B6,C2:C6*{1;2;3;4;5})", []bool{false, false}},
+		{"=SUMPRODUCT(B2:B6,2)", []bool{false}},
+		{"=SUMIF(A2:A6,\"East\",OFFSET(B2,0,0,5,1))", []bool{false, false}},
+		// A criterion is no range paired: a constant or a call there leaves the
+		// ranges a set.
+		{"=SUMIF(A2:A6,\"East\",B2:B6)", []bool{true, true}},
+		{"=SUMIFS(C2:C6,A2:A6,UPPER(\"east\"))", []bool{true, true}},
+		{"=COUNTIFS(A2:A6,{\"East\"},B2:B6,\">3\")", []bool{true, true}},
+		// References combined cell by cell are still read together.
+		{`=SUMPRODUCT((A2:A6="East")*B2:B6,C2:C6)`, []bool{true, true, true}},
+	} {
+		got, ok := OrderReads(c.formula, none)
+		if !ok || len(got) != len(c.set) {
+			t.Errorf("%s: %+v (ok %v), want %d reads", c.formula, got, ok, len(c.set))
+			continue
+		}
+		for i, set := range c.set {
+			if got[i].Set != set || (got[i].Group > 0) != set {
+				t.Errorf("%s: read %d set %v group %d, want set %v", c.formula, i, got[i].Set, got[i].Group, set)
+			}
+		}
+	}
+}
+
 // areaText writes an area over the columns A to Z as A1 or B2:C9.
 func areaText(a Area) string {
 	cell := func(r, c int) string { return string(rune('A'+c-1)) + strconv.Itoa(r) }
