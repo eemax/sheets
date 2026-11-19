@@ -60,6 +60,11 @@ func TestMain(m *testing.M) {
 	os.Unsetenv("SHEETS_UNDO")
 	if raceOn {
 		repeats = 3
+		// The file's validations, conditional formats and looks cost 2 ms an
+		// edit read, and 40 ms under -race, which makes at least 200 edits:
+		// check full would pass 135 s (148 s measured). The plain run and long
+		// mode judge them.
+		fileChecks = false
 	}
 	code := m.Run()
 	os.RemoveAll(dir)

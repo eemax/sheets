@@ -760,12 +760,21 @@ func (s *session) stepNow(e Edit, i int) (outcome, error) {
 	return o, nil
 }
 
+// fileChecks says whether the objects the reader gives no cells for
+// (validations, conditional formats, looks) are read from the file after each
+// edit, for the reach invariant and the editors': TestMain turns it off under
+// -race (README, Timings).
+var fileChecks = true
+
 // reachedFile judges the objects the reader gives no cells for (validations,
 // conditional formats, looks) of the streaming copy before the edit and after
 // it (model.reachedFile). The file before is the one read after the last
 // edit, when the sequence goes on from it. A file that does not open for
 // editing is not judged here (the next edit would refuse it).
 func (s *session) reachedFile(m *model, prev, wb *grid.Workbook, before, after []byte) string {
+	if !fileChecks {
+		return ""
+	}
 	b := s.objs
 	if b == nil || !bytes.Equal(s.objsFor, before) {
 		var err error
