@@ -2,15 +2,17 @@ package diff
 
 import "github.com/eemax/sheets/internal/grid"
 
-// Rows that moved on their own in some columns: a sort of a range with other
-// cells beside it (a note, a lookup list, a formula reading the table), which
-// stay where they are. Rows compared whole are then neither the same nor in
-// order, so findMoves sees no row moved, and the rows of the range read as
-// added, removed or changed. Columns apart from each other by a column empty
-// in both versions are a block; each block's rows are aligned on their own,
-// and a block whose rows moved is paired as its alignment has it, with the
-// rest of the sheet paired in place around it, when that leaves fewer cells
-// changed than pairing whole rows.
+// Rows that moved on their own in some columns: a sort of a table with other
+// cells past an empty column beside it (a note, a lookup list, a formula
+// reading the table), which stay where they are. Rows compared whole are then
+// neither the same nor in order, so findMoves sees no row moved, and the rows
+// of the table read as added, removed or changed. Columns apart from each
+// other by a column empty in both versions are a block; each block's rows are
+// aligned on their own, every column of it together, and a block whose rows
+// moved is paired as its alignment has it, with the rest of the sheet paired
+// in place around it, when that leaves fewer cells changed than pairing whole
+// rows. Columns of a block that moved without the rest of it are not rows
+// moved: what they hold changed.
 
 // blockAlign is a block of columns whose rows moved on their own: its
 // columns (1-based pairs) and how its rows pair (0-based, as sheetAlign).
@@ -86,12 +88,16 @@ func similarOver(A, B side, cols [][2]int, lostRefs bool) func(i, j int) bool {
 // alignBlocks pairs, in sheets with several blocks of columns, the rows of
 // each block that moved on its own, and the rest of the sheet in place
 // around them, when that leaves fewer cells changed than full gives (whole
-// rows paired). The blocks tried are the runs of columns, between empty
-// ones, that are changed or not, both in place and with whole rows paired:
-// a sort of some columns of a table changes those, in place, and not the
-// others.
+// rows paired). A block is tried whole, every column of it between empty
+// ones: a row of it moved only when all its columns moved together, labels
+// included. A sort of some columns of a table, or two values swapped in one
+// column of it, splits its rows (North with East's numbers), which is cells
+// changed, not rows moved (Excel's own sort warns of "data next to your
+// selection"): the table's rows pair as the columns that stayed have them,
+// so the cells moved are changed where they are.
 func alignBlocks(A, B side, opts Options, full sheetAlign) sheetAlign {
 	pairs := matched(full.cols)
+	groups := blocksOf(A, B, pairs)
 	fullRows := append(append(stepPairs(full.rows), full.placed...), full.moved...)
 	ua, ub := A.s.Used(), B.s.Used()
 	ra, rb := max(ua.R2, 0), max(ub.R2, 0)
@@ -107,93 +113,84 @@ func alignBlocks(A, B side, opts Options, full sheetAlign) sheetAlign {
 		}
 		asIs = asIs && fullRows[r] == inPlace[r]
 	}
-	// runs of columns, by block apart from the rest, and whether each is
-	// changed
-	var parts [][][][2]int
-	var changedRun [][]bool
-	n, anyChanged := 0, false
-	for _, g := range blocksOf(A, B, pairs) {
-		var runs [][][2]int
-		var flags []bool
-		for k, p := range g {
-			changed := differs(A, B, fullRows, p) && (asIs || differs(A, B, inPlace, p))
-			if k == 0 || changed != flags[len(flags)-1] {
-				runs, flags = append(runs, nil), append(flags, changed)
-			}
-			runs[len(runs)-1] = append(runs[len(runs)-1], p)
-			anyChanged = anyChanged || changed
-		}
-		parts, changedRun = append(parts, runs), append(changedRun, flags)
-		n += len(runs)
+	// changed tells whether a column is changed, both in place and with
+	// whole rows paired: a sort of some columns of a table changes those,
+	// in place, and not the others.
+	changed := func(p [2]int) bool {
+		return differs(A, B, fullRows, p) && (asIs || differs(A, B, inPlace, p))
 	}
-	if n < 2 || !anyChanged {
-		return full
+	// movesIn aligns the rows of some columns on their own, and tells
+	// whether rows moved there, one of a kind.
+	movesIn := func(cols [][2]int) (blockAlign, bool) {
+		sa, blankA := rowSigs(A, ra, cols, 0)
+		sb, blankB := rowSigs(B, rb, cols, 1)
+		inOrder, moved, placed := findMoves(sa, sb, fillGaps(sa, sb, align(sa, sb)), blankA, blankB)
+		if !distinct(sa, sb, moved) {
+			return blockAlign{}, false
+		}
+		skipA, skipB := map[int]bool{}, map[int]bool{}
+		for _, m := range append(append([][2]int{}, moved...), placed...) {
+			skipA[m[0]], skipB[m[1]] = true, true
+		}
+		rows := pairUpSkipping(ra, rb, inOrder, similarOver(A, B, cols, opts.LostRefs), skipA, skipB)
+		return blockAlign{cols: cols, rows: rows, moved: moved, placed: placed}, true
 	}
 	var blocks []blockAlign
-	var groups [][][2]int // all runs, those of moving blocks emptied
-	moving := map[int]bool{}
-	for i, runs := range parts {
-		for k := 0; k < len(runs); k++ {
-			cols := runs[k]
-			if len(cols) == 0 || !changedRun[i][k] {
-				continue // as it was, in place or with whole rows paired
+	var still [][2]int        // the columns the rest of the sheet pairs by
+	var movingCols [][][2]int // those of each block that moved, and of each split
+	split := false            // a table's rows split: some of its columns sorted
+	for _, cols := range groups {
+		var runs [][][2]int
+		var flags []bool
+		for k, p := range cols {
+			c := changed(p)
+			if k == 0 || c != flags[len(flags)-1] {
+				runs, flags = append(runs, nil), append(flags, c)
 			}
-			sa, blankA := rowSigs(A, ra, cols, 0)
-			sb, blankB := rowSigs(B, rb, cols, 1)
-			inOrder, moved, placed := findMoves(sa, sb, fillGaps(sa, sb, align(sa, sb)), blankA, blankB)
-			if !distinct(sa, sb, moved) {
+			runs[len(runs)-1] = append(runs[len(runs)-1], p)
+		}
+		if len(runs) == 1 && !flags[0] {
+			still = append(still, cols...) // as it was
+			continue
+		}
+		switch {
+		case len(groups) > 1:
+			if bl, ok := movesIn(cols); ok {
+				blocks = append(blocks, bl)
+				movingCols = append(movingCols, cols)
 				continue
 			}
-			skipA, skipB := map[int]bool{}, map[int]bool{}
-			for _, m := range append(append([][2]int{}, moved...), placed...) {
-				skipA[m[0]], skipB[m[1]] = true, true
-			}
-			rows := pairUpSkipping(ra, rb, inOrder, similarOver(A, B, cols, opts.LostRefs), skipA, skipB)
-			// The columns beside it that its rows explain too (a formula
-			// column reading the row, the same whether it moved or not) are
-			// part of it.
-			at := append(append(stepPairs(rows), placed...), moved...)
-			fits := func(p [2]int) bool { return !differs(A, B, at, p) }
-			if k > 0 {
-				left := runs[k-1]
-				for len(left) > 0 && fits(left[len(left)-1]) {
-					cols = append([][2]int{left[len(left)-1]}, cols...)
-					left = left[:len(left)-1]
-				}
-				runs[k-1] = left
-			}
-			if k+1 < len(runs) {
-				right := runs[k+1]
-				for len(right) > 0 && fits(right[0]) {
-					cols = append(cols, right[0])
-					right = right[1:]
-				}
-				runs[k+1] = right
-			}
-			runs[k] = cols
-			blocks = append(blocks, blockAlign{cols: cols, rows: rows, moved: moved, placed: placed})
-			moving[len(groups)+k] = true
+		case len(full.moved) > 0:
+			return full // the one block's whole rows moved
 		}
-		groups = append(groups, runs...)
+		// Rows that moved in some of its columns, without the rest: those
+		// columns changed, in the rows the rest pairs.
+		var stay [][2]int
+		var sorted [][][2]int
+		for k, run := range runs {
+			if flags[k] && len(run) < len(cols) {
+				if _, ok := movesIn(run); ok {
+					sorted = append(sorted, run)
+					continue
+				}
+			}
+			stay = append(stay, run...)
+		}
+		if len(sorted) == 0 || len(stay) == 0 {
+			still = append(still, cols...)
+			continue
+		}
+		still = append(still, stay...)
+		movingCols = append(movingCols, sorted...)
+		split = true
 	}
-	if len(blocks) == 0 {
+	if len(blocks) == 0 && !split {
 		return full
 	}
 	// The rest of the sheet, in place: the columns of the blocks that stayed,
-	// and each block that moved as one cell, filled or blank (its rows are
-	// where they were, whatever they hold now).
-	var still [][2]int
-	var movingCols [][][2]int
-	for g, cols := range groups {
-		if moving[g] {
-			movingCols = append(movingCols, cols)
-		} else {
-			still = append(still, cols...)
-		}
-	}
-	if len(still) == 0 && len(movingCols) == 1 {
-		return full // every column moved, together: whole rows
-	}
+	// and each block that moved (and each run of columns sorted without the
+	// rest of its table) as one cell, filled or blank (its rows are where they
+	// were, whatever they hold now).
 	filled := func(x side, row int, cols [][2]int, pick int) bool {
 		for _, p := range cols {
 			if x.key(row, p[pick]) != "" {
@@ -242,6 +239,10 @@ func alignBlocks(A, B side, opts Options, full sheetAlign) sheetAlign {
 		return used > 0 && same*2 >= used
 	}
 	skeleton := pairUp(ra, rb, fillGaps(sa, sb, align(sa, sb)), similar)
+	if split {
+		// No rows moved there, whatever pairing whole rows makes of it.
+		return sheetAlign{cols: full.cols, rows: skeleton, blocks: blocks}
+	}
 	// Fewer cells changed, or whole rows it is.
 	cost := cellsChanged(A, B, stepPairs(skeleton), still)
 	for _, bl := range blocks {

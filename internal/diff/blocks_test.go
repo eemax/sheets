@@ -34,11 +34,11 @@ func pairOf(ps []Pair, old int) int {
 	return 0
 }
 
-// TestBlocks checks that rows a sort moved in some columns, with cells
-// beside them that stayed, pair as moved in those columns and in place
-// elsewhere: no rows added or removed, nothing changed.
+// TestBlocks checks that rows a sort moved in a table, with cells past an
+// empty column beside it that stayed, pair as moved in its columns and in
+// place elsewhere: no rows added or removed, nothing changed.
 func TestBlocks(t *testing.T) {
-	for _, col := range []int{5, 4} {
+	for _, col := range []int{5} {
 		before, after := sortedBeside(col)
 		a, b := book("Data", before), book("Data", after)
 		p := AlignSheet(a, a.Sheets[0], b, b.Sheets[0], Options{Moves: true})
@@ -65,6 +65,63 @@ func TestBlocks(t *testing.T) {
 		}
 		if len(p.Moved) != 0 {
 			t.Errorf("beside in column %d: whole rows moved %+v", col, p.Moved)
+		}
+	}
+}
+
+// TestBlocksSplit checks that rows of a table that did not move together,
+// every column of it, are not rows moved but cells changed, in place: a sort
+// of the table with a column next to it left as it was (Excel warns of data
+// next to the selection), a sort of some of its columns (the labels left, so
+// North has East's numbers), and two values swapped in one column. Each
+// sheet comes alone and with a note past an empty column, so its blocks are
+// tried. Every row pairs with its old self.
+func TestBlocksSplit(t *testing.T) {
+	before, after := sorted()
+	partial := func(rows [][]any) [][]any {
+		out := make([][]any, len(rows))
+		for r := range rows {
+			out[r] = append([]any{before[r][0]}, rows[r][1:]...)
+		}
+		return out
+	}
+	swapped := func() [][]any {
+		out := make([][]any, len(before))
+		for r := range before {
+			out[r] = append([]any{}, before[r]...)
+		}
+		out[1][1], out[2][1] = before[2][1], before[1][1]
+		return out
+	}
+	note := func(rows [][]any) [][]any {
+		out := make([][]any, len(rows))
+		for r := range rows {
+			out[r] = append(append([]any{}, rows[r]...), nil)
+		}
+		out[0] = append(out[0], "Note")
+		return out
+	}
+	nextA, nextB := sortedBeside(4)
+	for _, c := range []struct {
+		name          string
+		before, after [][]any
+	}{
+		{"a column next to the table", nextA, nextB},
+		{"a column next to the table, a note past it", note(nextA), note(nextB)},
+		{"some columns sorted", before, partial(after)},
+		{"some columns sorted, a note past them", note(before), note(partial(after))},
+		{"two values swapped", before, swapped()},
+		{"two values swapped, a note past them", note(before), note(swapped())},
+	} {
+		a, b := book("Data", c.before), book("Data", c.after)
+		p := AlignSheet(a, a.Sheets[0], b, b.Sheets[0], Options{Moves: true})
+		if len(p.Blocks) != 0 || len(p.Moved) != 0 {
+			t.Errorf("%s: blocks %+v, moved %+v", c.name, p.Blocks, p.Moved)
+		}
+		for r := 1; r <= 7; r++ {
+			if got := pairOf(p.Rows, r); got != r {
+				t.Errorf("%s: old row %d is %d", c.name, r, got)
+			}
 		}
 	}
 }

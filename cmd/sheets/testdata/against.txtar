@@ -342,22 +342,52 @@ stdout '^  Data!A4:D5, were A2:D3$'
 ! stdout 'flagged:'
 exec sheets --json check sidesorted.xlsx --against side.xlsx
 stdout '"moved_rows":\[\{"sheet":"Data","from":4,"to":2,"rows":1,"columns":"A:D"\},'
-# The same with the column beside the range next to it (no empty column
-# between), and a list sorted beside the block of labels and formulas.
-cp against_before.xlsx nextto.xlsx
-exec sheets set nextto.xlsx Data!E1 Code Data!E2 n1 Data!E3 s2 Data!E4 e3 Data!E5 w4 Data!E6 m5
-cp nextto.xlsx nexttosorted.xlsx
-exec sheets sort nexttosorted.xlsx Data!A1:D6 Units
-exec sheets check nexttosorted.xlsx --against nextto.xlsx
-stdout ': 0 inputs changed, 0 formulas changed, 1 computed value moved'
-stdout ', 5 rows moved$'
-stdout '^  Data!A2:D2, were A4:D4$'
-! stdout 'structure:'
+# A list sorted beside the block of labels and formulas, past an empty
+# column: the whole list moved, rows moved.
 cp against_before.xlsx regions.xlsx
 exec sheets sort regions.xlsx Summary!D1:D6 D:desc
 exec sheets check regions.xlsx --against against_before.xlsx
 stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown, 4 rows moved$'
 stdout '^  Summary!D2, were D5$'
+
+# Rows of a table moved only when all of it moved, labels included. A sort of
+# some of its columns (the labels left: North has East's numbers), a sort
+# that leaves the column next to it (Excel warns of data next to the
+# selection), and two values swapped in one column are inputs changed, the
+# values moved, where they are: no rows moved, no structure, and what they
+# move has them as its cause.
+cp against_before.xlsx part.xlsx
+exec sheets sort part.xlsx Data!B1:D6 Units
+exec sheets check part.xlsx --against against_before.xlsx
+stdout '^part.xlsx against against_before.xlsx: 10 inputs changed, 0 formulas changed, 4 computed values moved \(each with its cause\), 0 unexplained, 0 features lost, 0 unknown$'
+stdout '^  Data!B2  input  5 → 3$'
+stdout '^  Data!C2  input  30 → 50$'
+stdout '^  Data!D3 +140 → 100 +input Data!B3$'
+stdout '^  Summary!B7 +5 → 3 +input Data!B2$'
+! stdout 'rows moved'
+! stdout 'structure:'
+exec sheets --json check part.xlsx --against against_before.xlsx
+stdout '"moved_rows":\[\]'
+cp against_before.xlsx swap.xlsx
+exec sheets set swap.xlsx Data!B2 7 Data!B3 5
+exec sheets check swap.xlsx --against against_before.xlsx
+stdout '^swap.xlsx against against_before.xlsx: 2 inputs changed, 0 formulas changed, 7 computed values moved \(each with its cause\), 0 unexplained, 0 features lost, 0 unknown$'
+stdout '^  Data!B2  input  5 → 7$'
+stdout '^  Data!B3  input  7 → 5$'
+stdout '^  Data!D2 +150 → 210 +input Data!B2$'
+stdout '^  Data!D3 +140 → 100 +input Data!B3$'
+! stdout 'rows moved'
+cp against_before.xlsx nextto.xlsx
+exec sheets set nextto.xlsx Data!E1 Code Data!E2 n1 Data!E3 s2 Data!E4 e3 Data!E5 w4 Data!E6 m5
+cp nextto.xlsx nexttosorted.xlsx
+exec sheets sort nexttosorted.xlsx Data!A1:D6 Units
+exec sheets check nexttosorted.xlsx --against nextto.xlsx
+stdout ': 15 inputs changed, 0 formulas changed, 4 computed values moved \(each with its cause\), 0 unexplained,'
+stdout '^  Data!A2  input  "North" → "East"$'
+stdout '^  Summary!B7 +5 → 3 +input Data!B2$'
+! stdout 'rows moved'
+! stdout 'structure:'
+! stdout 'flagged:'
 
 # A row inserted on a sheet another reads: the formulas Excel rewrote there
 # for it read as before, and rows alike (the same label and formula) still

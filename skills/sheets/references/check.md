@@ -74,10 +74,15 @@
     value from outside the workbook such as RTD, WEBSERVICE, STOCKHISTORY
     or the CUBE functions, or a formula reading one of them): never called
     unexplained;
-  - `moved_rows`: rows moved as by a sort, which are not changes. A sort of
-    a range with cells beside it that stay (a note, a list, a formula
-    reading the table) is rows moved in its columns, as
-    `Data!A2:D2, were A4:D4`, with `columns` in `--json`;
+  - `moved_rows`: rows moved as by a sort, which are not changes: each row
+    whole, every column of its table (the columns between empty ones)
+    together. A sort of a table with cells past an empty column that stay
+    (a note, a list, a formula reading the table) is rows moved in its
+    columns, as `Data!A2:D2, were A4:D4`, with `columns` in `--json`. A
+    sort that left some of a table's columns behind (its labels, or a
+    column next to it: Excel warns of data next to the selection), or two
+    values swapped in a column, is inputs changed where they are, each the
+    cause of what it moves;
   - then the check of book.xlsx, as above.
 
   Formulas Excel rewrites for rows or columns added or removed (a column
