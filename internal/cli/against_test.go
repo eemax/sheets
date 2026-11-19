@@ -40,7 +40,7 @@ func TestLostFeatures(t *testing.T) {
 	}
 	before := []xlsx.Feature{
 		whole("B2:B6"),
-		rule(xlsx.FeatureValidation, "Data", "C2:C6", "list validation", "list", "between|Summary!$D$2:$D$6"),
+		rule(xlsx.FeatureValidation, "Data", "C2:C6", "list validation", "list", "Summary!$D$2:$D$6"),
 		chart("Data", "F2", "Data!$D$2:$D$6"),
 		rule(xlsx.FeatureCond, "Old", "A1:A3", "formula rule", "expression", "$A1>5"),
 		f(xlsx.FeatureName, "", "Rate", "Data!$B$1"),
@@ -83,6 +83,15 @@ func TestLostFeatures(t *testing.T) {
 	got = lostFeatures([]xlsx.Feature{whole("B2:B6"), decimal("C2:C6")}, []xlsx.Feature{decimal("B2:B6")}, map[string]string{"data": "Data"}, nil, deleted)
 	if want := []lostFeature{{Kind: xlsx.FeatureValidation, Where: "Data!B2:B6", What: "whole validation"}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("lost with a column\n got %+v\nwant %+v", got, want)
+	}
+	// Three alike, the middle column deleted: the one lost is the one that was
+	// there, not the last, which moved into its place.
+	middle := func(home, ref string) string {
+		return map[string]string{"B2:B6": "B2:B6", "C2:C6": "", "D2:D6": "C2:C6"}[ref]
+	}
+	got = lostFeatures([]xlsx.Feature{whole("B2:B6"), whole("C2:C6"), whole("D2:D6")}, []xlsx.Feature{whole("B2:B6"), whole("C2:C6")}, map[string]string{"data": "Data"}, nil, middle)
+	if want := []lostFeature{{Kind: xlsx.FeatureValidation, Where: "Data!C2:C6", What: "whole validation"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("lost of three alike\n got %+v\nwant %+v", got, want)
 	}
 	// Another of its kind is no reason to say nothing of the one that is gone:
 	// a validation that changed its type, or its formula, is not the one it was.

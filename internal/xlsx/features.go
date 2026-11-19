@@ -72,7 +72,7 @@ var (
 	attrRe        = regexp.MustCompile(`\b([\w:]+)="([^"]*)"`)
 	// The formulas of a rule, in either namespace (an extension's are in
 	// xm:f inside), and the tags among their text.
-	ruleFormulaEl = regexp.MustCompile(`(?s)<(?:\w+:)?(formula[123]?)\b[^>]*>(.*?)</(?:\w+:)?formula[123]?>`)
+	ruleFormulaEl = regexp.MustCompile(`(?s)<(?:\w+:)?(formula[123]?|f)\b[^>]*>(.*?)</(?:\w+:)?(?:formula[123]?|f)>`)
 	tagEl         = regexp.MustCompile(`<[^>]*>`)
 	// A column of an Excel table.
 	tableColumnTag = regexp.MustCompile(`<(?:\w+:)?tableColumn\b[^>]*>`)
@@ -149,7 +149,7 @@ func Features(data []byte) ([]Feature, error) {
 			out = append(out, p.drawn(s.Name, parts.drawing)...)
 		}
 		for _, t := range parts.tables {
-			out = append(out, Feature{Kind: FeatureTable, Sheet: s.Name, Where: t.ref.String(), What: t.name})
+			out = append(out, Feature{Kind: FeatureTable, Sheet: s.Name, Where: t.ref.String(), What: t.name, Rule: strings.Join(tableColumns(t.xml), "|")})
 		}
 	}
 	for _, n := range wbx.Names {
@@ -229,26 +229,39 @@ func formulasOf(body string) []string {
 	return out
 }
 
-// validationRule is what a validation says: its operator (between, unless
-// it names another) and its formulas.
+// validationRule is what a validation says: for a list or a formula of its
+// own (custom) the formula; for the rest its operator (between, unless it
+// names another) and the formulas that operator takes (one, or two for
+// between and notBetween). LibreOffice writes a second formula, 0, where
+// there is no use for one.
 func validationRule(a map[string]string, body string) string {
+	fs := formulasOf(body)
+	switch a["type"] {
+	case "list", "custom":
+		return strings.Join(fs[:min(len(fs), 1)], "|")
+	}
 	op := a["operator"]
 	if op == "" {
 		op = "between"
 	}
-	return strings.Join(append([]string{op}, formulasOf(body)...), "|")
+	if op != "between" && op != "notBetween" && len(fs) > 1 {
+		fs = fs[:1]
+	}
+	return strings.Join(append([]string{op}, fs...), "|")
 }
 
 // condRule is what a conditional format's rule says: its operator, the text
-// or rank it matches (named, when it has one) and its formulas.
+// or rank it matches (named, when it has one) and its formulas. An attribute
+// at its default (LibreOffice writes them all: rank="0", text="") is no part
+// of it.
 func condRule(a map[string]string, body string) string {
 	var parts []string
 	if a["operator"] != "" {
 		parts = append(parts, a["operator"])
 	}
 	for _, k := range []string{"text", "timePeriod", "rank", "percent", "bottom"} {
-		if a[k] != "" {
-			parts = append(parts, k+"="+a[k])
+		if v := a[k]; v != "" && v != "0" && v != "false" {
+			parts = append(parts, k+"="+v)
 		}
 	}
 	return strings.Join(append(parts, formulasOf(body)...), "|")

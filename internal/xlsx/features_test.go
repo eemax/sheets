@@ -33,7 +33,7 @@ func TestFeatures(t *testing.T) {
 	want := []Feature{
 		{Kind: FeatureValidation, Sheet: "Data", Where: "B2:B6", What: "whole validation", Type: "whole", Rule: "between|0|1000"},
 		{Kind: FeatureValidation, Sheet: "Data", Where: "C2:C6", What: "decimal validation", Type: "decimal", Rule: "greaterThanOrEqual|0"},
-		{Kind: FeatureValidation, Sheet: "Data", Where: "A2:A6", What: "list validation", Type: "list", Rule: "between|Summary!$D$2:$D$6"},
+		{Kind: FeatureValidation, Sheet: "Data", Where: "A2:A6", What: "list validation", Type: "list", Rule: "Summary!$D$2:$D$6"},
 		{Kind: FeatureCond, Sheet: "Data", Where: "D2:D6", What: "cell value rule", Type: "cellIs", Rule: "greaterThan|140"},
 		{Kind: FeatureChart, Sheet: "Data", Where: "F2", What: "column chart", Type: "column", Series: []string{"Data!$D$2:$D$6"}},
 		{Kind: FeatureShape, Sheet: "Data", Where: "F2", What: "TextBox 2"},
@@ -68,6 +68,33 @@ func TestFeatures(t *testing.T) {
 	}
 	if kinds[FeatureChart] != 1 || kinds[FeatureTable] != 1 || kinds[FeatureValidation] != 1 {
 		t.Errorf("rich.xlsx: %+v", got)
+	}
+	// What a rule says, and the columns of a table.
+	for _, f := range got {
+		switch f.Kind {
+		case FeatureTable:
+			if f.Rule != "k|v" {
+				t.Errorf("rich.xlsx table columns: %q", f.Rule)
+			}
+		case FeatureValidation:
+			if f.Type != "list" || f.Rule != `"North,South,East,West"` {
+				t.Errorf("rich.xlsx validation: %+v", f)
+			}
+		}
+	}
+	for _, f := range featuresOf(t, "rules.xlsx") {
+		if f.Kind == FeatureCond && f.Type == "cellIs" && f.Rule != "greaterThan|$C$3" || f.Kind == FeatureValidation && f.Type == "custom" && f.Rule != "C3>$B3" {
+			t.Errorf("rules.xlsx: %+v", f)
+		}
+	}
+	// An Excel table's columns, before and after a rename.
+	for name, want := range map[string]Feature{
+		"against_table.xlsx":         {Kind: FeatureTable, Sheet: "Data", Where: "A1:B3", What: "Sales", Rule: "Region|Units"},
+		"against_table_renamed.xlsx": {Kind: FeatureTable, Sheet: "Data", Where: "A1:B3", What: "Sales2", Rule: "Region|Units"},
+	} {
+		if got := featuresOf(t, name); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+			t.Errorf("%s: %+v", name, got)
+		}
 	}
 	if _, err := Features([]byte("not a zip")); err == nil {
 		t.Error("not a zip: no error")

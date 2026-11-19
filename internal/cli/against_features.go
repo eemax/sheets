@@ -66,10 +66,11 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 		}
 		return out
 	}
-	// samePlace: the feature is where it was, or where the lines added and
-	// removed put it.
+	// samePlace: the feature is where the lines added and removed put it (where
+	// it was, when none were).
 	samePlace := func(f, g xlsx.Feature, home string) bool {
-		return placeKey(f.Where) == placeKey(g.Where) || moved(f, home) != "" && moved(f, home) == placeKey(g.Where)
+		p := moved(f, home)
+		return p != "" && p == placeKey(g.Where)
 	}
 	sameSeries := func(f, g xlsx.Feature, home string) bool {
 		if len(f.Series) == 0 || len(f.Series) != len(g.Series) {
