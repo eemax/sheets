@@ -9,7 +9,7 @@ pushed binary takes. Measured on this MacBook (M4) by piece report-causes
 - **Base:** sheets' origin/main at 99ba275, the last pushed binary (no
   change report).
 - **Measured:** f447732, the report-causes branch's last code (the
-  commit after it adds this file).
+  commits after it change this file only).
 - **Workbook:** 150,000 rows (Region, Units, Price, Revenue = Units ×
   Price), written by the base binary, with Summary!B1 =SUM(Data!D:D),
   B2 =AVERAGE(Data!B2:B150001) and B3 =1/Data!B2.
@@ -31,8 +31,8 @@ pushed binary takes. Measured on this MacBook (M4) by piece report-causes
 | `sort Data Units` | full | 7.838 | 7.955 | 1.01 | 4 |
 
 Every command is within the bar: 1.00 to 1.09 times the base. An earlier
-run at b8aa73d gave 1.00 to 1.07. The report
-costs little for three reasons:
+run at b8aa73d gave 1.00 to 1.07. The report costs little for three
+reasons:
 
 - it is built from the results the save recomputed anyway;
 - the features are read off the file before and after, side by side;
