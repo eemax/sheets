@@ -511,8 +511,10 @@ type report struct {
 	// should give (readRange).
 	reads int
 	// notTyped are the sheets (old names, lower-cased) whose last rows are not
-	// taken as removed with cells typed in where they were (typedRemoved).
-	notTyped map[string]bool
+	// taken as removed with cells typed in where they were (typedRemoved);
+	// toldCleared those whose last rows removed alone, or a row removed beside a
+	// sort, are told cleared where they were. Each is set from its own evidence.
+	notTyped, toldCleared map[string]bool
 	// inReach is what the cells changed reach (inputReach); lineTouch the
 	// lines added and removed that formulas read, by where the formula is now
 	// (linesTouching).
@@ -1827,9 +1829,9 @@ func (r *report) typedOver(j *job, o, n int) bool {
 // pairCleared finds the last rows of a sheet removed with none kept, added or
 // typed in after them (and no block beside them; a sort is clearedSorted's),
 // which hold something: they are given, numbered as before, to be told removed
-// or cleared where they were (typedRemoved). Where nothing shows they were
-// removed (notTyped names the sheets), they are paired with the rows they were
-// cleared in, numbered as they would be with them kept, and none is given.
+// or cleared where they were (typedRemoved). Where something shows they were
+// cleared (toldCleared names the sheets), they are paired with the rows they
+// were cleared in, numbered as they would be with them kept, and none is given.
 func (r *report) pairCleared(p diff.SheetPair, j *job, typed, typedFrom map[int]bool) ([]diff.Pair, []int) {
 	rows := p.Rows
 	if len(p.Blocks) > 0 || r.out.ValuesOnly {
@@ -1862,7 +1864,7 @@ func (r *report) pairCleared(p diff.SheetPair, j *job, typed, typedFrom map[int]
 		}
 		olds = append(olds, q.Old)
 	}
-	if !r.notTyped[strings.ToLower(p.Old.Name)] {
+	if !r.toldCleared[strings.ToLower(p.Old.Name)] {
 		return rows, olds
 	}
 	out := append([]diff.Pair{}, rows[:tail]...)
@@ -1881,9 +1883,9 @@ func (r *report) pairCleared(p diff.SheetPair, j *job, typed, typedFrom map[int]
 // sorted, the blank going last), or the one with cells typed in where it was
 // removed, as prepare takes a row removed and one added in the same place at the
 // end (typedOver). They are given to be told removed or cleared (typedRemoved)
-// as pairCleared's are; where nothing shows it was removed (notTyped), the old
-// row is j.blanked, outside the rows moved, compared with the new one, and none
-// is given. More than one row removed, or a blank row more than one, would
+// as pairCleared's are; where something shows it was cleared (toldCleared, or
+// notTyped for one with cells typed in), the old row is j.blanked, outside the
+// rows moved, compared with the new one, and none is given. More than one row removed, or a blank row more than one, would
 // number them by a guess: they stay removed.
 func (r *report) clearedSorted(p diff.SheetPair, j *job, typed, typedFrom map[int]bool) ([]diff.Pair, []int) {
 	rows := p.Rows
@@ -1943,10 +1945,11 @@ func (r *report) clearedSorted(p diff.SheetPair, j *job, typed, typedFrom map[in
 		}
 		n = at[0]
 	}
-	if !r.notTyped[strings.ToLower(p.Old.Name)] {
+	name, blank := strings.ToLower(p.Old.Name), put < 0 || rowBlank(p.New, n, j.held(), 1)
+	if blank && !r.toldCleared[name] || !blank && !r.notTyped[name] {
 		switch {
 		case put < 0:
-		case rowBlank(p.New, n, j.held(), 1):
+		case blank:
 			j.clearedAt = []int{n}
 		default:
 			typed[n], typedFrom[o] = true, true
@@ -2671,34 +2674,49 @@ func (r *report) align() (diff.Alignment, []*job) {
 	}
 	// pairs are the alignments the jobs were prepared from.
 	pairs := append([]diff.SheetPair{}, al.Sheets...)
-	// retyped prepares again, without the rows taken as removed with cells
-	// typed in where they were, the sheets where nothing shows they were
-	// removed (typedRemoved).
+	// retyped prepares again the sheets where something shows that the rows
+	// taken as removed with cells typed in where they were were not (notTyped),
+	// or that the last rows taken as removed were cleared where they are
+	// (toldCleared), each from the evidence of its own (typedRemoved). A sheet
+	// prepared again may have rows of the other kind to tell, whose evidence is
+	// weighed in turn.
 	retyped := func() {
-		var redo []int
-		for i, j := range jobs {
-			if j == nil || len(j.typed)+len(j.cleared) == 0 {
-				continue
-			}
-			// Rows typed over were edited in place unless something shows they
-			// were removed, and so was a row removed with a blank one added in
-			// its place among the rows kept (a record cleared in a sorted
-			// table, as a row removed and one added in the same place are
-			// paired); the last rows removed alone, removed unless something
-			// shows they were cleared.
-			removed, kept := r.typedRemoved(j, jobs)
-			if inPlace := len(j.typed)+len(j.clearedAt) > 0; inPlace && !removed || !inPlace && kept {
+		for pass := 0; pass < 4; pass++ {
+			var redo []int
+			for i, j := range jobs {
+				if j == nil || len(j.typed)+len(j.cleared) == 0 {
+					continue
+				}
+				// Rows typed over were edited in place unless something shows they
+				// were removed, and so was a row removed with a blank one added in
+				// its place among the rows kept (a record cleared in a sorted
+				// table, as a row removed and one added in the same place are
+				// paired); the last rows removed alone, removed unless something
+				// shows they were cleared.
+				removed, kept := r.typedRemoved(j, jobs)
+				name := strings.ToLower(j.sa.Name)
+				switch {
+				case len(j.typed) > 0 && !removed:
+					if r.notTyped == nil {
+						r.notTyped = map[string]bool{}
+					}
+					r.notTyped[name] = true
+				case len(j.typed) == 0 && (len(j.clearedAt) > 0 && !removed || len(j.clearedAt) == 0 && kept):
+					if r.toldCleared == nil {
+						r.toldCleared = map[string]bool{}
+					}
+					r.toldCleared[name] = true
+				default:
+					continue
+				}
 				redo = append(redo, i)
 			}
-		}
-		for _, i := range redo {
-			if r.notTyped == nil {
-				r.notTyped = map[string]bool{}
+			if len(redo) == 0 {
+				return
 			}
-			r.notTyped[strings.ToLower(jobs[i].sa.Name)] = true
-			jobs[i] = r.prepare(pairs[i])
-		}
-		if len(redo) > 0 {
+			for _, i := range redo {
+				jobs[i] = r.prepare(pairs[i])
+			}
 			r.setEdits(edits())
 		}
 	}

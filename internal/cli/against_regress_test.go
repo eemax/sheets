@@ -578,6 +578,8 @@ func TestAgainstRegressClearedBeside(t *testing.T) {
 	if err := os.WriteFile(totals, mustRead(t, filepath.Join("..", "xlsx", "testdata", "against_totals.xlsx")), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	two := regressBook(t, dir, "two.xlsx", "Region\tUnits\nNorth\t5\nSouth\t7\nEast\t3\nWest\t9\nMid\t4\n",
+		[]string{"set", "Summary!A1", "=SUM(Data!B2:B6)", "Summary!A2", "=COUNTA(Data!A2:A6)"}, []string{"check", "--fix"})
 	// A total row below the table: the record cleared is among the rows kept.
 	totalled := regressBook(t, dir, "totalled.xlsx", regressTable+"Total\t\t\n",
 		[]string{"set", "Data!B7", "=SUM(Data!B2:B6)", "Summary!A1", "=SUM(Data!B2:B6)", "Summary!A2", "=COUNTA(Data!A2:A6)"}, []string{"check", "--fix"})
@@ -625,6 +627,8 @@ func TestAgainstRegressClearedBeside(t *testing.T) {
 			[]string{"row removed Data!4"}, 1, nil, 0},
 		{"a sort, a record cleared where the rows kept read the same as a row deleted and a blank one inserted", short,
 			[][]string{{"sort", "Data!A1:B5", "Units"}, {"clear", "Data!A4:B4"}}, nil, 2, map[string][2]string{"Data!A4": {`"Hub"`, ""}, "Data!B4": {"60", ""}}, 0},
+		{"the last row cleared and a cell set, another row deleted, a blank row inserted", two, [][]string{{"clear", "Data!A6:B6"}, {"set", "Data!B6", "77"}, {"rows", "delete", "Data!5"}, {"rows", "insert", "Data!3"}},
+			[]string{"row added Data!3", "row removed Data!6"}, 2, map[string][2]string{"Data!A6": {`"West"`, ""}, "Data!B6": {"9", "77"}}, 0},
 		{"a sort, the last record deleted", before, [][]string{{"sort", "Data", "Units:desc"}, {"rows", "delete", "Data!6"}},
 			[]string{"row removed Data!4"}, 0, nil, 0},
 		{"a sort, the last record deleted and a cell set", before, [][]string{{"sort", "Data", "Units:desc"}, {"rows", "delete", "Data!6"}, {"set", "Data!B6", "77"}},
