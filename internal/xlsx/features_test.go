@@ -123,6 +123,45 @@ func TestTracer(t *testing.T) {
 	}
 }
 
+// SpreadAll tells of every source reaching a cell, up to a limit, the lowest
+// first.
+func TestSpreadAll(t *testing.T) {
+	wb, err := Read(filepath.Join("testdata", "against_before.xlsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := NewTracer(wb)
+	src := func(sheet string, row, col int) Source {
+		return Source{Sheet: sheet, Range: grid.Range{R1: row, C1: col, R2: row, C2: col}}
+	}
+	// B2 and B3 of Data, and the tax rate.
+	sources := []Source{src("Data", 2, 2), src("Data", 3, 2), src("Summary", 1, 2)}
+	got := tr.SpreadAll(sources, 2)
+	want := map[At]Reach{
+		{"Data", 2, 4}:    {Sources: []int{0}},
+		{"Data", 3, 4}:    {Sources: []int{1}},
+		{"Data", 7, 2}:    {Sources: []int{0, 1}},
+		{"Summary", 2, 2}: {Sources: []int{0, 1}},
+		{"Summary", 6, 2}: {Sources: []int{0, 1}},             // the most units: both reach it
+		{"Summary", 4, 2}: {Sources: []int{0, 1}, More: true}, // the tax: the rate too
+		{"Summary", 5, 2}: {Sources: []int{0, 1}, More: true},
+		{"Data", 7, 4}:    {Sources: []int{0, 1}},
+		{"Summary", 3, 2}: {Sources: []int{0, 1}},
+		{"Summary", 7, 2}: {Sources: []int{0}}, // North units: B2 alone
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SpreadAll:\n got %v\nwant %v", got, want)
+	}
+	// The same again: it keeps the index it reads.
+	if again := tr.SpreadAll(sources, 2); !reflect.DeepEqual(again, want) {
+		t.Errorf("SpreadAll again: %v", again)
+	}
+	// With room for all, nobody is left out.
+	if all := tr.SpreadAll(sources, 3); all[At{"Summary", 4, 2}].More || len(all[At{"Summary", 4, 2}].Sources) != 3 {
+		t.Errorf("room for all: %v", all[At{"Summary", 4, 2}])
+	}
+}
+
 // A chart on a chart sheet (a sheet that is one chart, with no anchor) is a
 // feature of that sheet; deleting the sheet takes it away.
 func TestFeaturesChartsheet(t *testing.T) {

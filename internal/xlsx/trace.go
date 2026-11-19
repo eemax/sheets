@@ -41,6 +41,7 @@ type Tracer struct {
 	names  map[string][]cellKey // formulas by the names they use (lower-cased)
 	sheets map[string]*grid.Sheet
 	used   map[string]grid.Range // what each sheet uses, by lower-cased name
+	idx    *depIndex             // who reads what, kept for SpreadAll
 }
 
 type arrayAt struct {
@@ -258,6 +259,87 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 			f := t.fs[id]
 			reach(keyOf(f.sheet, f.row, f.col), it.src)
 		})
+	}
+	return out
+}
+
+// Reach is the sources that reach a cell: the indexes of the lowest few, in
+// increasing order, and whether others do.
+type Reach struct {
+	Sources []int
+	More    bool
+}
+
+// SpreadAll follows the formulas reading the sources like Spread, but tells
+// of every source reaching each formula (and each cell of an array formula's
+// result), up to limit of them, the lowest in index: a value that two inputs
+// moved is the work of both. It stops where a cell has all it can hold, so
+// the cost is bounded by limit and not by the sources.
+func (t *Tracer) SpreadAll(sources []Source, limit int) map[At]Reach {
+	if t.idx == nil {
+		t.idx = &depIndex{cells: map[cellKey][]int{}, columns: map[cellKey]*rowTree{}, wide: map[string]map[grid.Range][]int{}}
+		for id, refs := range t.refs {
+			for _, r := range refs {
+				t.idx.add(id, r.Sheet, r.Range)
+			}
+		}
+	}
+	x := t.idx
+	labels := map[cellKey][]int{} // up to limit+1 each: one over says there are more
+	visited := map[cellKey]int{}  // by the source (plus one) that last reached it
+	var queue []cellKey
+	var reach func(k cellKey, src int)
+	reach = func(k cellKey, src int) {
+		if visited[k] == src+1 {
+			return
+		}
+		visited[k] = src + 1
+		if len(labels[k]) > limit {
+			return // it has all it can hold, and so have those after it
+		}
+		labels[k] = append(labels[k], src)
+		queue = append(queue, k)
+		if a, ok := t.arrays[k]; ok {
+			for r := a.rg.R1; r <= a.rg.R2; r++ {
+				for c := a.rg.C1; c <= a.rg.C2; c++ {
+					if r != a.rg.R1 || c != a.rg.C1 {
+						reach(keyOf(a.sheet, r, c), src)
+					}
+				}
+			}
+		}
+	}
+	for i, s := range sources {
+		rg := s.Range
+		if u, ok := t.used[strings.ToLower(s.Sheet)]; ok && !u.Empty() {
+			rg = rg.Intersect(grid.Range{R1: 1, C1: 1, R2: u.R2, C2: u.C2})
+		}
+		queue = queue[:0]
+		for r := rg.R1; r <= rg.R2; r++ {
+			for c := rg.C1; c <= rg.C2; c++ {
+				k := keyOf(s.Sheet, r, c)
+				if _, ok := t.at[k]; ok && !s.Readers {
+					reach(k, i) // a formula changed: what it computes follows
+					continue
+				}
+				visited[k] = i + 1
+				queue = append(queue, k)
+			}
+		}
+		for n := 0; n < len(queue); n++ {
+			x.readersOf(queue[n], func(id int) {
+				f := t.fs[id]
+				reach(keyOf(f.sheet, f.row, f.col), i)
+			})
+		}
+	}
+	out := make(map[At]Reach, len(labels))
+	for k, ls := range labels {
+		r := Reach{Sources: ls}
+		if len(ls) > limit {
+			r.Sources, r.More = ls[:limit], true
+		}
+		out[t.atOf(k)] = r
 	}
 	return out
 }

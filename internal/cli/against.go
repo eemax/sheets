@@ -124,6 +124,10 @@ type structureEntry struct {
 // lists them all.
 const againstListed = 10
 
+// causeListed bounds the cells changed a moved value names as its cause (then
+// "and more"), in text and --json alike.
+const causeListed = 3
+
 // againstWidth bounds what text output shows of a value or formula,
 // againstNote of a cause, flag or reason, and againstFinding of the check's
 // own findings, which end with what to do (as sheets diff cuts values);
@@ -398,6 +402,9 @@ type report struct {
 
 	sources []xlsx.Source
 	causes  []string
+	// cells is how many of the sources come first as cells changed (inputs
+	// and formulas).
+	cells int
 	// lineSources are rows, columns and sheets added or moved, which come
 	// after the cells changed.
 	lineSources []xlsx.Source
@@ -1692,6 +1699,8 @@ func (r *report) compare() {
 	if out.ValuesOnly {
 		return
 	}
+	// The sources so far are cells changed: inputs and formulas.
+	r.cells = len(r.sources)
 	// Names added, changed or removed: the formulas using them follow.
 	old := map[string]grid.DefinedName{}
 	for _, n := range A.wb.Names {
@@ -2210,6 +2219,9 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	r.sources = append(r.sources, r.lineSources...)
 	r.causes = append(r.causes, r.lineCauses...)
 	causeOf := tr.Spread(r.sources)
+	// A value that cells changed moved is the work of all of them that reach
+	// it, not only the nearest.
+	var allOf map[xlsx.At]xlsx.Reach
 	// A value traces through the cell itself, or through the array formula
 	// whose result it was.
 	places := func(c candidate) []xlsx.At {
@@ -2225,6 +2237,34 @@ func (r *report) trace(tr *xlsx.Tracer) {
 			}
 		}
 		return 0, false
+	}
+	// causeText says what moved a value whose nearest cause is source k: when
+	// that is a cell changed, each of those that reach it (the first few).
+	causeText := func(c candidate, k int) string {
+		if k >= r.cells {
+			return r.causes[k]
+		}
+		if allOf == nil {
+			allOf = tr.SpreadAll(r.sources[:r.cells], causeListed)
+		}
+		var got xlsx.Reach
+		for _, at := range places(c) {
+			if g, ok := allOf[at]; ok {
+				got = g
+				break
+			}
+		}
+		if len(got.Sources) < 2 && !got.More {
+			return r.causes[k]
+		}
+		labels := make([]string, len(got.Sources))
+		for i, n := range got.Sources {
+			labels[i] = r.causes[n]
+		}
+		if got.More {
+			labels = append(labels, "and more")
+		}
+		return strings.Join(labels, ", ")
 	}
 	anchorOf := func(c candidate) xlsx.At {
 		at := c.at
@@ -2266,7 +2306,7 @@ func (r *report) trace(tr *xlsx.Tracer) {
 			continue
 		}
 		if k, ok := cause(causeOf, c); ok {
-			moved.Cause = r.causes[k]
+			moved.Cause = causeText(c, k)
 			out.Moved = append(out.Moved, moved)
 			continue
 		}
