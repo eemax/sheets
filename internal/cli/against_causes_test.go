@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eemax/sheets/internal/xlsx"
 )
 
 // What check --against gives as the cause of a value that moved: the cause
@@ -388,6 +390,132 @@ func TestAgainstCausesFeaturesChanged(t *testing.T) {
 	moved := edited(t, before, filepath.Join(dir, "moved.xlsx"), []string{"validate", "Data!B2:B6", "--clear"}, []string{"validate", "Data!B3:B6", "whole", "between", "0", "and", "5000"})
 	if r, code := against(t, moved, before); len(r.FeaturesLost) != 1 || code != 1 {
 		t.Errorf("rule on other cells: exit %d, lost %+v, changed %+v", code, r.FeaturesLost, r.FeaturesChanged)
+	}
+}
+
+// A rule another replaced on the same cells is the old one lost, not an edit
+// of it (f0.2): the banding sheets fmt writes over a highlight of another
+// tool, a list a move pasted a whole-number rule over, a highlight cleared
+// and replaced by data bars. Each is lost, with exit 1, in check --against
+// and in the command's own report; none is in the features changed.
+func TestAgainstCausesFeatureReplaced(t *testing.T) {
+	dir, fixture := causesFixture(t)
+	lostOnly := func(name, after, before, kind, where, cmdOut string) {
+		t.Helper()
+		r, code := against(t, after, before)
+		found := false
+		for _, f := range r.FeaturesLost {
+			found = found || f.Kind == kind && f.Where == where
+		}
+		if !found || len(r.FeaturesChanged) != 0 || r.Summary.FeaturesChanged != 0 || code != 1 {
+			t.Errorf("%s: exit %d, lost %+v, changed %+v", name, code, r.FeaturesLost, r.FeaturesChanged)
+		}
+		if cmdOut != "" && (strings.Contains(head(t, cmdOut), "changed)") || strings.Contains(head(t, cmdOut), ", 0 features lost")) {
+			t.Errorf("%s: the command's report:\n%s", name, cmdOut)
+		}
+	}
+	// A highlight of the data rows by another tool, then sheets fmt's banding
+	// over the same rows: both are formula rules.
+	before := filepath.Join(dir, "highlight.xlsx")
+	rewriteSheet(t, fixture, before, func(b []byte) []byte {
+		return bytes.Replace(b, []byte("</conditionalFormatting>"), []byte(`</conditionalFormatting><conditionalFormatting sqref="A2:D6"><cfRule type="expression" dxfId="0" priority="2"><formula>$B2&gt;6</formula></cfRule></conditionalFormatting>`), 1)
+	})
+	after := filepath.Join(dir, "banded.xlsx")
+	if err := os.WriteFile(after, mustRead(t, before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := runCLI("", "fmt", after)
+	lostOnly("fmt's banding", after, before, "conditional_format", "Data!A2:D6", out)
+	if !strings.Contains(out, "conditional format Data!A2:D6 (formula rule)") {
+		t.Errorf("fmt's report:\n%s", out)
+	}
+
+	// A list on the cells a move pasted over.
+	listed := edited(t, fixture, filepath.Join(dir, "listed.xlsx"), []string{"validate", "Data!H2:H3", "list", "a,b"})
+	after = filepath.Join(dir, "pasted.xlsx")
+	if err := os.WriteFile(after, mustRead(t, listed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runCLI("", "move", after, "Data!B2:C3", "Data!H2")
+	if code != 0 || !strings.Contains(head(t, out), ", 1 feature lost") || strings.Contains(out, "changed: validation") {
+		t.Errorf("move over a list: exit %d:\n%s", code, out)
+	}
+	lostOnly("move over a list", after, listed, "validation", "Data!H2:H3", "")
+
+	// A highlight cleared, data bars where it was.
+	bars := edited(t, fixture, filepath.Join(dir, "bars.xlsx"), []string{"cond", "Data!D2:D6", "--clear"}, []string{"cond", "Data!D2:D6", "bars"})
+	lostOnly("data bars for a highlight", bars, fixture, "conditional_format", "Data!D2:D6", "")
+}
+
+// ruleEdited, on its own: the same type or a kindred one (a bound on a value),
+// a formula of the same shape (what a threshold edit leaves), and a validation
+// of no type, which allows any value and stands in for any. ruleText says "any
+// value" of it.
+func TestAgainstCausesRuleEdited(t *testing.T) {
+	val := func(typ, rule string) xlsx.Feature {
+		return xlsx.Feature{Kind: xlsx.FeatureValidation, Type: typ, Rule: rule}
+	}
+	cond := func(typ, rule string) xlsx.Feature {
+		return xlsx.Feature{Kind: xlsx.FeatureCond, Type: typ, Rule: rule}
+	}
+	for _, c := range []struct {
+		name         string
+		f, g         xlsx.Feature
+		same, anyway bool // edited when the same type is asked for, and when not
+	}{
+		{"bound", val("whole", "between|0|1000"), val("whole", "between|0|5000"), true, true},
+		{"operator", val("decimal", "greaterThan|0"), val("decimal", "greaterThanOrEqual|5"), true, true},
+		{"list items", val("list", `"a,b"`), val("list", `"a,b,c"`), true, true},
+		{"list source", val("list", `Summary!$D$2:$D$6`), val("list", `"a,b"`), true, true},
+		{"list to whole", val("list", `"a,b"`), val("whole", "between|0|1000"), false, false},
+		{"whole to decimal", val("whole", "between|0|1000"), val("decimal", "greaterThan|0"), false, true},
+		{"whole to custom", val("whole", "between|0|1000"), val("custom", "ISNUMBER(B2)"), false, false},
+		{"whole to any", val("whole", "between|0|1000"), val("", "between"), false, true},
+		{"any to list", val("", "between"), val("list", `"a,b"`), false, true},
+		{"threshold", cond("expression", "$B2>6"), cond("expression", "$B2>7"), true, true},
+		{"comparison", cond("expression", "$B2>6"), cond("expression", "$B2<=6.5"), true, true},
+		{"text", cond("expression", `$A2="North"`), cond("expression", `$A2="South"`), true, true},
+		{"highlight to banding", cond("expression", "$B2>6"), cond("expression", "MOD(ROW()-2,2)=1"), false, false},
+		{"banding shifted", cond("expression", "MOD(ROW()-2,2)=1"), cond("expression", "MOD(ROW()-3,2)=1"), true, true},
+		{"custom formula", val("custom", "ISNUMBER(B2)"), val("custom", "AND(ISNUMBER(B2),B2>0)"), false, false},
+		{"cell value to bars", cond("cellIs", "greaterThan|140"), cond("dataBar", ""), false, false},
+		{"cell value", cond("cellIs", "greaterThan|140"), cond("cellIs", "lessThan|3"), true, true},
+		{"cond to none", cond("cellIs", "greaterThan|1"), cond("", ""), false, false},
+	} {
+		if got := ruleEdited(c.f, c.g, true); got != c.same {
+			t.Errorf("%s: same type asked: %v, want %v", c.name, got, c.same)
+		}
+		if got := ruleEdited(c.f, c.g, false); got != c.anyway {
+			t.Errorf("%s: any type: %v, want %v", c.name, got, c.anyway)
+		}
+	}
+	if got := ruleText(val("", "between")); got != "any value" {
+		t.Errorf("ruleText of a validation of no type: %q", got)
+	}
+	if got := ruleText(val("whole", "between|0|1000")); got != "whole between 0 1000" {
+		t.Errorf("ruleText: %q", got)
+	}
+}
+
+// A whole-number validation replaced by "any value" with a message: an edit,
+// said as the feature is, not as "none between" (f0.6), in check --against,
+// its text and the command's short report.
+func TestAgainstCausesAnyValue(t *testing.T) {
+	dir, before := causesFixture(t)
+	after := filepath.Join(dir, "any.xlsx")
+	if err := os.WriteFile(after, mustRead(t, before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd, code := runCLI("", "validate", after, "Data!B2:B6", "any", "--prompt", "units")
+	if code != 0 || !strings.Contains(cmd, "changed: validation Data!B2:B6 (whole between 0 1000 → any value)") {
+		t.Errorf("the command's report: exit %d:\n%s", code, cmd)
+	}
+	r, code := against(t, after, before)
+	if len(r.FeaturesChanged) != 1 || r.FeaturesChanged[0].Before != "whole between 0 1000" || r.FeaturesChanged[0].After != "any value" || code != 0 {
+		t.Errorf("exit %d, changed %+v, lost %+v", code, r.FeaturesChanged, r.FeaturesLost)
+	}
+	if text, _ := runCLI("", "check", after, "--against", before); strings.Contains(text, "none") || !strings.Contains(text, "any value") {
+		t.Errorf("text:\n%s", text)
 	}
 }
 

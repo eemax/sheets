@@ -102,7 +102,13 @@
     one lost. A validation or conditional format whose cells hold another
     of its kind now (a bound raised, a dropdown's items, a threshold) was
     edited: it is in `features_changed`, with its rule before and after,
-    not lost, and sets no exit 1. A column deleted takes the
+    not lost, and sets no exit 1. Only a rule of the same type is an edit
+    of it (a whole-number validation made a decimal one, or one that
+    allows any value, too), and a formula rule or custom validation only
+    when it is the same formula but for its numbers, texts and
+    comparison: another rule on the same cells (a list where a number was,
+    data bars for a highlight, banding for a formula highlight) is the old
+    one lost. A column deleted takes the
     validations on it, and the ones beside it move into its place. An
     Excel table renamed (the same columns, on the same sheet) is followed,
     not lost: the formulas that read it by name, which Excel rewrites, are

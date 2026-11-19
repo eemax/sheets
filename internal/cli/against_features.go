@@ -18,7 +18,10 @@ import (
 // no reason to say nothing of the one that is gone. Where a feature was is
 // where the rows and columns added and removed since put it. A validation
 // or conditional format whose cells hold another of its kind now, its rule
-// edited, is changed, not lost.
+// edited (a bound, a list's items, a threshold: the same type, and a
+// formula's own of the same shape), is changed, not lost; another type, or a
+// formula of another shape (the banding sheets fmt writes over a highlight),
+// is the old rule lost.
 
 // changedFeature is a validation or conditional format the new version
 // holds on the same cells as one of the old version (where the rows and
@@ -33,8 +36,12 @@ type changedFeature struct {
 	After  string `json:"after"`
 }
 
-// ruleText shows a rule: its type, operator and formulas.
+// ruleText shows a rule: its type, operator and formulas; a validation of no
+// type allows any value.
 func ruleText(f xlsx.Feature) string {
+	if f.Kind == xlsx.FeatureValidation && typeKey(f.Type) == "none" {
+		return "any value"
+	}
 	var parts []string
 	for _, p := range strings.Split(f.Rule, "|") {
 		if p = strings.TrimSpace(p); p != "" {
@@ -289,7 +296,7 @@ func compareFeatures(before, after []xlsx.Feature, renamed, tables map[string]st
 			}
 			for _, j := range byPlace[f.Kind+"\x00"+on+"\x00"+p] {
 				g := after[j]
-				if used[j] || sameType && typeKey(g.Type) != typeKey(f.Type) {
+				if used[j] || !ruleEdited(f, g, sameType) {
 					continue
 				}
 				used[j], kept[i] = true, true
@@ -319,6 +326,74 @@ func compareFeatures(before, after []xlsx.Feature, renamed, tables map[string]st
 		out = []lostFeature{}
 	}
 	return out, changed
+}
+
+// ruleEdited tells whether a rule of the new version, on the cells of one of
+// the old, is the old one edited: of its type, or, when sameType is not
+// asked, of a kindred one (a whole-number validation made a decimal one, a
+// date, a text length: all a bound on a value) or a validation of no type,
+// which allows any value and stands in for any (the rule cleared, its message
+// kept); and, for a rule that is a formula of its own (a conditional format
+// by expression, a custom validation), of the same shape, as a threshold
+// edited is and the banding that replaced a highlight is not. Another rule on
+// the same cells (a list where a number was, data bars for a highlight) is
+// the old one lost.
+func ruleEdited(f, g xlsx.Feature, sameType bool) bool {
+	tf, tg := typeKey(f.Type), typeKey(g.Type)
+	if tf != tg {
+		if sameType || f.Kind != xlsx.FeatureValidation {
+			return false
+		}
+		return tf == "none" || tg == "none" || bounded[tf] && bounded[tg]
+	}
+	if tf == "expression" || tf == "custom" {
+		return ruleShape(f.Rule) == ruleShape(g.Rule)
+	}
+	return true
+}
+
+// bounded are the validations that bound a value (operator and limits).
+var bounded = map[string]bool{"whole": true, "decimal": true, "date": true, "time": true, "textLength": true}
+
+// ruleShape writes a rule's formulas with what an edit changes left out: the
+// numbers and texts in them and the comparison made, as well as what ruleKey
+// leaves out (the cells read, case, spaces).
+func ruleShape(rule string) string {
+	k := ruleKey(rule)
+	var b strings.Builder
+	for i := 0; i < len(k); {
+		c := k[i]
+		switch {
+		case c == '"':
+			j := i + 1
+			for j < len(k) {
+				if k[j] == '"' {
+					if j+1 < len(k) && k[j+1] == '"' {
+						j += 2
+						continue
+					}
+					break
+				}
+				j++
+			}
+			b.WriteString(`"s"`)
+			i = j + 1
+		case c >= '0' && c <= '9' && (i == 0 || !nameChar(k[i-1])):
+			for i < len(k) && (k[i] >= '0' && k[i] <= '9' || k[i] == '.') {
+				i++
+			}
+			b.WriteByte('#')
+		case c == '<' || c == '>' || c == '=':
+			for i < len(k) && (k[i] == '<' || k[i] == '>' || k[i] == '=') {
+				i++
+			}
+			b.WriteByte('~')
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return b.String()
 }
 
 // typeKey names a rule's type: a validation of no type allows any value.
