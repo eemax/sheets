@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -509,6 +510,9 @@ type report struct {
 	// reads counts the cells read one by one to tell what a total over them
 	// should give (readRange).
 	reads int
+	// notTyped are the sheets (old names, lower-cased) whose last rows are not
+	// taken as removed with cells typed in where they were (typedRemoved).
+	notTyped map[string]bool
 }
 
 // tracerA follows what the old version's formulas read.
@@ -1487,9 +1491,10 @@ type job struct {
 	cols                                           [][2]int
 	rowsAdded, rowsRemoved, colsAdded, colsRemoved []int
 	// typed are the rows (as numbered now) whose cells were typed in where
-	// a row was removed: no row added, their cells changed from empty.
-	typed  []int
-	moved  []diff.Moved
+	// a row was removed: no row added, their cells changed from empty;
+	// typedOld the rows removed (as numbered before) whose places they took.
+	typed, typedOld []int
+	moved           []diff.Moved
 	blocks []blockJob
 	// pasted is rows cut and pasted where nothing was (sheets move, Excel's
 	// cut and paste), the rows around them where they were: the run, the
@@ -1577,10 +1582,12 @@ func (r *report) prepare(p diff.SheetPair) *job {
 	// what the old one did and the old one held more (a row deleted, then a
 	// cell set in the row now at that index, with nothing to move up into its
 	// place): one row removed and the cells typed in, not every cell of the
-	// row changed.
-	typed := map[int]bool{}
+	// row changed. The values alike are the row's cells cleared and typed over
+	// where they are, so the rows stay removed only when what reads them shows
+	// it (typedRemoved; notTyped names the sheets where nothing does).
+	typed, typedFrom := map[int]bool{}, map[int]bool{}
 	p.Rows = pairReplaced(p.Rows, func(o, n int, last bool) bool {
-		if !last || len(p.Blocks) > 0 || len(j.colsAdded)+len(j.colsRemoved) > 0 {
+		if !last || r.notTyped[strings.ToLower(sa.Name)] || len(p.Blocks) > 0 || len(j.colsAdded)+len(j.colsRemoved) > 0 {
 			return false
 		}
 		held, cleared, same := 0, 0, 0
@@ -1597,7 +1604,7 @@ func (r *report) prepare(p diff.SheetPair) *job {
 			}
 		}
 		if held > 0 && same == 0 && cleared >= 2 {
-			typed[n] = true
+			typed[n], typedFrom[o] = true, true
 			return true
 		}
 		return false
@@ -1664,9 +1671,124 @@ func (r *report) prepare(p diff.SheetPair) *job {
 			j.rowsAdded = append(j.rowsAdded, q.New)
 		case q.New == 0:
 			j.rowsRemoved = append(j.rowsRemoved, q.Old)
+			if typedFrom[q.Old] {
+				j.typedOld = append(j.typedOld, q.Old)
+			}
 		}
 	}
 	return j
+}
+
+// typedRemoved tells whether the rows prepare took as removed, with cells
+// typed in where they were (job.typed), were removed rather than cleared and
+// typed over where they are, which their values alike cannot tell: a formula,
+// a defined name or an Excel table of the old version that reads the sheet
+// from the first of them down reads now as Excel rewrites it for their
+// removal, and none reads as it would with the rows kept. With nothing to
+// show it (a CSV file, rows nothing reads), the rows were not removed: their
+// cells changed where they are, and the values cleared are among the changes.
+func (r *report) typedRemoved(j *job, jobs []*job) bool {
+	if len(j.typedOld) == 0 || r.out.ValuesOnly {
+		return false
+	}
+	told := r.edits
+	defer r.setEdits(told)
+	// The other story's edits: the rows typed over kept, the rest as told.
+	kept := append([]lineEdit{}, told...)
+	other := *j
+	gone := map[int]bool{}
+	for _, o := range j.typedOld {
+		gone[o] = true
+	}
+	other.rowsRemoved = nil
+	for _, o := range j.rowsRemoved {
+		if !gone[o] {
+			other.rowsRemoved = append(other.rowsRemoved, o)
+		}
+	}
+	for i := range kept {
+		if kept[i].sheet == j.sb.Name {
+			kept[i] = other.edit()
+		}
+	}
+	// What may tell: each one's old text, the sheet it is on as now named (""
+	// for a name), and what the new version holds in its place.
+	type probe struct{ text, home, now string }
+	var probes []probe
+	type placed struct {
+		sb       *grid.Sheet
+		row, col map[int]int
+	}
+	places := map[string]*placed{}
+	for _, k := range jobs {
+		if k == nil {
+			continue
+		}
+		pl := &placed{sb: k.sb, row: map[int]int{}, col: map[int]int{}}
+		for _, q := range k.rows {
+			if q.Old > 0 && q.New > 0 {
+				pl.row[q.Old] = q.New
+			}
+		}
+		for _, c := range k.cols {
+			pl.col[c[0]] = c[1]
+		}
+		places[strings.ToLower(k.sa.Name)] = pl
+	}
+	lo := slices.Min(j.typedOld)
+	for at := range r.tracerA().Touching(j.sa.Name, [][2]int{{lo, grid.MaxRows}}, false) {
+		pl := places[strings.ToLower(at.Sheet)]
+		if pl == nil {
+			continue
+		}
+		c, d := r.A.wb.Sheet(at.Sheet).At(at.Row, at.Col), pl.sb.At(pl.row[at.Row], pl.col[at.Col])
+		if c != nil && c.Formula != "" && d != nil && d.Formula != "" {
+			probes = append(probes, probe{c.Formula, pl.sb.Name, d.Formula})
+		}
+	}
+	names := map[string]string{}
+	for _, n := range r.B.wb.Names {
+		names[strings.ToLower(n.Scope+"!"+n.Name)] = n.Ref
+	}
+	for _, n := range r.A.wb.Names {
+		if now, ok := names[strings.ToLower(r.renamed[strings.ToLower(n.Scope)]+"!"+n.Name)]; ok {
+			probes = append(probes, probe{n.Ref, "", now})
+		}
+	}
+	for _, f := range r.fa {
+		if f.Kind != xlsx.FeatureTable {
+			continue
+		}
+		name := strings.ToLower(f.What)
+		if to, ok := r.tables[name]; ok {
+			name = strings.ToLower(to)
+		}
+		for _, g := range r.fb {
+			if g.Kind == xlsx.FeatureTable && strings.ToLower(g.What) == name {
+				probes = append(probes, probe{f.Where, r.renamed[strings.ToLower(f.Sheet)], g.Where})
+			}
+		}
+	}
+	rewrite := func(p probe) string { return folded(r.shifted(r.renamedIn(p.text), p.home, false, "")) }
+	ifRemoved := make([]string, len(probes))
+	for i, p := range probes {
+		ifRemoved[i] = rewrite(p)
+	}
+	r.setEdits(kept)
+	removed := 0
+	for i, p := range probes {
+		ifKept := rewrite(p)
+		if ifKept == ifRemoved[i] {
+			continue // the rows' removal does not move it
+		}
+		switch folded(p.now) {
+		case ifRemoved[i]:
+			removed++
+		case ifKept:
+			return false
+		}
+	}
+	return removed > 0
 }
 
 // edit gives the lines a job added and removed, with the span of the rows
@@ -2171,7 +2293,32 @@ func (r *report) align() (diff.Alignment, []*job) {
 		}
 		return es
 	}
+	// pairs are the alignments the jobs were prepared from.
+	pairs := append([]diff.SheetPair{}, al.Sheets...)
+	// retyped prepares again, without the rows taken as removed with cells
+	// typed in where they were, the sheets where nothing shows they were
+	// removed (typedRemoved), and tells whether there were any.
+	retyped := func() bool {
+		var redo []int
+		for i, j := range jobs {
+			if j != nil && len(j.typed) > 0 && !r.typedRemoved(j, jobs) {
+				redo = append(redo, i)
+			}
+		}
+		for _, i := range redo {
+			if r.notTyped == nil {
+				r.notTyped = map[string]bool{}
+			}
+			r.notTyped[strings.ToLower(jobs[i].sa.Name)] = true
+			jobs[i] = r.prepare(pairs[i])
+		}
+		if len(redo) > 0 {
+			r.setEdits(edits())
+		}
+		return len(redo) > 0
+	}
 	r.setEdits(edits())
+	retyped()
 	if !out.ValuesOnly && (r.anyLines || r.anyCut || len(r.renames) > 0 || len(r.tables) > 0) {
 		// A sheet whose formulas read another that lines were added to or
 		// removed from, or that was renamed: its rows are keyed by their
@@ -2194,12 +2341,14 @@ func (r *report) align() (diff.Alignment, []*job) {
 			if j == nil || !readsOthers(j.sa, touched) {
 				continue
 			}
-			if k := r.prepare(diff.AlignSheet(A.wb, j.sa, B.wb, j.sb, again)); k.lineCount() < j.lineCount() {
-				jobs[i], changed = k, true
+			p := diff.AlignSheet(A.wb, j.sa, B.wb, j.sb, again)
+			if k := r.prepare(p); k.lineCount() < j.lineCount() {
+				jobs[i], pairs[i], changed = k, p, true
 			}
 		}
 		if changed {
 			r.setEdits(edits())
+			retyped()
 		}
 	}
 	return al, jobs

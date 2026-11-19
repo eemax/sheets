@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +20,112 @@ func regressBook(t *testing.T, dir, name, tsv string, cmds ...[]string) string {
 		t.Fatalf("write: exit %d: %s", code, out)
 	}
 	return edited(t, path, path, cmds...)
+}
+
+// regressTable is a table that ends its sheet, with no formula column.
+const regressTable = "Region\tUnits\tPrice\nNorth\t5\t30\nSouth\t7\t20\nEast\t3\t50\nWest\t9\t10\nMid\t4\t25\n"
+
+// changedOf maps each cell changed to its value before and now.
+func changedOf(r causesResult) map[string][2]string {
+	out := map[string][2]string{}
+	for _, c := range r.Changed {
+		out[c.Cell] = [2]string{c.Before, c.After}
+	}
+	return out
+}
+
+// The last row of a table edited in place, two of its cells cleared and the
+// third set, with no row deleted, is its three cells changed, the two cleared
+// named, no structure change and nothing flagged (f5.1): the formulas reading
+// it, as they were, show that no row was removed. The same in a CSV file, where
+// nothing reads the row: values changed, as their values tell.
+func TestAgainstRegressLastRowEdited(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before := regressBook(t, dir, "b.xlsx", regressTable,
+		[]string{"set", "Summary!A1", "=SUM(Data!B2:B6)", "Summary!A2", "=COUNTA(Data!A2:A6)", "Summary!A3", "=Data!A6"})
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"clear", "Data!A6:C6"}, []string{"set", "Data!B6", "99"})
+	r, code := against(t, after, before)
+	want := map[string][2]string{"Data!A6": {`"Mid"`, ""}, "Data!B6": {"4", "99"}, "Data!C6": {"25", ""}}
+	if s := r.Summary; s.Inputs != 3 || s.Formulas != 0 || s.Flagged != 0 || len(r.Structure) != 0 || code != 0 {
+		t.Errorf("xlsx: exit %d, %+v, structure %+v, changed %+v", code, s, r.Structure, r.Changed)
+	}
+	if got := changedOf(r); len(got) != 3 || got["Data!A6"] != want["Data!A6"] || got["Data!B6"] != want["Data!B6"] || got["Data!C6"] != want["Data!C6"] {
+		t.Errorf("xlsx: changed %+v", r.Changed)
+	}
+	if m := causes(r); m["Summary!A1"] != "input Data!B6" || m["Summary!A3"] != "input Data!A6" {
+		t.Errorf("xlsx: causes %q", m)
+	}
+	// A CSV file whose last row Mid,4,25 became ,99,.
+	b := filepath.Join(dir, "b.csv")
+	a := filepath.Join(dir, "a.csv")
+	writeText(t, b, "Region,Units,Price\nNorth,5,30\nSouth,7,20\nEast,3,50\nWest,9,10\nMid,4,25\n")
+	writeText(t, a, "Region,Units,Price\nNorth,5,30\nSouth,7,20\nEast,3,50\nWest,9,10\n,99,\n")
+	r, code = against(t, a, b)
+	if s := r.Summary; s.Inputs != 3 || len(r.Structure) != 0 || code != 0 {
+		t.Errorf("csv: exit %d, %+v, structure %+v, changed %+v", code, s, r.Structure, r.Changed)
+	}
+	if got := changedOf(r); len(got) != 3 || got["a!A6"] != want["Data!A6"] || got["a!B6"] != want["Data!B6"] || got["a!C6"] != want["Data!C6"] {
+		t.Errorf("csv: changed %+v", r.Changed)
+	}
+}
+
+// writeText writes a file for a test.
+func writeText(t *testing.T, path, text string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The last row (or two) of a table deleted and a cell set in the row now at that
+// index is still one row removed (two) and the cell typed in from empty, nothing
+// flagged (report-causes f3.1), when what reads the rows was rewritten for the
+// removal: a total over them, a defined name, an Excel table (the fuzz pool's
+// openpyxl file has all three). Where nothing reads them, the rows deleted and
+// the cells set are the same file as the row's cells cleared and typed over, and
+// the values changed are what it tells: in a sheet nothing reads, in a CSV file,
+// and after openpyxl's delete_rows, which rewrites no formula.
+func TestAgainstRegressDeleteSetLast(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	plain := regressBook(t, dir, "plain.xlsx", regressTable)
+	read := edited(t, plain, filepath.Join(dir, "b.xlsx"), []string{"set", "Summary!A1", "=SUM(Data!B2:B6)"})
+	pool := filepath.Join(dir, "pool.xlsx")
+	if err := os.WriteFile(pool, mustRead(t, filepath.Join("..", "fuzz", "testdata", "pool", "openpyxl-02.xlsx")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, before, rows, cell string
+		removed                  string // the structure told: "" for none
+		inputs                   int
+	}{
+		{"a total reads it", read, "6", "Data!B6", "row removed Data!6", 1},
+		{"a total reads them", read, "5:6", "Data!B5", "rows removed Data!5:6", 1},
+		{"a name, a table and totals read it", pool, "7", "Data!C7", "row removed Data!7", 1},
+		{"nothing reads it", plain, "6", "Data!B6", "", 3},
+	} {
+		after := edited(t, c.before, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", "Data!" + c.rows}, []string{"set", c.cell, "77"})
+		r, _ := against(t, after, c.before) // the exit code counts the pool file's own errors too
+		var lines []string
+		for _, e := range r.Structure {
+			lines = append(lines, e.Change+" "+strings.SplitN(e.Where, " in ", 2)[0])
+		}
+		if s := r.Summary; s.Inputs != c.inputs || s.Formulas != 0 || s.Flagged != 0 || s.Unexplained != 0 || s.FeaturesLost != 0 ||
+			c.removed == "" && len(lines) != 0 || c.removed != "" && (len(lines) != 1 || lines[0] != c.removed) {
+			t.Errorf("%s: %+v, structure %q, changed %+v", c.name, s, lines, r.Changed)
+		}
+		if got := changedOf(r)[c.cell]; got[1] != "77" || c.inputs == 1 && got[0] != "" {
+			t.Errorf("%s: %s %q", c.name, c.cell, got)
+		}
+	}
+	// A CSV file whose last row was deleted and a value typed in its place.
+	b, a := filepath.Join(dir, "b.csv"), filepath.Join(dir, "a.csv")
+	writeText(t, b, "Region,Units,Price\nNorth,5,30\nSouth,7,20\nEast,3,50\nWest,9,10\nMid,4,25\n")
+	writeText(t, a, "Region,Units,Price\nNorth,5,30\nSouth,7,20\nEast,3,50\nWest,9,10\n,77,\n")
+	if r, code := against(t, a, b); r.Summary.Inputs != 3 || len(r.Structure) != 0 || code != 0 {
+		t.Errorf("csv: exit %d, %+v, structure %+v", code, r.Summary, r.Structure)
+	}
 }
 
 // A structure change that moved a value is named with the changed input
