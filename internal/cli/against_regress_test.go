@@ -448,3 +448,65 @@ func TestAgainstRegressChartReads(t *testing.T) {
 		}
 	}
 }
+
+// An empty row inserted in the ranges of a SUMIF, a SUMIFS or a SUMPRODUCT
+// moves none of them (it adds 0), so it is no cause of them or of the totals
+// over them, with an input changed too (f2.3 of the last audit); one holding a
+// value is named beside the input.
+func TestAgainstRegressEmptyRowConditional(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	table := "Region\tUnits\tPrice\nNorth\t5\t30\nSouth\t7\t20\nEast\t3\t50\nWest\t9\t10\nNorth\t4\t25\n"
+	before := regressBook(t, dir, "b.xlsx", table,
+		[]string{"set", "Summary!A1", "North", "Summary!B1", "=SUMIF(Data!$A$2:$A$6,A1,Data!$B$2:$B$6)",
+			"Summary!B2", `=SUMIF(Data!$A$2:$A$6,"North",Data!$B$2:$B$6)`,
+			"Summary!B3", `=SUMIFS(Data!$B$2:$B$6,Data!$A$2:$A$6,"North",Data!$C$2:$C$6,">20")`,
+			"Summary!B4", "=SUMPRODUCT(Data!$B$2:$B$6,Data!$C$2:$C$6)",
+			"Summary!B5", "=SUM(B1:B4)"},
+		[]string{"check", "--fix"})
+	cases := []struct {
+		name string
+		row  []string // set in the row inserted (none: empty)
+		want map[string]string
+	}{
+		{"an empty row", nil, map[string]string{"Summary!B1": "input Data!B2", "Summary!B2": "input Data!B2",
+			"Summary!B3": "input Data!B2", "Summary!B4": "input Data!B2", "Summary!B5": "input Data!B2"}},
+		{"a row with a value", []string{"set", "Data!A4", "North", "Data!B4", "8", "Data!C4", "40"}, map[string]string{
+			"Summary!B1": "rows added: Data!4, input Data!B2", "Summary!B2": "rows added: Data!4, input Data!B2",
+			"Summary!B3": "rows added: Data!4, input Data!B2", "Summary!B4": "rows added: Data!4, input Data!B2",
+			"Summary!B5": "rows added: Data!4, input Data!B2"}},
+	}
+	for _, c := range cases {
+		cmds := [][]string{{"rows", "insert", "Data!4"}}
+		if c.row != nil {
+			cmds = append(cmds, c.row)
+		}
+		cmds = append(cmds, []string{"set", "Data!B2", "6"})
+		after := edited(t, before, filepath.Join(dir, "a.xlsx"), cmds...)
+		r, code := against(t, after, before)
+		m := causes(r)
+		for cell, want := range c.want {
+			if m[cell] != want {
+				t.Errorf("%s: %s: cause %q, want %q", c.name, cell, m[cell], want)
+			}
+		}
+		if code != 0 || len(r.Unexplained) != 0 {
+			t.Errorf("%s: exit %d, %+v, unexplained %+v", c.name, code, r.Summary, r.Unexplained)
+		}
+	}
+	// An empty row deleted from the ranges, likewise.
+	gap := regressBook(t, dir, "g.xlsx", "Region\tUnits\tPrice\nNorth\t5\t30\nSouth\t7\t20\n\t\t\nEast\t3\t50\nWest\t9\t10\nNorth\t4\t25\n",
+		[]string{"set", "Summary!A1", "North", "Summary!B1", "=SUMIF(Data!$A$2:$A$7,A1,Data!$B$2:$B$7)",
+			"Summary!B2", "=SUMPRODUCT(Data!$B$2:$B$7,Data!$C$2:$C$7)", "Summary!B3", "=SUM(B1:B2)"},
+		[]string{"check", "--fix"})
+	after := edited(t, gap, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", "Data!4"}, []string{"set", "Data!B2", "6"})
+	r, code := against(t, after, gap)
+	for _, cell := range []string{"Summary!B1", "Summary!B2", "Summary!B3"} {
+		if got := causes(r)[cell]; got != "input Data!B2" {
+			t.Errorf("an empty row deleted: %s: cause %q", cell, got)
+		}
+	}
+	if code != 0 || len(r.Unexplained) != 0 {
+		t.Errorf("an empty row deleted: exit %d, %+v, unexplained %+v", code, r.Summary, r.Unexplained)
+	}
+}

@@ -2672,6 +2672,19 @@ func (r *report) linesMove(removed bool, home *grid.Sheet, at xlsx.At, sheet str
 	}
 	call, ok := tr.Outer(at.Sheet, at.Row, at.Col)
 	ws := side.wb.Sheet(sheet)
+	if ws != nil && (!ok || !aggregates[call.Func]) {
+		// A SUMIF, a SUMIFS or a SUMPRODUCT adds up what a row holds in its
+		// ranges, and a row that holds nothing there adds 0 (an empty row in a
+		// SUMIF per region): only lines that hold something can move it, and
+		// which way is then not told. Its ranges all on the sheet the lines
+		// are of, since where they are not, a range that grows is paired with
+		// cells of another sheet.
+		if pc, paired := tr.PairedSum(at.Sheet, at.Row, at.Col); paired && rangesOn(pc, home, ws) {
+			if h, known := heldIn(side.wb, home, ws, pc.Refs, runs, cols); known && h.filled == 0 {
+				return false
+			}
+		}
+	}
 	if !ok || ws == nil || !aggregates[call.Func] {
 		return true
 	}
@@ -2766,6 +2779,21 @@ func (r *report) linesMove(removed bool, home *grid.Sheet, at xlsx.At, sheet str
 		return h.sum > 0 && d > 0 || h.sum < 0 && d < 0
 	}
 	return direction() && r.resultHolds(c)
+}
+
+// rangesOn tells whether every reference of a call, of a formula on home, is
+// on a sheet.
+func rangesOn(call engine.Call, home, ws *grid.Sheet) bool {
+	for _, ref := range call.Refs {
+		on := ref.Sheet
+		if on == "" {
+			on = home.Name
+		}
+		if !strings.EqualFold(on, ws.Name) {
+			return false
+		}
+	}
+	return true
 }
 
 // resultHolds tells whether the result the new version stores for a formula

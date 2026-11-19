@@ -99,3 +99,47 @@ func areaText(a Area) string {
 	}
 	return cell(a.R1, a.C1) + ":" + cell(a.R2, a.C2)
 }
+
+// PairedSumNamed gives the ranges a SUMIF, a SUMIFS or a SUMPRODUCT adds up
+// (not the criteria), and nothing for a call that is none of them or has a
+// range that is no reference.
+func TestAgainstRegressPairedSum(t *testing.T) {
+	for _, c := range []struct {
+		formula string
+		fn      string
+		ranges  []string // in order; nil: no such call
+	}{
+		{"=SUMIF(A2:A6,B1,C2:C6)", "SUMIF", []string{"A2:A6", "C2:C6"}},
+		{`=SUMIF(A2:A6,"East")`, "SUMIF", []string{"A2:A6"}},
+		{`=SUMIFS(C2:C6,A2:A6,"East",B2:B6,">"&F1)`, "SUMIFS", []string{"C2:C6", "A2:A6", "B2:B6"}},
+		{"=SUMPRODUCT(B2:B6,C2:C6)", "SUMPRODUCT", []string{"B2:B6", "C2:C6"}},
+		{`=SUMIF(A2:A6,"East",OFFSET(B2,0,0,5,1))`, "", nil},
+		{"=SUMPRODUCT(B2:B6,{1;2;3;4;5})", "", nil},
+		{`=SUMPRODUCT((A2:A6="East")*B2:B6)`, "", nil},
+		{"=SUM(B2:B6)", "", nil},
+		{"=COUNTIF(A2:A6,\"\")", "", nil},
+		{"=SUMIF(A2:A6,\"East\",B2:B6)*2", "", nil},
+	} {
+		call, ok := PairedSumNamed(c.formula, nil)
+		if ok != (c.ranges != nil) {
+			t.Errorf("%s: ok %v, want %v", c.formula, ok, c.ranges != nil)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		var got []string
+		for _, r := range call.Refs {
+			got = append(got, areaText(r.Area))
+		}
+		if call.Func != c.fn || len(got) != len(c.ranges) {
+			t.Errorf("%s: %s %v, want %s %v", c.formula, call.Func, got, c.fn, c.ranges)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.ranges[i] {
+				t.Errorf("%s: %s %v, want %v", c.formula, call.Func, got, c.ranges)
+			}
+		}
+	}
+}

@@ -195,6 +195,19 @@ func (t *Tracer) Outer(sheet string, row, col int) (engine.Call, bool) {
 	return engine.OuterNamed(f.calc, func(on, n string) (engine.RefArg, bool) { return t.nameRef(f.sheet, on, n) })
 }
 
+// PairedSum gives the call a formula cell is, alone, when it is a SUMIF, a
+// SUMIFS or a SUMPRODUCT, with the ranges it adds up cell by cell resolved as
+// Outer resolves what it is given (engine.PairedSumNamed): false for any other
+// cell.
+func (t *Tracer) PairedSum(sheet string, row, col int) (engine.Call, bool) {
+	id, ok := t.at[keyOf(sheet, row, col)]
+	if !ok {
+		return engine.Call{}, false
+	}
+	f := t.fs[id]
+	return engine.PairedSumNamed(f.calc, func(on, n string) (engine.RefArg, bool) { return t.nameRef(f.sheet, on, n) })
+}
+
 // Anchor gives the cell of the array formula whose result a cell holds
 // (not the formula's own cell).
 func (t *Tracer) Anchor(sheet string, row, col int) (At, bool) {
