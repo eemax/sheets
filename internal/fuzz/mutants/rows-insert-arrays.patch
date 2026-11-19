@@ -1,0 +1,17 @@
+Wave 1's WP-16, round 2 (fixed in 634b2ef): an edit of rows or columns writes
+each formula it moves back by its text, so a plain formula that reads a range
+where one value goes (=B3:B4*2) turns into a dynamic array that spills.
+Put back: relines writes the formulas it moved with setFormula, which reads
+the kind off the text, not putBack, which keeps the kind each had.
+
+--- a/internal/xlsx/structure.go
++++ b/internal/xlsx/structure.go
+@@ -466,7 +466,7 @@
+ 			}
+ 			continue
+ 		}
+-		if err := e.putBack(m.sheet, cell, m.text, dynamic[keyOf(m.sheet, m.row, m.col)]); err != nil {
++		if err := e.setFormula(m.sheet, cell, m.text); err != nil {
+ 			return err
+ 		}
+ 	}

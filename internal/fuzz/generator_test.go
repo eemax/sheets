@@ -356,6 +356,10 @@ func TestCheckTyped(t *testing.T) {
 	s.Set(2, 4, grid.Cell{Kind: grid.Number, Num: 5})
 	s.Tables = []grid.NamedTable{{Name: "T", Range: grid.Range{R1: 1, C1: 6, R2: 4, C2: 7}}}
 	put("F1", "Name2") // a table's header: sheets may name the column otherwise
+	// A dynamic array in U2:U4, which took U3's text.
+	s.Set(2, 21, grid.Cell{Kind: grid.Text, Text: "R&D!", Formula: `IF(N("d")=0,A2:A4&"!")`})
+	put("U3", "R&D!")
+	s.Spills = []grid.Range{{R1: 2, C1: 21, R2: 4, C2: 21}}
 	set := func(args ...string) Edit {
 		return Edit{Class: "set", Args: append([]string{"set", FileArg}, args...)}
 	}
@@ -376,8 +380,13 @@ func TestCheckTyped(t *testing.T) {
 		{"write", Edit{Class: "write", Args: []string{"write", FileArg, "Data!A2", "--from", "tsv"}, Stdin: "R&D\t lead\n=1\t\n"}, ""},
 		{"write loses a cell", Edit{Class: "write", Args: []string{"write", FileArg, "Data!A2", "--from", "tsv"}, Stdin: "R&D\t lead\n_x0041_\n"}, `Data!A3: typed the text "_x0041_"`},
 		{"other edits are not judged", Edit{Class: "clear", Args: []string{"clear", FileArg, "Data!A2"}}, ""},
+		{"a text a dynamic array took", set("Data!U3", "N/A"), `Data!U3: typed the text "N/A", and the cell holds text "R&D!", in the results of the dynamic array at U2:U4`},
+		{"a text lost, in no array", set("Data!E2", "N/A"), `typed the text "N/A", and the cell holds nothing`},
 	} {
-		got := checkTyped(tc.e, wb)
+		got := checkTyped(tc.e, wb, &grid.Workbook{})
+		if strings.HasSuffix(tc.want, "holds nothing") && strings.Contains(got, "dynamic array") {
+			t.Errorf("%s: says %q", tc.name, got)
+		}
 		if tc.want == "" && got != "" {
 			t.Errorf("%s: refused: %s", tc.name, got)
 		}

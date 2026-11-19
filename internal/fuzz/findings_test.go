@@ -310,7 +310,7 @@ func TestGeneratorPanicIsAFinding(t *testing.T) {
 	for i := 0; f == nil && i < 20; i++ {
 		var err error
 		calls, seed = 0, SequenceSeed(1, i)
-		if f, _, _, err = sequence(pool, seed, t.TempDir(), 12, 12, nil, nil); err != nil {
+		if f, _, _, err = sequence(pool, seed, t.TempDir(), 12, 12, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -322,7 +322,7 @@ func TestGeneratorPanicIsAFinding(t *testing.T) {
 	}
 	// A panic on the pool file itself is no edit's: it is the pool's, an error.
 	calls = 1
-	if _, _, _, err := sequence(pool, seed, t.TempDir(), 12, 12, nil, nil); err == nil || !strings.Contains(err.Error(), "the pool file") {
+	if _, _, _, err := sequence(pool, seed, t.TempDir(), 12, 12, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "the pool file") {
 		t.Errorf("a panic on a pool file: %v", err)
 	}
 }

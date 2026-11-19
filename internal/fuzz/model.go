@@ -46,10 +46,45 @@ type model struct {
 	tables map[string]string // the sheet of each Excel table (names lower case): sort takes a table's name as its target
 	// why is what the model cannot read, when it cannot.
 	why string
+	// r is the model of the edit's reach (reach.go), when it is followed.
+	r *reach
+	// spills are the dynamic arrays before the edit, by sheet: a formula
+	// lost in their results says so (spillNote).
+	spills map[string][]grid.Range
+}
+
+// spillNote says that a cell of a sheet (lower case) is in the results of a
+// dynamic array, other than its first cell, of a workbook after an edit or
+// of one before it (by sheet): ", in the results of the dynamic array at
+// E2:E5". A typed text or a formula lost there was taken by the array (the
+// bug spill-overwrites in known.txt, whose face reads this).
+func spillNote(sheet string, r, c int, after *grid.Workbook, before map[string][]grid.Range) string {
+	var rs []grid.Range
+	for _, s := range after.Sheets {
+		if strings.ToLower(s.Name) == sheet {
+			rs = append(rs, s.Spills...)
+		}
+	}
+	rs = append(rs, before[sheet]...)
+	for _, a := range rs {
+		if a.Contains(r, c) && (a.R1 != r || a.C1 != c) {
+			return ", in the results of the dynamic array at " + a.String()
+		}
+	}
+	return ""
+}
+
+// spillsOf are a workbook's dynamic arrays, by sheet (lower case).
+func spillsOf(wb *grid.Workbook) map[string][]grid.Range {
+	out := map[string][]grid.Range{}
+	for _, s := range wb.Sheets {
+		out[strings.ToLower(s.Name)] = append(out[strings.ToLower(s.Name)], s.Spills...)
+	}
+	return out
 }
 
 func newModel(wb *grid.Workbook) *model {
-	m := &model{sheets: map[string]map[[2]int]string{}, names: map[string]string{}, sorted: map[string]bool{}, lost: map[string]bool{}, tables: map[string]string{}}
+	m := &model{sheets: map[string]map[[2]int]string{}, names: map[string]string{}, sorted: map[string]bool{}, lost: map[string]bool{}, tables: map[string]string{}, spills: spillsOf(wb)}
 	for _, s := range wb.Sheets {
 		k := strings.ToLower(s.Name)
 		for _, t := range s.Tables {
@@ -176,6 +211,7 @@ func (m *model) command(w []string, stdin string) {
 				fail("set %s: %v", w[i], err)
 				return
 			}
+			m.r.touch(k, rg)
 			v := input.Parse(w[i+1], false)
 			for r := rg.R1; r <= rg.R2; r++ {
 				for c := rg.C1; c <= rg.C2; c++ {
@@ -193,8 +229,11 @@ func (m *model) command(w []string, stdin string) {
 			fail("write %s: %v", w[1], err)
 			return
 		}
-		for i, line := range strings.Split(strings.TrimSuffix(stdin, "\n"), "\n") {
-			for j, text := range strings.Split(line, "\t") {
+		rows := strings.Split(strings.TrimSuffix(stdin, "\n"), "\n")
+		for i, line := range rows {
+			fields := strings.Split(line, "\t")
+			m.r.touch(k, grid.Range{R1: rg.R1 + i, C1: rg.C1, R2: rg.R1 + i, C2: rg.C1 + len(fields) - 1})
+			for j, text := range fields {
 				if text == "" {
 					continue
 				}
@@ -212,7 +251,26 @@ func (m *model) command(w []string, stdin string) {
 			fail("clear %s: %v", w[1], err)
 			return
 		}
+		// Without --all a clear takes the values and formulas and leaves the
+		// formatting, notes, links and merges (the Delete key): they are not in
+		// its reach (f4.2). --format, --notes and --links clear those instead,
+		// and are not modelled.
+		all := false
+		for _, a := range w[2:] {
+			switch a {
+			case "--all":
+				all = true
+			case "--format", "--notes", "--links":
+				fail("clear %s: not modelled", a)
+				return
+			}
+		}
 		m.clearRect(k, rg)
+		if all {
+			m.r.touch(k, rg)
+		} else {
+			m.r.touchContents(k, rg, false)
+		}
 	case "copy", "move":
 		if len(w) < 3 {
 			fail("%s: %v", w[0], w)
@@ -249,6 +307,21 @@ func (m *model) command(w []string, stdin string) {
 		for _, p := range cells {
 			m.put(dst, to.R1+p.dr, to.C1+p.dc, p.f && !values, p.mk)
 		}
+		if w[0] == "move" {
+			m.r.touch(src, from)
+			// The source holds nothing afterwards, minus the target, which the
+			// touch below takes out.
+			m.r.vacate(src, from)
+			m.r.move(src, dst, from, to.R1-from.R1, to.C1-from.C1) // what reads the cells follows them
+		}
+		landed := grid.Range{R1: to.R1, C1: to.C1, R2: to.R1 + from.Rows() - 1, C2: to.C1 + from.Cols() - 1}
+		if values {
+			// Paste values: the cells take values and number formats; the
+			// target's notes, links and merges stay (f4.2).
+			m.r.touchContents(dst, landed, true)
+		} else {
+			m.r.touch(dst, landed)
+		}
 	case "sort":
 		if len(w) < 2 {
 			fail("sort: %v", w)
@@ -256,10 +329,14 @@ func (m *model) command(w []string, stdin string) {
 		}
 		name := w[1]
 		if k, ok := m.tables[strings.ToLower(name)]; ok && !m.isSheet(name) {
-			// The target is an Excel table: its sheet is sorted.
+			// The target is an Excel table: its sheet is sorted (the reach:
+			// the whole sheet, where the table may stand after a batch's
+			// other lines).
 			m.sort(k)
+			m.r.touch(k, whole)
 			return
 		}
+		rg := whole
 		if !m.isSheet(name) {
 			p, err := grid.ParseRef(name, m.isSheet)
 			if err != nil || p.Sheet == "" {
@@ -267,9 +344,15 @@ func (m *model) command(w []string, stdin string) {
 				return
 			}
 			name = p.Sheet
+			if p.Range != nil {
+				rg = *p.Range
+			}
 		}
-		m.sort(m.ensure(name))
+		k := m.ensure(name)
+		m.sort(k)
+		m.r.touch(k, rg)
 	case "replace":
+		m.replace(w[1:])
 	case "rows", "cols":
 		if len(w) < 3 {
 			fail("%s: %v", w[0], w)
@@ -281,20 +364,19 @@ func (m *model) command(w []string, stdin string) {
 				n, _ = strconv.Atoi(w[i+1])
 			}
 		}
-		k, rg, err := m.target(w[2], "")
-		if err != nil {
+		name, from, to, err := lineSpan(w[2], w[0] == "cols")
+		if err != nil || !m.isSheet(name) {
 			fail("%s %s: %v", w[0], w[2], err)
 			return
 		}
-		from, to := rg.R1, rg.R2
-		if w[0] == "cols" {
-			from, to = rg.C1, rg.C2
-		}
+		k := strings.ToLower(name)
 		switch w[1] {
 		case "insert":
 			m.shift(k, w[0] == "cols", from, 0, n)
+			m.r.shift(k, w[0] == "cols", from, 0, n)
 		case "delete":
 			m.shift(k, w[0] == "cols", from, to, 0)
+			m.r.shift(k, w[0] == "cols", from, to, 0)
 		default:
 			fail("%s %s", w[0], w[1])
 		}
@@ -314,21 +396,29 @@ func (m *model) command(w []string, stdin string) {
 		}
 		switch w[1] {
 		case "rename":
-			m.sheets[strings.ToLower(to)] = m.sheets[from]
-			m.names[strings.ToLower(to)] = to
-			if m.sorted[from] {
-				m.sorted[strings.ToLower(to)] = true
+			k := strings.ToLower(to)
+			m.names[from] = to
+			if k == from {
+				return // the same name in other letters
 			}
-			for i, k := range m.order {
-				if k == from {
-					m.order[i] = strings.ToLower(to)
-				}
-			}
+			m.r.rename(from, k)
+			// What the model knows of the sheet goes with its name: its
+			// formulas, its name, whether it was sorted, and whether the model
+			// lost it (a sheet sorted, edited and renamed was judged by
+			// column under its new name: fuzzer-core's audit, f4.2).
+			m.sheets[k], m.names[k], m.sorted[k], m.lost[k] = m.sheets[from], to, m.sorted[from], m.lost[from]
 			delete(m.sheets, from)
 			delete(m.names, from)
-			for t, k := range m.tables {
-				if k == from {
-					m.tables[t] = strings.ToLower(to)
+			delete(m.sorted, from)
+			delete(m.lost, from)
+			for i, o := range m.order {
+				if o == from {
+					m.order[i] = k
+				}
+			}
+			for t, o := range m.tables {
+				if o == from {
+					m.tables[t] = k
 				}
 			}
 		case "copy":
@@ -338,12 +428,146 @@ func (m *model) command(w []string, stdin string) {
 			}
 			m.sorted[k] = m.sorted[from]
 			m.lost[k] = m.lost[from]
+			m.r.copied(k) // the copy is all new, its names too
 		default:
 			fail("sheet %s", w[1])
 		}
 	default:
 		fail("no rule for %s", w[0])
 	}
+}
+
+// lineSpan reads the rows or columns a rows or cols command names, as the
+// command does: Sheet!5 or Sheet!5:9 (rows), Sheet!C or Sheet!C:E (columns).
+// A single row or column is no range to grid.ParseRef (Data!4 is not a
+// cell), so the model used to give up on every insert, which names one
+// (fuzzer-core's audit, f4.1).
+func lineSpan(spec string, cols bool) (sheet string, lo, hi int, err error) {
+	i := strings.LastIndex(spec, "!")
+	if i < 0 {
+		return "", 0, 0, fmt.Errorf("%q names no sheet", spec)
+	}
+	sheet, part := strings.Trim(spec[:i], "'"), spec[i+1:]
+	a, b, ok := strings.Cut(part, ":")
+	if !ok {
+		b = a
+	}
+	parse := func(s string) (int, bool) {
+		s = strings.TrimPrefix(strings.TrimSpace(s), "$")
+		if cols {
+			return grid.ColIndex(s)
+		}
+		n, err := strconv.Atoi(s)
+		return n, err == nil && n >= 1 && n <= grid.MaxRows
+	}
+	x, ok1 := parse(a)
+	y, ok2 := parse(b)
+	if !ok1 || !ok2 {
+		return "", 0, 0, fmt.Errorf("%q: no rows or columns", spec)
+	}
+	return sheet, min(x, y), max(x, y), nil
+}
+
+// replace puts the cells a replace may change in the reach: in its target
+// (a sheet, or every sheet: a range or a table's column is taken as every
+// sheet), the values that hold what it finds as sheets shows them, and with
+// --formulas the formulas whose text holds it (the values too: the command
+// reads them as it does without). It finds as the command does
+// (replacer in internal/cli/ranges.go): ignoring case unless --case, in the
+// whole text with --exact (the first version read every replace as a search
+// for a substring, so one that ignored --exact and rewrote cells it must not
+// touch went by: fuzzer-long's audit, f4.1), and as a regular expression with
+// --regex. A value is matched as sheets' replace reads it (grid.Display: a
+// date as 2026-07-01, 12%), and a number also as it reads with no format, so
+// the whole find must be in one of them. (The first version put every number
+// in the reach for a find holding a digit, a space, an e or a dot, seven of
+// the generator's 15 finds among them: a slip that wiped numbers it cannot
+// match was no finding, f1.4.)
+func (m *model) replace(w []string) {
+	if m.r == nil || len(w) < 2 {
+		return
+	}
+	var args []string
+	formulas, exact, caseSens, useRegex := false, false, false, false
+	for i := 0; i < len(w); i++ {
+		switch a := w[i]; {
+		case a == "--formulas":
+			formulas = true
+		case a == "--exact":
+			exact = true
+		case a == "--case":
+			caseSens = true
+		case a == "--regex":
+			useRegex = true
+		case a == "-n" || a == "--limit":
+			i++ // the number of changes listed: no part of the reach
+		case strings.HasPrefix(a, "--limit="):
+		default:
+			args = append(args, a)
+		}
+	}
+	if len(args) < 2 {
+		return
+	}
+	pattern := args[0]
+	if !useRegex {
+		pattern = regexp.QuoteMeta(pattern)
+	}
+	if exact {
+		pattern = "^(?:" + pattern + ")$"
+	}
+	if !caseSens {
+		pattern = "(?i)" + pattern
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		m.why = "replace: " + err.Error()
+		return
+	}
+	scope := m.order
+	if len(args) > 2 && m.isSheet(args[2]) {
+		scope = []string{strings.ToLower(args[2])}
+	}
+	for _, k := range scope {
+		m.r.touchCells(k, func(o origin) bool {
+			c := m.r.cell(o)
+			if c.Formula != "" {
+				// A formula is matched by its text with --formulas, and left
+				// alone without; a value is matched as it is shown either way.
+				return formulas && re.MatchString("="+c.Formula)
+			}
+			for _, shown := range m.r.shown(c) {
+				if re.MatchString(shown) {
+					return true
+				}
+			}
+			return false
+		})
+	}
+}
+
+// reached judges what the edit left outside its reach (reach.go): the first
+// difference, "" when there is none or the model cannot read the edit.
+func (m *model) reached(got *grid.Workbook) string {
+	if m.why != "" || m.r == nil {
+		return ""
+	}
+	sheets := map[string]bool{}
+	for k := range m.sheets {
+		sheets[k] = true
+	}
+	return m.r.check(got, sheets, m.order)
+}
+
+// reachedFile judges what the file holds that the reader gives no cells for:
+// the validations, the conditional formats and the look of each cell, before
+// and after the edit (reach.checkFile). The first difference, "" when there is
+// none or the model cannot read the edit.
+func (m *model) reachedFile(got *grid.Workbook, before, after *fileObjects) string {
+	if m.why != "" || m.r == nil || before == nil || after == nil {
+		return ""
+	}
+	return m.r.checkFile(got, before, after, m.order)
 }
 
 // sort: the rows move, and where is not modelled.
@@ -407,6 +631,11 @@ func (m *model) script(code string) {
 		}
 		if sm := scriptSort.FindStringSubmatch(line); sm != nil {
 			m.sort(k)
+			rg, err := grid.ParseRange(unq(sm[1]))
+			if err != nil {
+				rg = whole
+			}
+			m.r.touch(k, rg)
 			continue
 		}
 		sm := scriptCall.FindStringSubmatch(line)
@@ -426,10 +655,13 @@ func (m *model) script(code string) {
 		switch sm[2] {
 		case "setValue":
 			m.put(k, rg.R1, rg.C1, false, "")
+			m.r.touch(k, grid.Range{R1: rg.R1, C1: rg.C1, R2: rg.R1, C2: rg.C1})
 		case "setFormula":
 			m.put(k, rg.R1, rg.C1, true, marker(arg))
+			m.r.touch(k, grid.Range{R1: rg.R1, C1: rg.C1, R2: rg.R1, C2: rg.C1})
 		case "clear":
 			m.clearRect(k, rg)
+			m.r.touch(k, rg)
 		case "copyFrom", "moveTo":
 			from, to := rg, rg
 			if sm[2] == "copyFrom" {
@@ -449,10 +681,14 @@ func (m *model) script(code string) {
 			cells := m.read(k, from)
 			if sm[2] == "moveTo" {
 				m.clearRect(k, from)
+				m.r.touch(k, from)
+				m.r.vacate(k, from)
+				m.r.move(k, k, from, to.R1-from.R1, to.C1-from.C1)
 			}
 			for _, p := range cells {
 				m.put(k, to.R1+p.dr, to.C1+p.dc, p.f, p.mk)
 			}
+			m.r.touch(k, grid.Range{R1: to.R1, C1: to.C1, R2: to.R1 + from.Rows() - 1, C2: to.C1 + from.Cols() - 1})
 		case "insert", "delete":
 			cols := arg == "Right" || arg == "Left"
 			from, to := rg.R1, rg.R2
@@ -461,8 +697,10 @@ func (m *model) script(code string) {
 			}
 			if sm[2] == "insert" {
 				m.shift(k, cols, from, 0, to-from+1)
+				m.r.shift(k, cols, from, 0, to-from+1)
 			} else {
 				m.shift(k, cols, from, to, 0)
+				m.r.shift(k, cols, from, to, 0)
 			}
 		default:
 			m.why = "script: " + line
@@ -553,7 +791,7 @@ func (m *model) check(got *grid.Workbook) string {
 				// A table's header is text: sheets names the column after a
 				// formula typed there, as Excel does, and keeps no formula.
 			case wok && !gok:
-				return fmt.Sprintf("%s: the edit should leave %s there, and it holds no formula (it was lost)", where, formulaName(wmk))
+				return fmt.Sprintf("%s: the edit should leave %s there, and it holds no formula (it was lost)%s", where, formulaName(wmk), spillNote(k, c[0], c[1], got0, m.spills))
 			case !wok && gok:
 				return fmt.Sprintf("%s: the edit should leave no formula there, and it holds %s", where, formulaName(gmk))
 			case wmk != "" && gmk != "" && wmk != gmk:
@@ -630,7 +868,7 @@ func byColumn(want, got map[[2]int]string) string {
 // found. Only the top-level set and write are judged: in a batch or a script
 // a later command may move or clear what an earlier one typed. It returns
 // "" when the edit is fine.
-func checkTyped(e Edit, wb *grid.Workbook) string {
+func checkTyped(e Edit, wb, before *grid.Workbook) string {
 	type spot struct {
 		sheet string
 		r, c  int
@@ -697,7 +935,7 @@ func checkTyped(e Edit, wb *grid.Workbook) string {
 			continue
 		}
 		if got := s.Get(k.r, k.c); got.Kind != grid.Text || got.Formula != "" || got.Text != text {
-			return fmt.Sprintf("%s!%s: typed the text %q, and the cell holds %s", k.sheet, grid.CellName(k.r, k.c), text, value(got))
+			return fmt.Sprintf("%s!%s: typed the text %q, and the cell holds %s%s", k.sheet, grid.CellName(k.r, k.c), text, value(got), spillNote(strings.ToLower(k.sheet), k.r, k.c, wb, spillsOf(before)))
 		}
 	}
 	return ""

@@ -48,31 +48,66 @@ sys.exit(1 if failed else 0)
 
 total=0
 rc=0
-# run <label> <go test args…>: one go test, counted.
-run() {
+work=$(mktemp -d)
+pids=()
+labels=()
+# A stage still running when this ends (an interrupt, a timeout) is stopped.
+stop() {
+  local p
+  for p in "${pids[@]:-}"; do
+    # (set -e is on here: a stage that has ended is no error)
+    if [ -n "$p" ]; then
+      pkill -P "$p" 2>/dev/null || true
+      kill "$p" 2>/dev/null || true
+    fi
+  done
+  rm -rf "$work"
+}
+trap stop EXIT
+trap 'exit 130' INT TERM
+# start <label> <go test args…>: one go test in the background, its output kept
+# for show, in the order the stages were started. The stages share no state
+# (go's build cache takes concurrent builds, each test works in temp dirs), and
+# the longest of them, not their sum, is the wall time: check full took 125 to
+# 137 s with the stages one after the other (57 s plain, 4 s stream, 66 s
+# -race), the 110 s bar's reason (fuzzer-long's audit, f3.3).
+start() {
   local label=$1; shift
   echo "== $label: go test $*"
-  local log; log=$(mktemp)
-  set +e
-  go test -json "$@" | summarize "$label" | tee "$log"
-  local r=${PIPESTATUS[1]}
-  set -e
-  local n; n=$(tail -1 "$log" | sed -n 's/^.*: \([0-9]*\) passed.*/\1/p')
-  rm -f "$log"
-  total=$((total + ${n:-0}))
-  [ "$r" -eq 0 ] || rc=1
+  (
+    set +e
+    go test -json "$@" | summarize "$label" > "$work/$label.out"
+    echo "${PIPESTATUS[1]}" > "$work/$label.rc"
+  ) &
+  pids+=($!)
+  labels+=("$label")
+}
+# show: wait for the stages, print each one's output in the order started, and
+# count its tests.
+show() {
+  local i label n
+  for i in "${!pids[@]}"; do
+    label=${labels[$i]}
+    wait "${pids[$i]}" || true
+    cat "$work/$label.out"
+    n=$(tail -1 "$work/$label.out" | sed -n 's/^.*: \([0-9]*\) passed.*/\1/p')
+    total=$((total + ${n:-0}))
+    [ "$(cat "$work/$label.rc")" = "0" ] || rc=1
+  done
 }
 
 case $mode in
   fast)    # go's own test cache stays on: a working loop reruns only what changed
     go vet ./...
-    run plain ./...
+    start plain ./...
+    show
     ;;
   full)    # AGENTS.md's checks before calling work done, on every package
     go vet ./...
-    run plain -count=1 ./...
-    SHEETS_STREAM=always run stream -count=1 $stream_pkgs
-    run race -race -count=1 -timeout 30m ./...
+    start plain -count=1 ./...
+    SHEETS_STREAM=always start stream -count=1 $stream_pkgs
+    start race -race -count=1 -timeout 30m ./...
+    show
     ;;
   *) echo "usage: scripts/check.sh fast|full" >&2; exit 2 ;;
 esac

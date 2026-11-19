@@ -10,6 +10,7 @@ import (
 	"math"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -497,14 +498,27 @@ func compareSheets(a, b *grid.Sheet) string {
 		for c := 1; c <= c2; c++ {
 			ca, cb := a.Get(r, c), b.Get(r, c)
 			if d := compareCells(ca, cb); d != "" {
-				return grid.CellName(r, c) + ": " + d
+				// A value the editors differ on names the formula both hold
+				// ("C3 (=IF(N("p")=0,'Data'!C2:C3*2)): stream holds …"), so a
+				// known bug's face can ask what the formula reads.
+				at := grid.CellName(r, c)
+				if ca.Formula != "" && ca.Formula == cb.Formula {
+					at += " (=" + ca.Formula + ")"
+				}
+				return at + ": " + d
 			}
 		}
 	}
 	if d := compareRanges("dynamic arrays", a.Spills, b.Spills); d != "" {
 		return d
 	}
-	return compareRanges("arrays", a.Arrays, b.Arrays)
+	if d := compareRanges("arrays", a.Arrays, b.Arrays); d != "" {
+		return d
+	}
+	// What the sheets hold besides cells (objects.go): a slip in one editor's
+	// own shifting of a table or a merge shows here, and one both share in the
+	// reach invariant.
+	return compareObjects(a, b)
 }
 
 func compareCells(a, b grid.Cell) string {
@@ -540,12 +554,38 @@ func value(c grid.Cell) string {
 	return s
 }
 
+// compareRanges says how two editors' arrays differ, and which ranges one
+// editor's file has alone ("(the full editor's alone: F4)"), so a known bug's
+// face can tell an array one editor adds from one it loses.
 func compareRanges(what string, a, b []grid.Range) string {
 	sa, sb := rangeList(a), rangeList(b)
-	if sa != sb {
-		return fmt.Sprintf("%s: stream has %s, full has %s", what, sa, sb)
+	if sa == sb {
+		return ""
 	}
-	return ""
+	alone := func(x, y []grid.Range) string {
+		var out []grid.Range
+		for _, r := range x {
+			if !slices.Contains(y, r) {
+				out = append(out, r)
+			}
+		}
+		if len(out) == 0 {
+			return ""
+		}
+		return rangeList(out)
+	}
+	var notes []string
+	if s := alone(a, b); s != "" {
+		notes = append(notes, "the streaming editor's alone: "+s)
+	}
+	if s := alone(b, a); s != "" {
+		notes = append(notes, "the full editor's alone: "+s)
+	}
+	d := fmt.Sprintf("%s: stream has %s, full has %s", what, sa, sb)
+	if len(notes) > 0 {
+		d += " (" + strings.Join(notes, ", ") + ")"
+	}
+	return d
 }
 
 func rangeList(rs []grid.Range) string {

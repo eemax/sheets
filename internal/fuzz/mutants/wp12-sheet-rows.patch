@@ -1,0 +1,18 @@
+Wave 1's WP-12 (fixed in 8e2e9cd): a sheet made in a session keeps excelize's
+trimmed rows after the workbook is written out, so the next edit finds row n
+at another row's index, and the sheet saves with a cell twice, or rows out of
+order. Put back: writeWorkbook no longer drops the sheets excelize holds.
+
+--- a/internal/xlsx/package.go
++++ b/internal/xlsx/package.go
+@@ -160,10 +160,6 @@
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	f.Sheet.Range(func(k, _ any) bool {
+-		f.Sheet.Delete(k)
+-		return true
+-	})
+ 	return buf, nil
+ }
+ 
