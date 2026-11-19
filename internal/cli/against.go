@@ -1495,7 +1495,7 @@ type job struct {
 	// typedOld the rows removed (as numbered before) whose places they took.
 	typed, typedOld []int
 	moved           []diff.Moved
-	blocks []blockJob
+	blocks          []blockJob
 	// pasted is rows cut and pasted where nothing was (sheets move, Excel's
 	// cut and paste), the rows around them where they were: the run, the
 	// columns it spans (0 for whole rows), and the move as formulas follow
@@ -2297,8 +2297,8 @@ func (r *report) align() (diff.Alignment, []*job) {
 	pairs := append([]diff.SheetPair{}, al.Sheets...)
 	// retyped prepares again, without the rows taken as removed with cells
 	// typed in where they were, the sheets where nothing shows they were
-	// removed (typedRemoved), and tells whether there were any.
-	retyped := func() bool {
+	// removed (typedRemoved).
+	retyped := func() {
 		var redo []int
 		for i, j := range jobs {
 			if j != nil && len(j.typed) > 0 && !r.typedRemoved(j, jobs) {
@@ -2315,7 +2315,6 @@ func (r *report) align() (diff.Alignment, []*job) {
 		if len(redo) > 0 {
 			r.setEdits(edits())
 		}
-		return len(redo) > 0
 	}
 	r.setEdits(edits())
 	retyped()
@@ -3444,7 +3443,7 @@ func (r *report) trace(tr *xlsx.Tracer) {
 		if got.More {
 			labels = append(labels, "and more")
 		}
-		if k < r.cells && len(got.Sources) == 0 || len(labels) == 0 {
+		if (k < r.cells && len(got.Sources) == 0) || len(labels) == 0 {
 			labels = append(labels, r.causes[k])
 		}
 		if k < r.cells && len(sorted) > 0 {

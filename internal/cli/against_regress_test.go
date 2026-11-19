@@ -68,6 +68,19 @@ func TestAgainstRegressLastRowEdited(t *testing.T) {
 	if got := changedOf(r); len(got) != 3 || got["a!A6"] != want["Data!A6"] || got["a!B6"] != want["Data!B6"] || got["a!C6"] != want["Data!C6"] {
 		t.Errorf("csv: changed %+v", r.Changed)
 	}
+	// The fuzz pool's openpyxl file, whose last row a defined name, an Excel
+	// table and a total read, as they were: the row cleared, its formulas too,
+	// and a cell set. Each of its nine cells changed (a formula of a column
+	// cleared is flagged as such), no row removed, no name not rewritten.
+	pool := filepath.Join(dir, "pool.xlsx")
+	if err := os.WriteFile(pool, mustRead(t, filepath.Join("..", "fuzz", "testdata", "pool", "openpyxl-02.xlsx")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after = edited(t, pool, filepath.Join(dir, "a.xlsx"), []string{"clear", "Data!A7:P7"}, []string{"set", "Data!B7", "77"})
+	r, _ = against(t, after, pool) // the exit code counts the file's own errors too
+	if s := r.Summary; s.Inputs != 6 || s.Formulas != 3 || len(r.Structure) != 0 || changedOf(r)["Data!B7"] != [2]string{"40", "77"} {
+		t.Errorf("pool file: %+v, structure %+v, changed %+v", s, r.Structure, r.Changed)
+	}
 }
 
 // writeText writes a file for a test.
