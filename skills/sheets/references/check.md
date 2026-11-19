@@ -73,7 +73,8 @@
     rows were added, removed or moved around it: a structure change that
     reaches the value comes first, the inputs after it. Rows a sort moved
     are a cause only of what reads them by position (a lookup, `=Data!B2`,
-    a sum of some of them): a total over all of them (SUM, MAX, COUNT, an
+    a sum of some of them, an array formula over several rows of them): a
+    total over all of them (SUM, MAX, COUNT, an
     average, SUMIF or SUMPRODUCT over the same rows, a table's column)
     did not move for the sort, and names the input that moved it. Rows
     removed or added are a cause only of what they can move that way, a
@@ -137,7 +138,8 @@
     values swapped in a column, is inputs changed where they are, each the
     cause of what it moves. Rows cut and pasted where nothing was
     (`sheets move`, Excel's cut and paste) are rows moved too, with the rows
-    they passed where they were, not rows added or removed. So is a block of
+    they passed where they were, not rows added or removed (a total among
+    them, reading cells that left, moved for the move). So is a block of
     cells cut from beside a table and pasted below it or into other columns
     (`sheets move book.xlsx Sales!H1:J20 Sales!A30`, listed as
     `Sales!A30:C49, were H1:J20`, with `columns` and `was_columns` in
