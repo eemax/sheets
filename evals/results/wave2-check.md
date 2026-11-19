@@ -88,7 +88,10 @@ check stays the pitch.
   answer range holds formulas, those copies fail the stored grading: 30/90
   pass, all of them tasks whose answers are values. The log reports
   "90 tasks, 0 not as expected". So the grading agreed with the golden
-  files before any arm was graded.
+  files before any arm was graded. Rerun at the final commit
+  (`~/sheets-evals/wave2/c-validate2/`): the same 90 golden files, 0 not
+  as expected, and its report.md shows the tables with no PARTIAL line,
+  agreeing with validate.txt (golden-resaved: 89/90 lo, 30/90 stored).
 
 ### Pass rates
 
