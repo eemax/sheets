@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/eemax/sheets/internal/xlsx"
 )
 
 // The features a command's own report finds lost: none that are still
@@ -124,5 +127,62 @@ func TestFeedbackFeaturesUndoMoveAcross(t *testing.T) {
 		if info, _ := runCLI("", "info", path); !strings.Contains(info, "F2  column") {
 			t.Errorf("%s: the chart is not back:\n%s", stream, info)
 		}
+	}
+}
+
+// Undoing a move of a table to another sheet (f2.6): the validations that
+// went with it are back on the cells they were on, so none is lost, in both
+// editors. The undo does not know what it undid, so a rule not found where it
+// was is found by what it is.
+func TestFeedbackFeaturesUndoMoveValidations(t *testing.T) {
+	for _, stream := range []string{"never", "always"} {
+		t.Setenv("SHEETS_STREAM", stream)
+		dir, path := causesFixture(t)
+		orig := filepath.Join(dir, "orig.xlsx")
+		if err := os.WriteFile(orig, mustRead(t, path), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, code := runCLI("", "move", path, "Data!A1:D7", "Other!A1"); code != 0 || !strings.Contains(head(t, out), ", 0 features lost") {
+			t.Fatalf("%s: move: exit %d:\n%s", stream, code, out)
+		}
+		out, code := runCLI("", "undo", path)
+		if code != 0 || !strings.Contains(head(t, out), ", 0 features lost") || strings.Contains(out, "\nlost:") {
+			t.Errorf("%s: undo of the move: exit %d:\n%s", stream, code, out)
+		}
+		if got, _ := runCLI("", "validate", path, "Data", "--list"); !strings.Contains(got, "Data!B2:B6") || !strings.Contains(got, "Data!C2:C6") {
+			t.Errorf("%s: the validations are not back: %s", stream, got)
+		}
+		if res, code := against(t, path, orig); code != 0 || res.Summary.FeaturesLost != 0 {
+			t.Errorf("%s: the file against the original: exit %d, %+v", stream, code, res.Summary)
+		}
+	}
+}
+
+// What the undo finds elsewhere it finds one for one: a rule the file lost and
+// another of the same kind, type and rule on another sheet it did not have
+// before are the one moved; two rules lost, one found, is one lost.
+func TestFeedbackFeaturesAcross(t *testing.T) {
+	rule := func(sheet, where, what, typ, rule string) xlsx.Feature {
+		return xlsx.Feature{Kind: xlsx.FeatureValidation, Sheet: sheet, Where: where, What: what, Type: typ, Rule: rule}
+	}
+	before := []xlsx.Feature{
+		rule("Other", "B2:B6", "whole validation", "whole", "between|0|100"),
+		rule("Other", "C2:C6", "decimal validation", "decimal", "greaterThanOrEqual|0"),
+	}
+	after := []xlsx.Feature{rule("Data", "B2:B6", "whole validation", "whole", "between|0|100")}
+	if lost, _ := compareFeaturesAcross(before, after, nil, nil, nil, false); len(lost) != 2 {
+		t.Errorf("not looked for across sheets: %+v", lost)
+	}
+	lost, _ := compareFeaturesAcross(before, after, nil, nil, nil, true)
+	if len(lost) != 1 || lost[0].Where != "Other!C2:C6" {
+		t.Errorf("looked for across sheets: %+v", lost)
+	}
+	// One found on the sheet it was on stays that one's: the other has no match.
+	both := []xlsx.Feature{
+		rule("Other", "B2:B6", "whole validation", "whole", "between|0|100"),
+		rule("Data", "B2:B6", "whole validation", "whole", "between|0|100"),
+	}
+	if lost, _ := compareFeaturesAcross(both, []xlsx.Feature{both[1]}, nil, nil, nil, true); len(lost) != 1 {
+		t.Errorf("two rules, one left: %+v", lost)
 	}
 }

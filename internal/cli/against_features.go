@@ -69,6 +69,15 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 // sheet (lower-cased) to its new name ("" for a sheet removed), tables each
 // Excel table renamed (old name lower-cased) to its new name.
 func compareFeatures(before, after []xlsx.Feature, renamed, tables map[string]string, shift shiftFunc) ([]lostFeature, []changedFeature) {
+	return compareFeaturesAcross(before, after, renamed, tables, shift, false)
+}
+
+// compareFeaturesAcross is compareFeatures; with across, a validation or
+// conditional format not found where it was is found by its kind, type and
+// rule on any sheet where the new version holds one nothing else paired with
+// (an undo of cells moved to another sheet, which restored them: nothing is
+// known of the sheet or the places they went to).
+func compareFeaturesAcross(before, after []xlsx.Feature, renamed, tables map[string]string, shift shiftFunc, across bool) ([]lostFeature, []changedFeature) {
 	if shift == nil {
 		shift = func(_, ref string) string { return ref }
 	}
@@ -307,6 +316,24 @@ func compareFeatures(before, after []xlsx.Feature, renamed, tables map[string]st
 	}
 	if changed == nil {
 		changed = []changedFeature{}
+	}
+	if across {
+		rest := map[string][]int{} // the rules of the new version nothing paired with, by what they are
+		ruleOf := func(f xlsx.Feature) string { return f.Kind + "\x00" + typeKey(f.Type) + "\x00" + ruleKey(f.Rule) }
+		for i, g := range after {
+			if !used[i] && (g.Kind == xlsx.FeatureValidation || g.Kind == xlsx.FeatureCond) {
+				rest[ruleOf(g)] = append(rest[ruleOf(g)], i)
+			}
+		}
+		for i, f := range before {
+			if kept[i] || f.Kind != xlsx.FeatureValidation && f.Kind != xlsx.FeatureCond {
+				continue
+			}
+			if idx := rest[ruleOf(f)]; len(idx) > 0 {
+				used[idx[0]], kept[i] = true, true
+				rest[ruleOf(f)] = idx[1:]
+			}
+		}
 	}
 	var out []lostFeature
 	for i, f := range before {

@@ -586,7 +586,7 @@ func (s *session) compare(r *changeReport) {
 		r.RulesNotCompared = max(na, nb)
 	}
 	if len(fa) > 0 {
-		lost, changed := compareFeatures(fa, fb, s.renamed(), nil, s.shiftRef)
+		lost, changed := compareFeaturesAcross(fa, fb, s.renamed(), nil, s.shiftRef, s.uncounted)
 		if s.uncounted && len(lost) > 0 {
 			// An undo: what the edit it undid renamed or moved (a sheet, the
 			// lines a chart stands on) is not the session's to follow, so the
@@ -594,7 +594,7 @@ func (s *session) compare(r *changeReport) {
 			// What either way finds is there: the pairing by what the sheets
 			// hold takes cells cut and pasted to another sheet for a sheet
 			// renamed and a column inserted, which moves a chart that stayed.
-			if l, c, ok := alignedFeatures(s.before, s.after, fa, fb); ok {
+			if l, c, ok := alignedFeatures(s.before, s.after, fa, fb, true); ok {
 				lost, changed = foundByEither(lost, changed, l, c)
 			}
 		}
