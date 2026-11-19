@@ -518,6 +518,47 @@ type report struct {
 	// (linesTouching).
 	inReach   map[xlsx.At]xlsx.Reach
 	lineTouch map[xlsx.At][]lineKey
+	// moved are the formulas (as now placed) whose values moved with no cause
+	// of their own; addReach those of them that rows or columns added reach,
+	// by the lines (readsMovedBy).
+	moved    rowsIndex
+	addReach map[addedLines]rowsIndex
+}
+
+// rowsIndex is cells of a workbook by sheet (lower-cased) and column, their
+// rows in order.
+type rowsIndex map[string]map[int][]int
+
+func (x rowsIndex) add(at xlsx.At) {
+	k := strings.ToLower(at.Sheet)
+	if x[k] == nil {
+		x[k] = map[int][]int{}
+	}
+	x[k][at.Col] = append(x[k][at.Col], at.Row)
+}
+
+func (x rowsIndex) sort() {
+	for _, byCol := range x {
+		for _, rows := range byCol {
+			sort.Ints(rows)
+		}
+	}
+}
+
+// within tells whether a cell of the index lies in an area of a sheet, but
+// those skip tells of.
+func (x rowsIndex) within(sheet string, a engine.Area, skip func(row, col int) bool) bool {
+	for col, rows := range x[strings.ToLower(sheet)] {
+		if col < a.C1 || col > a.C2 {
+			continue
+		}
+		for i := sort.SearchInts(rows, a.R1); i < len(rows) && rows[i] <= a.R2; i++ {
+			if !skip(rows[i], col) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // lineKey is a kind of lines changed: the rows (or columns) removed from a
@@ -2594,6 +2635,15 @@ func (r *report) linesMove(removed bool, home *grid.Sheet, at xlsx.At, sheet str
 	if !ok || ws == nil || !aggregates[call.Func] {
 		return true
 	}
+	if !removed && r.readsMovedBy(home, at, call.Refs, sheet, runs, cols) {
+		// It reads formulas the lines moved (a total over SUMIFs that read a
+		// row added, a MAX of totals), beside them or instead of them: what
+		// they hold of what it reads is not all they did to it, which can be
+		// either way. A result that is not what the call gives is still no
+		// work of theirs. (Rows removed reach it through the formulas that read
+		// them, each a cause of its own.)
+		return r.resultHolds(c)
+	}
 	h, known := heldIn(side.wb, home, ws, call.Refs, runs, cols)
 	if !known {
 		return true
@@ -2918,6 +2968,102 @@ func heldIn(wb *grid.Workbook, home, ws *grid.Sheet, refs []engine.RefArg, runs 
 		}
 	}
 	return h, true
+}
+
+// readsMovedBy tells whether a formula of the new version (at, on home)
+// reads, by the references of its call, a formula whose value moved with no
+// cause of its own that lines added to a sheet (runs, numbered as now; of
+// columns with cols) reach, through formulas that moved and were not changed
+// themselves: what the lines moved, it reads (a total over SUMIFs that read a
+// row added). What it reads of the lines themselves is not counted (heldIn
+// weighs it).
+func (r *report) readsMovedBy(home *grid.Sheet, at xlsx.At, refs []engine.RefArg, sheet string, runs [][2]int, cols bool) bool {
+	if r.moved == nil {
+		r.moved = rowsIndex{}
+		for _, c := range r.candidates {
+			if c.cause == "" {
+				r.moved.add(c.at)
+			}
+		}
+		r.moved.sort()
+	}
+	inRuns := func(n int) bool {
+		for _, run := range runs {
+			if n >= run[0] && n <= run[1] {
+				return true
+			}
+		}
+		return false
+	}
+	// reads tells whether a ref reads a cell of x, not of the lines, not at.
+	reads := func(x rowsIndex, ref engine.RefArg) bool {
+		on := ref.Sheet
+		if on == "" {
+			on = home.Name
+		}
+		same := strings.EqualFold(on, sheet)
+		return x.within(on, ref.Area, func(row, col int) bool {
+			line := row
+			if cols {
+				line = col
+			}
+			return same && inRuns(line) || row == at.Row && col == at.Col && strings.EqualFold(on, at.Sheet)
+		})
+	}
+	// Formulas that moved are looked for first; what the lines reach is
+	// followed only for a call that reads some.
+	var hits []engine.RefArg
+	for _, ref := range refs {
+		if reads(r.moved, ref) {
+			hits = append(hits, ref)
+		}
+	}
+	if len(hits) == 0 {
+		return false
+	}
+	x := r.addedReach(sheet, cols)
+	for _, ref := range hits {
+		if reads(x, ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// addedReach gives the formulas whose values moved with no cause of their own
+// that the rows (or columns, with cols) added to a sheet reach, through
+// formulas that moved and were not changed themselves.
+func (r *report) addedReach(sheet string, cols bool) rowsIndex {
+	k := addedLines{strings.ToLower(sheet), cols}
+	if x, ok := r.addReach[k]; ok {
+		return x
+	}
+	var srcs []xlsx.Source
+	for n, a := range r.lineAdded {
+		if strings.EqualFold(a.sheet, sheet) && a.cols == cols {
+			srcs = append(srcs, r.lineSources[n])
+		}
+	}
+	own, moved := map[xlsx.At]bool{}, map[xlsx.At]bool{}
+	for _, c := range r.candidates {
+		if c.cause != "" {
+			own[c.at] = true
+		} else {
+			moved[c.at] = true
+		}
+	}
+	x := rowsIndex{}
+	for at := range r.tracerB().SpreadUnless(srcs, func(at xlsx.At) bool { return r.heldAt[at] || own[at] }) {
+		if moved[at] {
+			x.add(at)
+		}
+	}
+	x.sort()
+	if r.addReach == nil {
+		r.addReach = map[addedLines]rowsIndex{}
+	}
+	r.addReach[k] = x
+	return x
 }
 
 // sameRef tells whether a name refers to the same thing, as Excel rewrites

@@ -360,3 +360,53 @@ func TestAgainstRegressLastRowCleared(t *testing.T) {
 		t.Errorf("pool file: %+v, structure %+v, changed %+v", s, r.Structure, r.Changed)
 	}
 }
+
+// A total over formulas that read a row inserted and typed in (a grand total
+// over SUMIFs per region, a SUM of it, a MAX of two of them) moved with the
+// row, through them: it names the row, not unexplained (f1.1 of the last
+// audit, a regression against 2050463); with an input changed too, both. An
+// empty row inserted, and a total over a column of formulas an input moved
+// that do not read the row, still name only the input.
+func TestAgainstRegressTotalOverReaders(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before := regressBook(t, dir, "b.xlsx", "Region\tUnits\nNorth\t5\nSouth\t7\nEast\t3\nWest\t9\nNorth\t4\n",
+		[]string{"set", "Summary!A1", "Region", "Summary!A2", "North", "Summary!A3", "South", "Summary!A4", "East", "Summary!A5", "West", "Summary!A6", "Total"},
+		[]string{"set", "Summary!B2", "=SUMIF(Data!$A$2:$A$6,A2,Data!$B$2:$B$6)", "Summary!B3", "=SUMIF(Data!$A$2:$A$6,A3,Data!$B$2:$B$6)",
+			"Summary!B4", "=SUMIF(Data!$A$2:$A$6,A4,Data!$B$2:$B$6)", "Summary!B5", "=SUMIF(Data!$A$2:$A$6,A5,Data!$B$2:$B$6)",
+			"Summary!B6", "=SUM(B2:B5)", "Summary!D1", "=SUM(Summary!B6)", "Summary!D2", "=MAX(Summary!B3,Summary!B4)"},
+		[]string{"check", "--fix"})
+	for _, c := range []struct {
+		name  string
+		edits [][]string
+		want  map[string]string
+	}{
+		{"a row added", [][]string{{"set", "Data!A4", "East", "Data!B4", "10"}},
+			map[string]string{"Summary!B4": "rows added: Data!4", "Summary!B6": "rows added: Data!4", "Summary!D1": "rows added: Data!4", "Summary!D2": "rows added: Data!4"}},
+		{"a row added and an input set", [][]string{{"set", "Data!A4", "East", "Data!B4", "10"}, {"set", "Data!B2", "6"}},
+			map[string]string{"Summary!B4": "rows added: Data!4, input Data!B2", "Summary!B6": "rows added: Data!4, input Data!B2", "Summary!D1": "rows added: Data!4, input Data!B2"}},
+	} {
+		after := edited(t, before, filepath.Join(dir, "a.xlsx"), append([][]string{{"rows", "insert", "Data!4"}}, c.edits...)...)
+		r, code := against(t, after, before)
+		m := causes(r)
+		for cell, want := range c.want {
+			if m[cell] != want {
+				t.Errorf("%s: %s: cause %q, want %q", c.name, cell, m[cell], want)
+			}
+		}
+		if code != 0 || len(r.Unexplained) != 0 {
+			t.Errorf("%s: exit %d, unexplained %+v", c.name, code, r.Unexplained)
+		}
+	}
+	// A column of formulas an input moved, none reading the empty row inserted,
+	// and a total over them: the row held nothing, and moved none of them.
+	cols := regressBook(t, dir, "c.xlsx", "Units\tRate\n5\t2\n7\n3\n9\n4\n",
+		[]string{"set", "Data!C2", "=A2*$B$2", "Data!C3", "=A3*$B$2", "Data!C4", "=A4*$B$2", "Data!C5", "=A5*$B$2", "Data!C6", "=A6*$B$2",
+			"Summary!A1", "=SUM(Data!C2:C6)"},
+		[]string{"check", "--fix"})
+	after := edited(t, cols, filepath.Join(dir, "a.xlsx"), []string{"rows", "insert", "Data!4"}, []string{"set", "Data!B2", "3"})
+	r, code := against(t, after, cols)
+	if m := causes(r); m["Summary!A1"] != "input Data!B2" || code != 0 || len(r.Unexplained) != 0 {
+		t.Errorf("an empty row and a rate set: cause %q, exit %d, unexplained %+v", m["Summary!A1"], code, r.Unexplained)
+	}
+}
