@@ -417,6 +417,9 @@ def grade_file(gt, path, t, mode):
         return {"passed": False, "problems": ["grader: " + (p.stderr or p.stdout)[-300:]]}
 
 
+LO_DROPPED = "LibreOffice could not open the result"
+
+
 def grade(out, data, t, arm, profile):
     """Grade a run both ways: res["passed"] and res["problems"] the
     SpreadsheetBench way (LibreOffice recalculates), res["stored"] by
@@ -444,8 +447,7 @@ def grade(out, data, t, arm, profile):
             if os.path.exists(done):
                 break
         if not os.path.exists(done):
-            res["problems"] = ["LibreOffice could not open the result"]
-            res["ungradable"] = True
+            res["problems"] = [LO_DROPPED]
         else:
             res.update(grade_file(gt, done, t, "lo"))
     with open(os.path.join(d, "result.json"), "w") as f:
@@ -496,7 +498,7 @@ PAIRS = [("python+check", "python-hint"), ("python+check", "python"), ("python-h
 def report(out, results, arms):
     # A task LibreOffice could not convert for any arm, after the retry, is
     # UNGRADABLE for every arm alike: left out of every rate and test.
-    bad = sorted({r["id"] for r in results if r.get("ungradable")})
+    bad = sorted({r["id"] for r in results if LO_DROPPED in (r.get("problems") or [])})
     all_results = results
     results = [r for r in results if r["id"] not in bad]
     by = {(r["id"], r["arm"]): r for r in results}
