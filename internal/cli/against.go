@@ -126,7 +126,7 @@ const againstListed = 10
 
 // causeListed bounds the cells changed a moved value names as its cause (then
 // "and more"), in text and --json alike.
-const causeListed = 3
+const causeListed = 5
 
 // againstWidth bounds what text output shows of a value or formula,
 // againstNote of a cause, flag or reason, and againstFinding of the check's

@@ -424,8 +424,8 @@ stdout '^  Data!D3 +140 → 100 +input Data!B3$'
 ! stdout 'rows moved'
 # A value that two inputs moved is the work of both: the MAX of a column with
 # one input changed that does not move it and another that does names both,
-# not the first the search reaches; a value that more than three changed
-# moved names the first three and says there are more, in text and --json.
+# not the first the search reaches; a value that more than five changed
+# moved names the first five and says there are more, in text and --json.
 cp against_before.xlsx two.xlsx
 exec sheets set two.xlsx Data!B2 555 Data!B3 777
 exec sheets check two.xlsx --against against_before.xlsx
@@ -433,13 +433,13 @@ stdout '^  Summary!B6 +9 → 777 +input Data!B2, input Data!B3$'
 stdout '^  Summary!B7 +5 → 555 +input Data!B2$'
 stdout '^  Data!D2 +150 → 16650 +input Data!B2$'
 cp against_before.xlsx five.xlsx
-exec sheets set five.xlsx Data!B2 1 Data!B3 2 Data!B4 3 Data!B5 4 Data!B6 5 Data!D4 '=B4*C3'
+exec sheets set five.xlsx Data!B2 1 Data!B3 2 Data!B4 4 Data!B5 5 Data!B6 6 Data!D4 '=B4*C3'
 exec sheets check five.xlsx --against against_before.xlsx
-stdout '^  Data!D4 +150 → 60 +formula Data!D4$'
-stdout '^  Data!B7 +28 → 15 +input Data!B2, input Data!B3, input Data!B5, and more$'
-stdout '^  Data!D7 +630 → 295 +input Data!B2, input Data!B3, formula Data!D4, and more$'
+stdout '^  Data!D4 +150 → 80 +formula Data!D4$'
+stdout '^  Data!B7 +28 → 18 +input Data!B2, input Data!B3, input Data!B4, input Data!B5, input Data!B6$'
+stdout '^  Data!D7 +630 → 350 +input Data!B2, input Data!B3, input Data!B4, formula Data!D4, input Data!B5, and more$'
 exec sheets --json check five.xlsx --against against_before.xlsx
-stdout '"cell":"Data!B7","before":"28","after":"15","cause":"input Data!B2, input Data!B3, input Data!B5, and more"'
+stdout '"cell":"Data!D7","before":"630","after":"350","cause":"input Data!B2, input Data!B3, input Data!B4, formula Data!D4, input Data!B5, and more"'
 cp against_before.xlsx nextto.xlsx
 exec sheets set nextto.xlsx Data!E1 Code Data!E2 n1 Data!E3 s2 Data!E4 e3 Data!E5 w4 Data!E6 m5
 cp nextto.xlsx nexttosorted.xlsx

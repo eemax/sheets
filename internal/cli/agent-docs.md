@@ -405,7 +405,7 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     input or formula change, rows added, removed or moved, a sheet or a
     name removed, a name changed), traced through what each formula reads.
     A value that several changed cells reach names each of them, the first
-    three and then `and more` (`input Data!B2, input Data!B3`: a MAX that
+    five and then `and more` (`input Data!B2, input Data!B3`: a MAX that
     one of them moved is the work of the one that moved it, but both are
     among its sources). A formula changed is listed too, with what it
     computes now. A value that moved because rows added or removed moved

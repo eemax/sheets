@@ -757,6 +757,15 @@ func TestCheckAgainstFindingsBounded(t *testing.T) {
 // TestCheckAgainstLarge checks that check --against stays bounded, and
 // records its time, on 150,000 rows of which every tenth changed. Run
 // with SHEETS_LARGE=1.
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 func TestCheckAgainstLarge(t *testing.T) {
 	if os.Getenv("SHEETS_LARGE") == "" {
 		t.Skip("SHEETS_LARGE=1 runs it (150,000 rows)")
@@ -847,6 +856,38 @@ func TestCheckAgainstLarge(t *testing.T) {
 			t.Errorf("broken formulas:\n%s", out)
 		}
 		t.Logf("output with findings, %d lines, %d bytes", len(lines), len(out))
+	}
+
+	// A block of cells beside the table cut and pasted below it: moved, not
+	// changes, though the table's rows hold it and rows are added below.
+	{
+		side, cut := filepath.Join(dir, "side.xlsx"), filepath.Join(dir, "cut.xlsx")
+		data, err := os.ReadFile(before)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(side, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, code := run("", "set", side, "Data!H1", "Notes", "Data!H2", "10", "Data!H3", "20", "Summary!C1", "=SUM(Data!H2:H3)"); code != 0 {
+			t.Fatalf("set: %s", out)
+		}
+		if err := os.WriteFile(cut, mustRead(t, side), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, code := run("", "move", cut, "Data!H1:H3", fmt.Sprintf("Data!H%d", rows+10)); code != 0 {
+			t.Fatalf("move: %s", out)
+		}
+		start = time.Now()
+		out, code := run("", "check", cut, "--against", side)
+		t.Logf("check --against on %d rows with a block cut and pasted below: %s", rows, time.Since(start).Round(time.Millisecond))
+		if code != 0 || !strings.Contains(out, ": 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown, 3 rows moved") ||
+			!strings.Contains(out, fmt.Sprintf("Data!H%d:H%d, were H1:H3", rows+10, rows+12)) {
+			t.Errorf("block cut (exit %d):\n%s", code, out)
+		}
+		if n := len(strings.Split(strings.TrimSpace(out), "\n")); n > 12 {
+			t.Errorf("block cut output not bounded: %d lines:\n%s", n, out)
+		}
 	}
 
 	start = time.Now()
