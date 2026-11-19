@@ -8,8 +8,8 @@ pushed binary takes. Measured on this MacBook (M4) by piece report-causes
 
 - **Base:** sheets' origin/main at 99ba275, the last pushed binary (no
   change report).
-- **Measured:** b8aa73d, the report-causes branch. The commits after it
-  change no code.
+- **Measured:** f447732, the report-causes branch's last code (the
+  commit after it adds this file).
 - **Workbook:** 150,000 rows (Region, Units, Price, Revenue = Units ×
   Price), written by the base binary, with Summary!B1 =SUM(Data!D:D),
   B2 =AVERAGE(Data!B2:B150001) and B3 =1/Data!B2.
@@ -23,14 +23,15 @@ pushed binary takes. Measured on this MacBook (M4) by piece report-causes
 
 | command | editor | base (s) | new (s) | ratio | report lines |
 |---|---|---:|---:|---:|---:|
-| `set Data!B5 7` | streaming | 0.764 | 0.821 | 1.07 | 3 |
-| `set Data!B5 7` | full | 4.463 | 4.520 | 1.01 | 3 |
-| `rows insert Data!10` | streaming | 1.480 | 1.527 | 1.03 | 2 |
-| `rows insert Data!10` | full | 5.015 | 5.093 | 1.02 | 2 |
-| `sort Data Units` | streaming | 7.820 | 7.845 | 1.00 | 4 |
-| `sort Data Units` | full | 7.803 | 7.907 | 1.01 | 4 |
+| `set Data!B5 7` | streaming | 0.782 | 0.849 | 1.09 | 3 |
+| `set Data!B5 7` | full | 4.522 | 4.540 | 1.00 | 3 |
+| `rows insert Data!10` | streaming | 1.487 | 1.532 | 1.03 | 2 |
+| `rows insert Data!10` | full | 5.039 | 5.121 | 1.02 | 2 |
+| `sort Data Units` | streaming | 7.782 | 7.886 | 1.01 | 4 |
+| `sort Data Units` | full | 7.838 | 7.955 | 1.01 | 4 |
 
-Every command is within the bar: 1.00 to 1.07 times the base. The report
+Every command is within the bar: 1.00 to 1.09 times the base. An earlier
+run at b8aa73d gave 1.00 to 1.07. The report
 costs little for three reasons:
 
 - it is built from the results the save recomputed anyway;
