@@ -1619,8 +1619,15 @@ type job struct {
 	// numbered before): taken as removed, though cells cleared where they were
 	// look the same.
 	typed, typedOld, cleared []int
-	moved                    []diff.Moved
-	blocks                   []blockJob
+	// blanked is the row removed that a sort left cleared where it is (see
+	// clearedSorted): the old row, and the new one it was cleared in. It is
+	// outside rows, which the rows moved are told from, and compared with them.
+	// clearedAt are the rows added (as numbered now) that cleared stands for the
+	// place of: a blank row among the rows kept.
+	blanked   []diff.Pair
+	clearedAt []int
+	moved     []diff.Moved
+	blocks    []blockJob
 	// pasted is rows cut and pasted where nothing was (sheets move, Excel's
 	// cut and paste), the rows around them where they were: the run, the
 	// columns it spans (0 for whole rows), and the move as formulas follow
@@ -1714,23 +1721,10 @@ func (r *report) prepare(p diff.SheetPair) *job {
 	// there is one.
 	typed, typedFrom := map[int]bool{}, map[int]bool{}
 	p.Rows = pairReplaced(p.Rows, func(o, n int, last bool) bool {
-		if !last || r.notTyped[strings.ToLower(sa.Name)] || len(p.Blocks) > 0 || len(j.colsAdded)+len(j.colsRemoved) > 0 {
+		if !last || r.notTyped[strings.ToLower(sa.Name)] || len(p.Blocks) > 0 {
 			return false
 		}
-		held, cleared, same := 0, 0, 0
-		for _, c := range j.held() {
-			x, y := alikeKey(r.A.wb, sa, o, c[0]), alikeKey(r.B.wb, sb, n, c[1])
-			switch {
-			case y != "":
-				held++
-				if x == y {
-					same++
-				}
-			case x != "":
-				cleared++
-			}
-		}
-		if held > 0 && same == 0 && cleared >= 1 {
+		if r.typedOver(j, o, n) {
 			typed[n], typedFrom[o] = true, true
 			return true
 		}
@@ -1739,7 +1733,7 @@ func (r *report) prepare(p diff.SheetPair) *job {
 	// The last rows removed, with none added or typed in beside them, are
 	// rows cleared where they were when what reads them shows it
 	// (typedRemoved): their cells changed, the values cleared named.
-	p.Rows, j.cleared = r.pairCleared(p, j, typedFrom)
+	p.Rows, j.cleared = r.pairCleared(p, j, typed, typedFrom)
 	if len(p.Moved) == 0 && len(p.Blocks) == 0 {
 		p.Rows = r.reseat(sa, sb, p.Rows, j.held())
 	}
@@ -1810,16 +1804,39 @@ func (r *report) prepare(p diff.SheetPair) *job {
 	return j
 }
 
+// typedOver tells whether a new row (n) holds cells where an old one (o) held
+// others, none the same: the cells typed in where the row was removed, or the
+// row's cells cleared and typed over where they are (typedRemoved tells which).
+func (r *report) typedOver(j *job, o, n int) bool {
+	held, cleared, same := 0, 0, 0
+	for _, c := range j.held() {
+		x, y := alikeKey(r.A.wb, j.sa, o, c[0]), alikeKey(r.B.wb, j.sb, n, c[1])
+		switch {
+		case y != "":
+			held++
+			if x == y {
+				same++
+			}
+		case x != "":
+			cleared++
+		}
+	}
+	return held > 0 && same == 0 && cleared >= 1
+}
+
 // pairCleared finds the last rows of a sheet removed with none kept, added or
-// typed in after them (and no sort, block or column added or removed beside
-// them), which hold something: they are given, numbered as before, to be told
-// removed or cleared where they were (typedRemoved). Where nothing shows they
-// were removed (notTyped names the sheets), they are paired with the rows they
-// were cleared in, numbered as they would be with them kept, and none is given.
-func (r *report) pairCleared(p diff.SheetPair, j *job, typedFrom map[int]bool) ([]diff.Pair, []int) {
+// typed in after them (and no block beside them; a sort is clearedSorted's),
+// which hold something: they are given, numbered as before, to be told removed
+// or cleared where they were (typedRemoved). Where nothing shows they were
+// removed (notTyped names the sheets), they are paired with the rows they were
+// cleared in, numbered as they would be with them kept, and none is given.
+func (r *report) pairCleared(p diff.SheetPair, j *job, typed, typedFrom map[int]bool) ([]diff.Pair, []int) {
 	rows := p.Rows
-	if len(p.Blocks) > 0 || len(p.Moved) > 0 || len(j.colsAdded)+len(j.colsRemoved) > 0 || r.out.ValuesOnly {
+	if len(p.Blocks) > 0 || r.out.ValuesOnly {
 		return rows, nil
+	}
+	if len(p.Moved) > 0 {
+		return r.clearedSorted(p, j, typed, typedFrom)
 	}
 	tail := len(rows)
 	for tail > 0 && rows[tail-1].New == 0 && rows[tail-1].Old != 0 && !typedFrom[rows[tail-1].Old] {
@@ -1855,6 +1872,98 @@ func (r *report) pairCleared(p diff.SheetPair, j *job, typedFrom map[int]bool) (
 	return out, nil
 }
 
+// clearedSorted is pairCleared for a sheet whose rows a sort moved: the rows
+// removed are not the last, and where they would be cleared is not told by the
+// rows kept around them. It tells of a single row removed that holds something
+// (with no other added), when the new version has, in the span of the rows
+// paired, one row that none is paired with: the blank one it was cleared in (a
+// table sorted and its last record cleared, or a record cleared and the table
+// sorted, the blank going last), or the one with cells typed in where it was
+// removed, as prepare takes a row removed and one added in the same place at the
+// end (typedOver). They are given to be told removed or cleared (typedRemoved)
+// as pairCleared's are; where nothing shows it was removed (notTyped), the old
+// row is j.blanked, outside the rows moved, compared with the new one, and none
+// is given. More than one row removed, or a blank row more than one, would
+// number them by a guess: they stay removed.
+func (r *report) clearedSorted(p diff.SheetPair, j *job, typed, typedFrom map[int]bool) ([]diff.Pair, []int) {
+	rows := p.Rows
+	gone, put, lo, hi := -1, -1, 0, 0
+	paired := map[int]bool{}
+	for i, q := range rows {
+		switch {
+		case q.Old == 0:
+			if put >= 0 {
+				return rows, nil
+			}
+			put = i
+		case q.New == 0:
+			if gone >= 0 || typedFrom[q.Old] {
+				return rows, nil
+			}
+			gone = i
+		default:
+			paired[q.New] = true
+			if lo == 0 || q.New < lo {
+				lo = q.New
+			}
+			hi = max(hi, q.New)
+		}
+	}
+	if gone < 0 {
+		return rows, nil
+	}
+	o, held := rows[gone].Old, false
+	for _, c := range j.held() {
+		held = held || alikeKey(r.A.wb, p.Old, o, c[0]) != ""
+	}
+	if !held {
+		return rows, nil
+	}
+	n := 0
+	if put >= 0 {
+		// A row added with cells typed in; or a blank one, the row cleared in
+		// among the rows kept (a total row below the table).
+		if n = rows[put].New; n < lo || n > hi+1 || !r.typedOver(j, o, n) && !rowBlank(p.New, n, j.held(), 1) {
+			return rows, nil
+		}
+	} else {
+		// Among the rows paired (a total row below the table is one), or, with
+		// none there, the one after them.
+		var at []int
+		for k := lo; k <= hi; k++ {
+			if !paired[k] && rowBlank(p.New, k, j.held(), 1) {
+				at = append(at, k)
+			}
+		}
+		if len(at) == 0 && rowBlank(p.New, hi+1, j.held(), 1) {
+			at = append(at, hi+1)
+		}
+		if len(at) != 1 {
+			return rows, nil
+		}
+		n = at[0]
+	}
+	if !r.notTyped[strings.ToLower(p.Old.Name)] {
+		switch {
+		case put < 0:
+		case rowBlank(p.New, n, j.held(), 1):
+			j.clearedAt = []int{n}
+		default:
+			typed[n], typedFrom[o] = true, true
+			return rows, nil
+		}
+		return rows, []int{o}
+	}
+	j.blanked = []diff.Pair{{Old: o, New: n}}
+	var out []diff.Pair
+	for i, q := range rows {
+		if i != gone && i != put {
+			out = append(out, q)
+		}
+	}
+	return out, nil
+}
+
 // typedRemoved tells whether something shows that the rows prepare took as
 // removed were removed (the first result) or were cleared where they are (the
 // second): rows with cells typed in where they were (job.typed), or the last
@@ -1879,10 +1988,15 @@ func (r *report) typedRemoved(j *job, jobs []*job) (bool, bool) {
 	for _, o := range typedOld {
 		gone[o] = true
 	}
-	other.rowsRemoved = nil
+	other.rowsRemoved, other.rowsAdded = nil, nil
 	for _, o := range j.rowsRemoved {
 		if !gone[o] {
 			other.rowsRemoved = append(other.rowsRemoved, o)
+		}
+	}
+	for _, n := range j.rowsAdded {
+		if !slices.Contains(j.clearedAt, n) {
+			other.rowsAdded = append(other.rowsAdded, n)
 		}
 	}
 	for i := range kept {
@@ -2267,6 +2381,9 @@ func (r *report) compare() {
 				m.row[q.Old] = q.New
 			}
 		}
+		for _, q := range j.blanked {
+			m.row[q.Old] = q.New
+		}
 		for _, c := range j.cols {
 			m.col[c[0]] = c[1]
 		}
@@ -2318,6 +2435,11 @@ func (r *report) compare() {
 			if q.Old == 0 || q.New == 0 {
 				continue
 			}
+			for _, c := range j.held() {
+				pair(q.Old, c[0], q.New, c[1])
+			}
+		}
+		for _, q := range j.blanked {
 			for _, c := range j.held() {
 				pair(q.Old, c[0], q.New, c[1])
 			}

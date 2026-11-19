@@ -561,3 +561,76 @@ func TestAgainstRegressTwoColumnLast(t *testing.T) {
 		t.Errorf("csv: exit %d, %+v, structure %+v, changed %+v", code, r.Summary, r.Structure, r.Changed)
 	}
 }
+
+// The last rows of a table cleared with `sheets clear` (no row deleted) are the
+// cells cleared where they are, the values named and no row removed, when what
+// reads them reads them as it did, though the sheet also had a column added or
+// removed or a sort (f2.2 of the last audit): a column inserted and typed in,
+// or the table sorted, and its last record cleared. The row deleted, which
+// Excel rewrote the totals for, is still one row removed, and so is a row
+// deleted and a cell set in its place beside a column, or a sort.
+func TestAgainstRegressClearedBeside(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before := regressBook(t, dir, "b.xlsx", regressTable,
+		[]string{"set", "Summary!A1", "=SUM(Data!B2:B6)", "Summary!A2", "=COUNTA(Data!A2:A6)"}, []string{"check", "--fix"})
+	totals := filepath.Join(dir, "totals.xlsx")
+	if err := os.WriteFile(totals, mustRead(t, filepath.Join("..", "xlsx", "testdata", "against_totals.xlsx")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A total row below the table: the record cleared is among the rows kept.
+	totalled := regressBook(t, dir, "totalled.xlsx", regressTable+"Total\t\t\n",
+		[]string{"set", "Data!B7", "=SUM(Data!B2:B6)", "Summary!A1", "=SUM(Data!B2:B6)", "Summary!A2", "=COUNTA(Data!A2:A6)"}, []string{"check", "--fix"})
+	insert := [][]string{{"cols", "insert", "Data!B"}, {"set", "Data!B1", "Code", "Data!B2", "X1", "Data!B3", "X2", "Data!B4", "X3", "Data!B5", "X4", "Data!B6", "X5"}}
+	with := func(cmds ...[]string) [][]string { return append(append([][]string{}, insert...), cmds...) }
+	for _, c := range []struct {
+		name, before string
+		cmds         [][]string
+		structure    []string // the structure told, "" none
+		inputs       int
+		cleared      map[string][2]string // cells changed that name what was cleared
+		formulas     int
+	}{
+		{"a column inserted, the last row cleared", before, with([]string{"clear", "Data!A6:D6"}),
+			[]string{"column added Data!B"}, 3, map[string][2]string{"Data!A6": {`"Mid"`, ""}, "Data!C6": {"4", ""}, "Data!D6": {"25", ""}}, 0},
+		{"a column removed, the last row cleared", before, [][]string{{"cols", "delete", "Data!C"}, {"clear", "Data!A6:B6"}},
+			[]string{"column removed Data!C"}, 2, map[string][2]string{"Data!A6": {`"Mid"`, ""}, "Data!B6": {"4", ""}}, 0},
+		{"a column inserted, the last row deleted", before, with([]string{"rows", "delete", "Data!6"}),
+			[]string{"row removed Data!6", "column added Data!B"}, 0, nil, 0},
+		{"a column inserted, the last row deleted and a cell set", before, with([]string{"rows", "delete", "Data!6"}, []string{"set", "Data!C6", "77"}),
+			[]string{"row removed Data!6", "column added Data!B"}, 1, map[string][2]string{"Data!C6": {"", "77"}}, 0},
+		{"a sort, the last record cleared", before, [][]string{{"sort", "Data", "Units:desc"}, {"clear", "Data!A6:C6"}},
+			nil, 3, map[string][2]string{"Data!A6": {`"East"`, ""}, "Data!B6": {"3", ""}, "Data!C6": {"50", ""}}, 0},
+		{"a sort, the first record cleared", before, [][]string{{"sort", "Data", "Units"}, {"clear", "Data!A2:C2"}},
+			nil, 3, map[string][2]string{"Data!A2": {`"East"`, ""}, "Data!B2": {"3", ""}, "Data!C2": {"50", ""}}, 0},
+		{"a sort, the last record cleared and a cell set", before, [][]string{{"sort", "Data", "Units:desc"}, {"clear", "Data!A6:C6"}, {"set", "Data!B6", "77"}},
+			nil, 3, map[string][2]string{"Data!A6": {`"East"`, ""}, "Data!B6": {"3", "77"}, "Data!C6": {"50", ""}}, 0},
+		{"a sort, a record cleared above a total row", totalled, [][]string{{"sort", "Data!A1:C6", "Units:desc"}, {"clear", "Data!A6:C6"}},
+			nil, 3, map[string][2]string{"Data!A6": {`"East"`, ""}, "Data!B6": {"3", ""}, "Data!C6": {"50", ""}}, 0},
+		{"a sort, a record deleted and a blank row inserted above a total row", totalled, [][]string{{"sort", "Data!A1:C6", "Units:desc"}, {"rows", "delete", "Data!6"}, {"rows", "insert", "Data!6"}},
+			[]string{"row added Data!6", "row removed Data!4"}, 0, nil, 0},
+		{"a sort, the last record deleted", before, [][]string{{"sort", "Data", "Units:desc"}, {"rows", "delete", "Data!6"}},
+			[]string{"row removed Data!4"}, 0, nil, 0},
+		{"a sort, the last record deleted and a cell set", before, [][]string{{"sort", "Data", "Units:desc"}, {"rows", "delete", "Data!6"}, {"set", "Data!B6", "77"}},
+			[]string{"row removed Data!4"}, 1, map[string][2]string{"Data!B6": {"", "77"}}, 0},
+		{"an openpyxl file with a name and a table, sorted, the last record cleared", totals, [][]string{{"sort", "Data", "Units:desc"}, {"clear", "Data!A6:B6"}},
+			nil, 2, map[string][2]string{"Data!A6": {`"East"`, ""}, "Data!B6": {"3", ""}}, 0},
+	} {
+		after := edited(t, c.before, filepath.Join(dir, "a.xlsx"), c.cmds...)
+		r, code := against(t, after, c.before)
+		var lines []string
+		for _, e := range r.Structure {
+			lines = append(lines, e.Change+" "+strings.SplitN(e.Where, " in ", 2)[0])
+		}
+		if s := r.Summary; s.Inputs != c.inputs || s.Formulas != c.formulas || s.Flagged != 0 || s.Unexplained != 0 || s.FeaturesLost != 0 || s.FeaturesChanged != 0 ||
+			code != 0 || strings.Join(lines, "; ") != strings.Join(c.structure, "; ") {
+			t.Errorf("%s: exit %d, %+v, structure %q, changed %+v", c.name, code, s, lines, r.Changed)
+		}
+		got := changedOf(r)
+		for cell, want := range c.cleared {
+			if got[cell] != want {
+				t.Errorf("%s: %s %q, want %q", c.name, cell, got[cell], want)
+			}
+		}
+	}
+}

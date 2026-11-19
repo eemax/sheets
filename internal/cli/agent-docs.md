@@ -478,8 +478,8 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     formula Excel rewrote for them included, over a range, a table's
     column or a defined name alike: a MAX that rose for a row removed, a
     COUNT that rose, a SUM that fell though they held 0 or less (or by
-    more than they held), or a total that moved for an empty row inserted
-    in its range, did not move for them, and stays `unexplained` unless
+    more than they held), or a total (a SUM, a SUMIF per region) that moved for
+    an empty row inserted in its range, did not move for them, and stays `unexplained` unless
     something else moved it. That holds when they alone changed what the
     formula reads: with a changed input reaching it, or lines of the other
     kind, the net move is no telling of what they did, and they are named
@@ -587,7 +587,9 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   defined name, an Excel table or a chart's series reading them reads them
   as it did (not rewritten for a removal), when they were cleared where
   they are: each cell changed, the values cleared named, what reads them
-  moved for them, nothing flagged.
+  moved for them, nothing flagged. Both hold when a column was added or
+  removed too, and when the table was sorted (a single record cleared or
+  deleted, with a cell set in its place or none).
   Formulas Excel rewrites for rows or columns added or removed (a column
   inserted between the columns a formula reads too, or a row inserted on
   the sheet it reads), cells cut and pasted, a sheet renamed, or a sheet
