@@ -9,7 +9,11 @@ env GIT_CONFIG_GLOBAL=$WORK/gitconfig
 env GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
 fixture against_before.xlsx
 
-# The setup line the guide gives.
+# The setup lines diff's help and the guide give.
+exec sheets diff --help
+stdout '^  git config diff.sheets.command ''sheets diff''$'
+stdout '^  echo ''\*.xlsx diff=sheets'' >> .gitattributes$'
+
 exec git init -q repo
 cd repo
 exec git config diff.sheets.command 'sheets diff'

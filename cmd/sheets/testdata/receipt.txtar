@@ -47,6 +47,9 @@ grep '^\*\*No changes\.\*\*$' same.md
 # --receipt goes with --against.
 ! exec sheets check against_before.xlsx --receipt r.md
 stderr '--receipt writes what --against reports: give --against before.xlsx too'
+exec sheets check --help
+stdout '^      --receipt string +with --against: write the report as Markdown for a person, with before and after pictures beside it$'
+stdout '^  sheets check book.xlsx --against before.xlsx --receipt receipt.md$'
 
 -- before.csv --
 a,b
