@@ -238,6 +238,10 @@ type sideOf struct {
 	wb     *grid.Workbook
 	why    map[string]string // by cellAt, lower-cased
 	stored map[string]string // results sheets computed: by cellAt, lower-cased, a note
+	// differ are the results the file stores that the sheets calculator,
+	// from what each formula reads as stored, gets otherwise (check keeps
+	// Excel's): by cellAt, lower-cased.
+	differ map[string]xlsx.Difference
 	csv    bool
 }
 
@@ -260,7 +264,7 @@ func (x arrays) computed(s *grid.Sheet, row, col int) bool {
 
 // readSide reads one version for --against.
 func (a *app) readSide(path string, cr *xlsx.CheckResult) (*sideOf, error) {
-	x := &sideOf{path: path, why: map[string]string{}, stored: map[string]string{}}
+	x := &sideOf{path: path, why: map[string]string{}, stored: map[string]string{}, differ: map[string]xlsx.Difference{}}
 	kind, err := book.FormatOf(path)
 	if err != nil {
 		return nil, err
@@ -274,11 +278,14 @@ func (a *app) readSide(path string, cr *xlsx.CheckResult) (*sideOf, error) {
 		return nil, err
 	}
 	if cr == nil {
-		opts := checkTime
-		opts.NoCompare = true
-		if cr, err = xlsx.CheckResults(path, x.data, opts); err != nil {
+		// Compared as check compares, so a result it stores that the sheets
+		// calculator disagrees with is known for what it is.
+		if cr, err = xlsx.CheckResults(path, x.data, checkTime); err != nil {
 			return nil, err
 		}
+	}
+	for _, d := range cr.Differ {
+		x.differ[strings.ToLower(cellAt(d.Sheet, d.Row, d.Col))] = d
 	}
 	x.wb = cr.After
 	for _, u := range cr.Unknown {
@@ -358,8 +365,10 @@ type report struct {
 	// after the cells changed.
 	lineSources []xlsx.Source
 	lineCauses  []string
-	// candidates are computed values that moved, to trace.
+	// candidates are computed values that moved, to trace; held those that
+	// did not, whose results the sheets calculator disagrees with.
 	candidates []candidate
+	held       []heldValue
 	// unknownSrc are formulas whose values are unknown, and why.
 	unknownSrc []xlsx.Source
 	unknownWhy []string
@@ -469,6 +478,15 @@ type candidate struct {
 	// whose references Excel rewrote for them: what moved it, when nothing
 	// else did, moved its value (ROW(), an implicit intersection).
 	shift *shiftOf
+}
+
+// heldValue is a computed value that did not move, whose result the new
+// version stores and the sheets calculator gets otherwise (calc): where it
+// was (cellAt, lower-cased), and its value.
+type heldValue struct {
+	at          xlsx.At
+	old         string
+	value, calc valueOf
 }
 
 // shiftOf is where a formula was, and its text before and now.
@@ -1517,16 +1535,59 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 	}
 	// A computed value, its formula unchanged: did it move?
 	if va.known && vb.known && sameValues(va, vb) {
+		if len(B.differ) > 0 {
+			if d, ok := B.differ[strings.ToLower(here)]; ok {
+				// It holds what it held, a result the sheets calculator
+				// disagrees with: out of date, if what it reads changed.
+				r.held = append(r.held, heldValue{at: at, old: strings.ToLower(cellAt(sa.Name, ra, ca)), value: va, calc: calcValue(B.wb, y, d.Calc)})
+			}
+		}
 		return
 	}
+	why := ""
 	if !va.known || !vb.known {
-		why := unknownWhy()
+		why = unknownWhy()
+	} else {
+		why = r.calculators(sa, ra, ca, sb, rb, cb, va, vb)
+	}
+	if why != "" {
 		out.Unknown = append(out.Unknown, unknownValue{Cell: here, Before: va.text, After: vb.text, Why: why})
 		r.unknownSrc = append(r.unknownSrc, xlsx.Source{Sheet: sb.Name, Range: one})
 		r.unknownWhy = append(r.unknownWhy, here+", whose value sheets cannot know ("+why+")")
 		return
 	}
 	r.candidates = append(r.candidates, candidate{at: at, before: va, after: vb, was: was, note: note(), via: via, shift: shift})
+}
+
+// calculators says why a value that moved may have moved only because one
+// version holds the result Excel stored and the other the one sheets
+// computed, where the sheets calculator disagrees with Excel's (check keeps
+// Excel's): "" when that is not so.
+func (r *report) calculators(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int, va, vb valueOf) string {
+	A, B := r.A, r.B
+	old, now := strings.ToLower(cellAt(sa.Name, ra, ca)), strings.ToLower(cellAt(sb.Name, rb, cb))
+	if d, ok := A.differ[old]; ok && B.stored[now] != "" && sameValues(calcValue(A.wb, sa.At(ra, ca), d.Calc), vb) {
+		return "the difference is the calculator's, not a change: sheets gets " + vb.text + " from what it reads in " + A.path +
+			", which stores " + va.text + " (Excel's result, kept), and computed it in " + B.path + " (" + B.stored[now] + ")"
+	}
+	if d, ok := B.differ[now]; ok && A.stored[old] != "" && sameValues(calcValue(B.wb, sb.At(rb, cb), d.Calc), va) {
+		return "the difference is the calculator's, not a change: sheets gets " + va.text + " from what it reads in " + B.path +
+			", which stores " + vb.text + " (Excel's result, kept), and computed it in " + A.path + " (" + A.stored[old] + ")"
+	}
+	return ""
+}
+
+// calcValue is what the sheets calculator got for a cell (stored, as the
+// file holds it), as value reads a cell.
+func calcValue(wb *grid.Workbook, stored *grid.Cell, calc grid.Cell) valueOf {
+	if stored != nil {
+		calc.Fmt = stored.Fmt
+	}
+	v := valueOf{text: valueText(wb, &calc), cell: calc, num: calc.Num, known: true}
+	if f := wb.FormatOf(&calc); calc.Kind == grid.Number && wb.Date1904 && (f.Kind == grid.Date || f.Kind == grid.DateTime) {
+		v.num += epochDays
+	}
+	return v
 }
 
 // repr shows a cell: its formula, or its value.
@@ -1778,6 +1839,23 @@ func (r *report) trace(tr *xlsx.Tracer) {
 			continue
 		}
 		out.Unexplained = append(out.Unexplained, moved)
+	}
+	// Values that held though what they read changed, whose stored results
+	// the sheets calculator gets otherwise from what they read now: results
+	// left as they were (written without recalculating, or by Excel
+	// calculating by hand), unless the calculator disagreed as much before.
+	for _, h := range r.held {
+		k, ok := causeOf[h.at]
+		if !ok {
+			continue
+		}
+		if d, ok := r.A.differ[h.old]; ok && sameValues(calcValue(r.A.wb, nil, d.Calc), h.calc) {
+			continue
+		}
+		here := cellAt(h.at.Sheet, h.at.Row, h.at.Col)
+		out.Unknown = append(out.Unknown, unknownValue{Cell: here, Before: h.value.text, After: h.value.text,
+			Why: "its result may be out of date (written without recalculating): it holds what it held, though what it reads changed (" +
+				r.causes[k] + "), and the sheets calculator gets " + h.calc.text + " from it now; Excel's result is kept"})
 	}
 }
 

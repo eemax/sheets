@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -408,6 +411,118 @@ func runCLI(stdin string, args ...string) (string, int) {
 	var out, errs bytes.Buffer
 	code := Main(args, strings.NewReader(stdin), &out, &errs)
 	return out.String() + errs.String(), code
+}
+
+// rewriteSheet copies a workbook, its first sheet's XML rewritten.
+func rewriteSheet(t *testing.T, src, dst string, rewrite func([]byte) []byte) {
+	t.Helper()
+	zr, err := zip.OpenReader(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.Name == "xl/worksheets/sheet1.xml" {
+			was := data
+			if data = rewrite(data); bytes.Equal(data, was) {
+				t.Fatal("nothing rewritten")
+			}
+		}
+		w, err := zw.Create(f.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Write(data)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCheckAgainstStoredResults checks the results a file stores that the
+// sheets calculator disagrees with. An input changed with the results left
+// as they were (a tool writing the XML, Excel calculating by hand): the
+// formulas reading it hold what they held, which is unknown, with the input
+// named, not clean. And a result Excel stored that sheets computes otherwise,
+// in the old version, against a new one with no results (openpyxl's round
+// trip): the difference is the calculator's, unknown, not unexplained.
+func TestCheckAgainstStoredResults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before := filepath.Join("..", "xlsx", "testdata", "against_before.xlsx")
+	type result struct {
+		Summary     againstSummary `json:"summary"`
+		Unexplained []movedValue   `json:"unexplained"`
+		Unknown     []unknownValue `json:"unknown"`
+	}
+	run := func(after, before string) (result, int) {
+		t.Helper()
+		out, code := runCLI("", "--json", "check", after, "--against", before)
+		var r result
+		if err := json.Unmarshal([]byte(out), &r); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		return r, code
+	}
+
+	stale := filepath.Join(dir, "stale.xlsx")
+	rewriteSheet(t, before, stale, func(b []byte) []byte {
+		return bytes.Replace(b, []byte(`<c r="B2"><v>5</v>`), []byte(`<c r="B2"><v>6</v>`), 1)
+	})
+	r, code := run(stale, before)
+	if r.Summary.Inputs != 1 || r.Summary.Moved != 0 || r.Summary.Unexplained != 0 {
+		t.Errorf("results left as they were: %+v", r.Summary)
+	}
+	held := map[string]bool{}
+	for _, u := range r.Unknown {
+		held[u.Cell] = true
+		if !strings.HasPrefix(u.Why, "its result may be out of date") || !strings.Contains(u.Why, "(input Data!B2)") || u.Before != u.After {
+			t.Errorf("results left as they were: %+v", u)
+		}
+	}
+	for _, c := range []string{"Data!D2", "Data!B7", "Summary!B2", "Summary!B7"} {
+		if !held[c] {
+			t.Errorf("results left as they were: %s not unknown (%+v)", c, r.Unknown)
+		}
+	}
+	if code != 0 {
+		t.Errorf("results left as they were: exit %d", code)
+	}
+	// Against itself: nothing changed, so nothing is out of date.
+	if r, _ := run(stale, stale); len(r.Unknown) != 0 {
+		t.Errorf("against itself: %+v", r.Unknown)
+	}
+
+	excel := filepath.Join(dir, "excel.xlsx")
+	rewriteSheet(t, before, excel, func(b []byte) []byte {
+		return bytes.Replace(b, []byte("<f>B3*C3</f><v>140</v>"), []byte("<f>B3*C3</f><v>141</v>"), 1)
+	})
+	bare := filepath.Join(dir, "bare.xlsx")
+	results := regexp.MustCompile(`(</f>)<v>[^<]*</v>`)
+	rewriteSheet(t, excel, bare, func(b []byte) []byte { return results.ReplaceAll(b, []byte("$1")) })
+	for _, c := range [][2]string{{bare, excel}, {excel, bare}} {
+		r, _ := run(c[0], c[1])
+		if len(r.Unexplained) != 0 || r.Summary.Moved != 0 {
+			t.Errorf("%s against %s: unexplained %+v, %d moved", filepath.Base(c[0]), filepath.Base(c[1]), r.Unexplained, r.Summary.Moved)
+		}
+		if len(r.Unknown) != 1 || r.Unknown[0].Cell != "Data!D3" || !strings.HasPrefix(r.Unknown[0].Why, "the difference is the calculator's, not a change") {
+			t.Errorf("%s against %s: unknown %+v", filepath.Base(c[0]), filepath.Base(c[1]), r.Unknown)
+		}
+	}
 }
 
 // A file with many findings (each formula that breaks its column's pattern

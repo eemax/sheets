@@ -415,7 +415,12 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     calculator lacks, INDIRECT or OFFSET, a link to another workbook, a
     value from outside the workbook such as RTD, WEBSERVICE, STOCKHISTORY
     or the CUBE functions, or a formula reading one of them): never called
-    unexplained;
+    unexplained. Also a value that moved only because one version stores
+    Excel's result and sheets computed the other's, where the sheets
+    calculator disagrees with Excel (the difference is the calculator's),
+    and a stored result that held though what it reads changed, which the
+    calculator gets otherwise now: likely out of date (written without
+    recalculating, or Excel calculating by hand);
   - `moved_rows`: rows moved as by a sort, which are not changes: each row
     whole, every column of its table (the columns between empty ones)
     together. A sort of a table with cells past an empty column that stay
