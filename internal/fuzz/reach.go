@@ -34,8 +34,11 @@ import (
 //     cell that may (in the reach, or a formula whose value may change, to a
 //     fixpoint), when its references were rewritten, when it uses a defined
 //     name the edit's shifts rewrote (rows deleted from its range), or when its
-//     result was unknown before or is unknown now (pending: sheets computes a
-//     result it did not know, or drops one it cannot vouch for). The cells
+//     result was unknown before (pending: sheets computes a result it did not
+//     know). A result known before and unknown after is a change: a formula
+//     that reads nothing the edit touched keeps its result (the first version
+//     excused it, which hid a save that drops results; fuzzer-long's audit,
+//     f2.2). The cells
 //     an array fills (a dynamic array's spill, a legacy array's range)
 //     change with their formula, and with an edit that reaches into them or
 //     cuts them.
@@ -965,7 +968,8 @@ func (rc *reach) check(after *grid.Workbook, sheets map[string]bool, order []str
 
 	// Formulas: rewritten only by an edit that moves cells, in their
 	// references only, and each reference as the edit's shifts put it; a
-	// result unknown before or now may change.
+	// result unknown before may change (sheets computes it), but not one
+	// known before and unknown now (f2.2).
 	var formulas []tracked
 	for _, t := range cells {
 		b, a := rc.cell(t.o), get(t.k, t.p)
@@ -988,7 +992,7 @@ func (rc *reach) check(after *grid.Workbook, sheets map[string]bool, order []str
 				return fmt.Sprintf("%s: outside the edit's reach, its formula =%s is rewritten as =%s, and the edit's shift of references gives =%s", name(t.k, t.p), b.Formula, a.Formula, want)
 			}
 		}
-		if a.Formula != b.Formula || a.Pending || b.Pending {
+		if a.Formula != b.Formula || b.Pending {
 			mark(t.k, t.p)
 		}
 		formulas = append(formulas, t)

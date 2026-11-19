@@ -213,8 +213,10 @@ They judge files, never a command's output text.
      cell whose value may (in the reach, or a formula whose value may, to a
      fixpoint), when its references were rewritten, when it uses a defined
      name the edit's shifts rewrote (rows deleted from `Units`), or when its
-     result is unknown before or after (pending: sheets computed a result it
-     did not know, or dropped one it cannot vouch for). An array's other
+     result was unknown before (pending: sheets computed a result it did not
+     know). A result known before and unknown after is a finding: the first
+     version excused it too, which hid a save that drops results across the
+     workbook (fix round 3, f2.2). An array's other
      cells change with its formula, and with an edit that reaches into it or
      cuts through it.
 
