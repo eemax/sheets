@@ -929,6 +929,57 @@ func TestAgainstCausesDeleteSetNeighbour(t *testing.T) {
 	}
 }
 
+// The last row of a table deleted and a cell set in the row now at that index,
+// when nothing moves up into its place (f3.1, f5.5): one row removed and one
+// input changed (typed in from empty), Excel's own rewrite of a range and of a
+// name no change, nothing flagged, no feature lost. The same with the last two
+// rows deleted and the first of them set: two rows removed. A plain table by
+// XlsxWriter, and openpyxl's pool file with the names and a chart.
+func TestAgainstCausesDeleteSetLast(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	for _, c := range []struct {
+		file string
+		last int // the last row of Data's table
+	}{
+		{"openpyxl-02", 7}, {"xlsxwriter-09", 6}, {"xlsxwriter-15", 6}, {"xlsxwriter-31", 6},
+	} {
+		before := filepath.Join(dir, c.file+".xlsx")
+		if err := os.WriteFile(before, mustRead(t, filepath.Join("..", "fuzz", "testdata", "pool", c.file+".xlsx")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, run := range []struct {
+			rows  string
+			first int
+			want  string
+		}{
+			{fmt.Sprint(c.last), c.last, fmt.Sprintf("row removed Data!%d", c.last)},
+			{fmt.Sprintf("%d:%d", c.last-1, c.last), c.last - 1, fmt.Sprintf("rows removed Data!%d:%d", c.last-1, c.last)},
+		} {
+			for _, col := range []string{"B", "C", "D"} {
+				cell := fmt.Sprintf("Data!%s%d", col, run.first)
+				name := c.file + ": delete Data!" + run.rows + ", set " + cell
+				after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", "Data!" + run.rows}, []string{"set", cell, "77"})
+				r, _ := against(t, after, before) // the exit code counts the file's own errors too
+				s := r.Summary
+				if s.Inputs != 1 || s.Formulas != 0 || s.Flagged != 0 || s.Unexplained != 0 || s.FeaturesLost != 0 {
+					t.Errorf("%s: %+v, changed %+v", name, s, r.Changed)
+				}
+				var lines []string
+				for _, e := range r.Structure {
+					lines = append(lines, e.Change+" "+strings.SplitN(e.Where, " in ", 2)[0])
+				}
+				if len(lines) != 1 || lines[0] != run.want {
+					t.Errorf("%s: structure %q, want [%q]", name, lines, run.want)
+				}
+				if len(r.Changed) == 1 && (r.Changed[0].Cell != cell || r.Changed[0].Before != "" || r.Changed[0].After != "77") {
+					t.Errorf("%s: changed %+v", name, r.Changed)
+				}
+			}
+		}
+	}
+}
+
 // totalsFixture copies against_totals.xlsx (Data!B2:B6 holding 5, 7, 3, 9, 4,
 // an Excel table Sales over A1:B6 and the name Units over B2:B6; Sum!A1
 // =SUM(Sales[Units]), A2 =MAX(Sales[Units]), A3 =SUM(Units), A4 =MAX(Units),

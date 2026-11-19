@@ -481,7 +481,7 @@ func TestFolded(t *testing.T) {
 
 func TestPairReplaced(t *testing.T) {
 	p := func(o, n int) diff.Pair { return diff.Pair{Old: o, New: n} }
-	got := pairReplaced([]diff.Pair{p(1, 1), p(2, 0), p(3, 0), p(0, 2), p(4, 3), p(0, 4), p(5, 5)})
+	got := pairReplaced([]diff.Pair{p(1, 1), p(2, 0), p(3, 0), p(0, 2), p(4, 3), p(0, 4), p(5, 5)}, nil)
 	want := []diff.Pair{p(1, 1), p(2, 2), p(3, 0), p(4, 3), p(0, 4), p(5, 5)}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("pairs %v", got)

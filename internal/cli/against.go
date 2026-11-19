@@ -666,8 +666,11 @@ func lineRange(sheet string, from, to int, cols bool) string {
 }
 
 // pairReplaced pairs, in order, the rows removed and added in the same
-// place: a row whose every value changed is changed, not replaced.
-func pairReplaced(rows []diff.Pair) []diff.Pair {
+// place: a row whose every value changed is changed, not replaced, unless
+// typed says of the pair (the old row, the new, and whether no row kept
+// follows them) that the new row is cells typed in where the old row was
+// removed (typed rows are left unpaired: removed, and the cells typed in).
+func pairReplaced(rows []diff.Pair, typed func(o, n int, last bool) bool) []diff.Pair {
 	var out []diff.Pair
 	for i := 0; i < len(rows); {
 		if rows[i].Old != 0 && rows[i].New != 0 {
@@ -685,6 +688,10 @@ func pairReplaced(rows []diff.Pair) []diff.Pair {
 		}
 		n := min(len(olds), len(news))
 		for k := 0; k < n; k++ {
+			if typed != nil && typed(olds[k], news[k], i >= len(rows)) {
+				out = append(out, diff.Pair{Old: olds[k]}, diff.Pair{New: news[k]})
+				continue
+			}
 			out = append(out, diff.Pair{Old: olds[k], New: news[k]})
 		}
 		for _, o := range olds[n:] {
@@ -1442,6 +1449,9 @@ type job struct {
 	rows                                           []diff.Pair
 	cols                                           [][2]int
 	rowsAdded, rowsRemoved, colsAdded, colsRemoved []int
+	// typed are the rows (as numbered now) whose cells were typed in where
+	// a row was removed: no row added, their cells changed from empty.
+	typed []int
 	moved                                          []diff.Moved
 	blocks                                         []blockJob
 	// pasted is rows cut and pasted where nothing was (sheets move, Excel's
@@ -1509,7 +1519,6 @@ func rowBlank(s *grid.Sheet, row int, cols [][2]int, pick int) bool {
 func (r *report) prepare(p diff.SheetPair) *job {
 	sa, sb := p.Old, p.New
 	j := &job{sa: sa, sb: sb}
-	p.Rows = pairReplaced(p.Rows)
 	inBlock := map[int]bool{}
 	for _, b := range p.Blocks {
 		for _, c := range b.Cols {
@@ -1526,6 +1535,36 @@ func (r *report) prepare(p diff.SheetPair) *job {
 			j.cols = append(j.cols, [2]int{c.Old, c.New})
 		}
 	}
+	// A row removed and a row added in the same place at the end are the row
+	// removed and cells typed in where it was, when the new row holds none of
+	// what the old one did and the old one held more (a row deleted, then a
+	// cell set in the row now at that index, with nothing to move up into its
+	// place): one row removed and the cells typed in, not every cell of the
+	// row changed.
+	typed := map[int]bool{}
+	p.Rows = pairReplaced(p.Rows, func(o, n int, last bool) bool {
+		if !last || len(p.Blocks) > 0 || len(j.colsAdded)+len(j.colsRemoved) > 0 {
+			return false
+		}
+		held, cleared, same := 0, 0, 0
+		for _, c := range j.held() {
+			x, y := alikeKey(r.A.wb, sa, o, c[0]), alikeKey(r.B.wb, sb, n, c[1])
+			switch {
+			case y != "":
+				held++
+				if x == y {
+					same++
+				}
+			case x != "":
+				cleared++
+			}
+		}
+		if held > 0 && same == 0 && cleared >= 2 {
+			typed[n] = true
+			return true
+		}
+		return false
+	})
 	if len(p.Moved) == 0 && len(p.Blocks) == 0 {
 		p.Rows = r.reseat(sa, sb, p.Rows, j.held())
 	}
@@ -1574,7 +1613,7 @@ func (r *report) prepare(p diff.SheetPair) *job {
 			}
 			bj.c2 = max(bj.c2, c.New)
 		}
-		bj.rows = r.pairAlike(sa, sb, pairReplaced(b.Rows), bj.cols)
+		bj.rows = r.pairAlike(sa, sb, pairReplaced(b.Rows, nil), bj.cols)
 		bj.moved = diff.MovedRows(bj.rows, func(q diff.Pair) bool {
 			return rowBlank(sa, q.Old, bj.cols, 0) && rowBlank(sb, q.New, bj.cols, 1)
 		})
@@ -1582,6 +1621,8 @@ func (r *report) prepare(p diff.SheetPair) *job {
 	}
 	for _, q := range j.rows {
 		switch {
+		case q.Old == 0 && typed[q.New]:
+			j.typed = append(j.typed, q.New)
 		case q.Old == 0:
 			j.rowsAdded = append(j.rowsAdded, q.New)
 		case q.New == 0:
@@ -1878,6 +1919,15 @@ func (r *report) compare() {
 				}
 				for _, c := range b.cols {
 					pair(q.Old, c[0], q.New, c[1])
+				}
+			}
+		}
+		// The cells typed in where a row was removed come from nothing.
+		if len(j.typed) > 0 {
+			blank := grid.NewSheet(j.sb.Name)
+			for _, row := range j.typed {
+				for _, c := range j.held() {
+					r.cell(blank, row, c[1], j.sb, row, c[1])
 				}
 			}
 		}
