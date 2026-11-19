@@ -64,10 +64,13 @@ with --ext-diff). Set it up once in a repository:
 			}
 			if g, ok := gitDiffArgs(args); ok {
 				var err error
-				if oldWB, newWB, err = g.open(); err != nil {
-					return err
-				}
 				res.Old, res.New, head = g.oldName(), g.newName(), g.head()
+				if oldWB, newWB, err = g.open(); err != nil {
+					// git stops at a driver that fails, and shows nothing for
+					// the files after it: say why this one cannot be read.
+					a.printf("%s\ncannot compare: %v\n", head, err)
+					return nil
+				}
 			} else if len(args) == 2 {
 				var err error
 				if oldWB, err = open(args[0]); err != nil {

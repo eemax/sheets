@@ -94,6 +94,7 @@ type movedValue struct {
 // moved with a cause sheets cannot trace.
 type unknownValue struct {
 	Cell   string `json:"cell"`
+	Was    string `json:"was,omitempty"` // where it was, when not the same place
 	Before string `json:"before"`
 	After  string `json:"after"`
 	Why    string `json:"why"`
@@ -569,6 +570,7 @@ type candidate struct {
 type heldValue struct {
 	at          xlsx.At
 	old         string
+	was         string // as given for a changed place, else empty
 	value, calc valueOf
 }
 
@@ -1903,7 +1905,7 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 		case !kb:
 			// A value now: the change shows it.
 		case !va.known || !vb.known:
-			out.Unknown = append(out.Unknown, unknownValue{Cell: here, Before: va.text, After: vb.text, Why: unknownWhy()})
+			out.Unknown = append(out.Unknown, unknownValue{Cell: here, Was: was, Before: va.text, After: vb.text, Why: unknownWhy()})
 		case xe || !sameResults(va, vb):
 			r.candidates = append(r.candidates, candidate{at: at, before: va, after: vb, was: was, note: note(), cause: "formula " + here})
 		}
@@ -1981,7 +1983,7 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 			if d, ok := B.differ[strings.ToLower(here)]; ok {
 				// It holds what it held, a result the sheets calculator
 				// disagrees with: out of date, if what it reads changed.
-				r.held = append(r.held, heldValue{at: at, old: strings.ToLower(cellAt(sa.Name, ra, ca)), value: va, calc: calcValue(B.wb, y, d.Calc)})
+				r.held = append(r.held, heldValue{at: at, was: was, old: strings.ToLower(cellAt(sa.Name, ra, ca)), value: va, calc: calcValue(B.wb, y, d.Calc)})
 			}
 		}
 		return
@@ -1993,7 +1995,7 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 		why = r.calculators(sa, ra, ca, sb, rb, cb, va, vb)
 	}
 	if why != "" {
-		out.Unknown = append(out.Unknown, unknownValue{Cell: here, Before: va.text, After: vb.text, Why: why})
+		out.Unknown = append(out.Unknown, unknownValue{Cell: here, Was: was, Before: va.text, After: vb.text, Why: why})
 		r.unknownSrc = append(r.unknownSrc, xlsx.Source{Sheet: sb.Name, Range: one})
 		r.unknownWhy = append(r.unknownWhy, here+", whose value sheets cannot know ("+why+")")
 		return
@@ -2341,11 +2343,11 @@ func (r *report) trace(tr *xlsx.Tracer) {
 		}
 		at := anchorOf(c)
 		if why := tr.Opaque(at.Sheet, at.Row, at.Col); why != "" {
-			out.Unknown = append(out.Unknown, unknownValue{Cell: here, Before: c.before.text, After: c.after.text, Why: "moved, and sheets cannot tell why: " + why})
+			out.Unknown = append(out.Unknown, unknownValue{Cell: here, Was: c.was, Before: c.before.text, After: c.after.text, Why: "moved, and sheets cannot tell why: " + why})
 			continue
 		}
 		if k, ok := cause(unknownOf, c); ok {
-			out.Unknown = append(out.Unknown, unknownValue{Cell: here, Before: c.before.text, After: c.after.text, Why: "moved, and sheets cannot tell why: it reads " + r.unknownWhy[k]})
+			out.Unknown = append(out.Unknown, unknownValue{Cell: here, Was: c.was, Before: c.before.text, After: c.after.text, Why: "moved, and sheets cannot tell why: it reads " + r.unknownWhy[k]})
 			continue
 		}
 		if k, ok := cause(shiftReach, c); ok {
@@ -2368,7 +2370,7 @@ func (r *report) trace(tr *xlsx.Tracer) {
 			continue
 		}
 		here := cellAt(h.at.Sheet, h.at.Row, h.at.Col)
-		out.Unknown = append(out.Unknown, unknownValue{Cell: here, Before: h.value.text, After: h.value.text,
+		out.Unknown = append(out.Unknown, unknownValue{Cell: here, Was: h.was, Before: h.value.text, After: h.value.text,
 			Why: "its result may be out of date (written without recalculating): it holds what it held, though what it reads changed (" +
 				r.causes[k] + "), and the sheets calculator gets " + h.calc.text + " from it now; Excel's result is kept"})
 	}

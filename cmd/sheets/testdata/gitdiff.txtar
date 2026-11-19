@@ -63,6 +63,22 @@ env GIT_DIFF_PATH_TOTAL=1
 exec sheets diff book.xlsx
 stdout '^\* Unmerged path book.xlsx$'
 
+# A workbook sheets cannot open (not a zip): git must not stop at it, or
+# the workbooks after it show nothing. The driver says why and exits 0.
+cp ../notzip.txt bad.xlsx
+cp ../against_before.xlsx good.xlsx
+exec git add bad.xlsx good.xlsx
+exec git commit -q -m three
+cp ../against_before.xlsx bad.xlsx
+exec sheets set good.xlsx Data!B3 11
+exec git diff
+stdout '^sheets diff a/bad.xlsx b/bad.xlsx$'
+stdout '^cannot compare: bad.xlsx \(before\)'
+stdout '^sheets diff a/good.xlsx b/good.xlsx$'
+stdout '^  B3  7 → 11$'
+
+-- notzip.txt --
+not a zip
 -- gitconfig --
 -- attributes --
 *.xlsx diff=sheets

@@ -55,6 +55,26 @@ exec sheets check --help
 stdout '^      --receipt string +with --against: write the report as Markdown for a person, with before and after pictures beside it$'
 stdout '^  sheets check book.xlsx --against before.xlsx --receipt receipt.md$'
 
+# Unknown values keep their old place: 12 rows inserted above RAND formulas,
+# the picture before is of the old rows, not the new ones.
+stdin unk.tsv
+exec sheets write unk.xlsx S!A1
+cp unk.xlsx unk2.xlsx
+exec sheets rows insert unk2.xlsx S!2 -n 12
+exec sheets set unk2.xlsx S!B20 99
+exec sheets --json check unk2.xlsx --against unk.xlsx --receipt unk.md
+stdout '"before":"S!A1:D9"'
+grep '^\| `S!C14 \(was C2\)`' unk.md
+
+-- unk.tsv --
+Item	Qty	R
+I2	2	=B2*RAND()
+I3	3	=B3*RAND()
+I4	4	=B4*RAND()
+I5	5	=B5*RAND()
+I6	6	=B6*RAND()
+I7	7	=B7*RAND()
+I8	8	=B8*RAND()
 -- before.csv --
 a,b
 1,2

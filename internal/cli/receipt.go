@@ -239,7 +239,7 @@ func (r *againstResult) receiptSpots() (spots []spot, unshown []string) {
 		cell(m.Cell, m.Was, "value moved", false)
 	}
 	for _, u := range r.Unknown {
-		cell(u.Cell, "", "value unknown", true)
+		cell(u.Cell, u.Was, "value unknown", true)
 	}
 	return spots, unshown
 }
@@ -381,7 +381,7 @@ func (a *app) writeReceipt(path string, r *againstResult) (*receiptInfo, error) 
 	if n := len(r.Unknown); n > 0 {
 		w("## Unknown: values sheets cannot compare\n\n| Cell | Before | After | Why |\n|---|---|---|---|\n")
 		for _, u := range r.Unknown[:min(n, receiptListed)] {
-			w("| %s | %s | %s | %s |\n", mdCode(u.Cell), mdCode(clip(u.Before)), mdCode(clip(u.After)), mdText(clipNote(u.Why)))
+			w("| %s | %s | %s | %s |\n", mdCode(withWas(u.Cell, u.Was)), mdCode(clip(u.Before)), mdCode(clip(u.After)), mdText(clipNote(u.Why)))
 		}
 		more(n)
 	}
