@@ -627,8 +627,8 @@ func lineRange(sheet string, from, to int, cols bool) string {
 	return q + strconv.Itoa(from) + ":" + strconv.Itoa(to)
 }
 
-// pairReplaced pairs, in order, the rows (or columns) removed and added in
-// the same place: a row whose every value changed is changed, not replaced.
+// pairReplaced pairs, in order, the rows removed and added in the same
+// place: a row whose every value changed is changed, not replaced.
 func pairReplaced(rows []diff.Pair) []diff.Pair {
 	var out []diff.Pair
 	for i := 0; i < len(rows); {
@@ -750,13 +750,40 @@ func (r *report) pairAlike(sa, sb *grid.Sheet, rows []diff.Pair, cols [][2]int) 
 // TRUE and FALSE typed in a formula (Excel reads them as the same).
 var boolCalls = regexp.MustCompile(`(^|[^A-Z0-9_.])(TRUE|FALSE)\(\)`)
 
+// quotedSheet finds a sheet's name in quotes it needs not (LibreOffice
+// writes 'Data'!B2 as Data!B2); bareSheet tells a name that needs none: not
+// one that reads as a cell or a row and column.
+var (
+	quotedSheet = regexp.MustCompile(`'([A-Za-z_][A-Za-z0-9_.]*)'!`)
+	cellLike    = regexp.MustCompile(`^(?i)([A-Z]{1,3}[0-9]+|R[0-9]*C[0-9]*|R[0-9]*|C[0-9]*|TRUE|FALSE)$`)
+)
+
+// boolTyped tells whether a cell holds TRUE or FALSE typed in and another a
+// formula that is that value alone (=TRUE(), as LibreOffice writes typed
+// booleans).
+func boolTyped(v, f *grid.Cell) bool {
+	if v == nil || f == nil || v.Formula != "" || v.Kind != grid.Bool || f.Formula == "" {
+		return false
+	}
+	return folded(f.Formula) == map[bool]string{true: "TRUE", false: "FALSE"}[v.Bool]
+}
+
 // folded is a formula as Excel compares it: letters outside text in double
 // quotes in one case (function names, references, sheet names), and TRUE()
 // and FALSE() as TRUE and FALSE.
 func folded(f string) string {
 	var b, seg strings.Builder // seg is a stretch outside quotes
 	flush := func() {
-		b.WriteString(boolCalls.ReplaceAllString(seg.String(), "${1}${2}"))
+		t := boolCalls.ReplaceAllString(seg.String(), "${1}${2}")
+		if strings.Contains(t, "'") {
+			t = quotedSheet.ReplaceAllStringFunc(t, func(m string) string {
+				if name := m[1 : len(m)-2]; !cellLike.MatchString(name) {
+					return name + "!"
+				}
+				return m
+			})
+		}
+		b.WriteString(t)
 		seg.Reset()
 	}
 	in := false
@@ -1348,9 +1375,7 @@ func rowBlank(s *grid.Sheet, row int, cols [][2]int, pick int) bool {
 func (r *report) prepare(p diff.SheetPair) *job {
 	sa, sb := p.Old, p.New
 	j := &job{sa: sa, sb: sb}
-	// A row, or a column, whose every value changed is changed, not one
-	// removed and another added in its place.
-	p.Rows, p.Cols = pairReplaced(p.Rows), pairReplaced(p.Cols)
+	p.Rows = pairReplaced(p.Rows)
 	inBlock := map[int]bool{}
 	for _, b := range p.Blocks {
 		for _, c := range b.Cols {
@@ -2145,6 +2170,9 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 		if ra != rb || ca != cb || pa != pb {
 			shift = &shiftOf{sheet: sa.Name, row: ra, col: ca, old: x.Formula, now: y.Formula}
 		}
+	case fa != fb && (boolTyped(x, y) || boolTyped(y, x)):
+		// TRUE typed in, written as =TRUE() (LibreOffice's way): the same.
+		return
 	case fa != fb && (fa || fb) && !(ka && kb):
 		// A formula added or removed.
 		c := changedCell{Cell: here, Was: was, Kind: "formula", Before: repr(x, va), After: repr(y, vb)}
@@ -2503,7 +2531,14 @@ func (r *report) trace(tr *xlsx.Tracer) {
 				for i, n := range sorted {
 					srcs[i] = r.sources[n]
 				}
-				lineOf = tr.Spread(srcs)
+				// Not through a formula changed: what it moved, it moved.
+				stop := map[xlsx.At]bool{}
+				for _, src := range r.sources[:r.cells] {
+					if at := (xlsx.At{Sheet: src.Sheet, Row: src.Range.R1, Col: src.Range.C1}); tr.Formula(at.Sheet, at.Row, at.Col) {
+						stop[at] = true
+					}
+				}
+				lineOf = tr.SpreadBut(srcs, stop)
 			}
 			if n, ok := cause(lineOf, c); ok {
 				labels = append(labels, r.causes[sorted[n]])

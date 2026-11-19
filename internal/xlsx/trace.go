@@ -211,7 +211,11 @@ func (t *Tracer) Using(name string) []At {
 // (Opaque) are not reached, but a formula given as a source spreads. The
 // cells of a source Reordered are not followed by a formula that reads
 // them as a set over the whole block (see Source).
-func (t *Tracer) Spread(sources []Source) map[At]int {
+func (t *Tracer) Spread(sources []Source) map[At]int { return t.SpreadBut(sources, nil) }
+
+// SpreadBut is Spread, the formulas in stop neither reached nor followed
+// through: what moves them is their own (a formula changed).
+func (t *Tracer) SpreadBut(sources []Source, stop map[At]bool) map[At]int {
 	x := &depIndex{cells: map[cellKey][]int{}, columns: map[cellKey]*rowTree{}, wide: map[string]map[grid.Range][]int{}}
 	for id, refs := range t.refs {
 		for _, r := range refs {
@@ -248,7 +252,11 @@ func (t *Tracer) Spread(sources []Source) map[At]int {
 			return
 		}
 		reached[k] = true
-		out[t.atOf(k)] = src
+		at := t.atOf(k)
+		if stop[at] {
+			return
+		}
+		out[at] = src
 		push(k, src)
 		if a, ok := t.arrays[k]; ok {
 			for r := a.rg.R1; r <= a.rg.R2; r++ {

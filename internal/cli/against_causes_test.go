@@ -498,3 +498,39 @@ func TestAgainstCausesWholeGrid(t *testing.T) {
 		t.Errorf("diff: %s", took)
 	}
 }
+
+// LibreOffice's round trip writes a TRUE typed in as =TRUE() and drops the
+// quotes a sheet's name needs not ('Data'!B2 as Data!B2): Excel's and its
+// own way of writing the same, not changes (the f5.5 pool file, saved again
+// by LibreOffice).
+func TestAgainstCausesLibreOfficeSpelling(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before := filepath.Join(dir, "b.xlsx")
+	if out, code := runCLI("", "set", before, "Data!A1", "TRUE", "Data!A2", "FALSE", "Data!C1", "2", "Data!C2", "3",
+		"Data!B1", "=SUM('Data'!C1:C2)", "Data!B2", "='Data'!C1*2", "Data!B3", "=SUM('A1'!B1:B2)"); code != 0 {
+		t.Fatal(out)
+	}
+	after := filepath.Join(dir, "a.xlsx")
+	rewriteSheet(t, before, after, func(b []byte) []byte {
+		b = regexp.MustCompile(`(<c r="A1"[^>]*t="b"[^>]*>)<v>1</v>`).ReplaceAll(b, []byte("${1}<f>TRUE()</f><v>1</v>"))
+		b = regexp.MustCompile(`(<c r="A2"[^>]*t="b"[^>]*>)<v>0</v>`).ReplaceAll(b, []byte("${1}<f>FALSE()</f><v>0</v>"))
+		return bytes.ReplaceAll(b, []byte("&apos;Data&apos;!"), []byte("Data!"))
+	})
+	r, code := against(t, after, before)
+	if r.Summary.Inputs+r.Summary.Formulas+r.Summary.Moved != 0 || code != 0 {
+		t.Errorf("exit %d, %+v, changed %+v", code, r.Summary, r.Changed)
+	}
+	// A sheet named like a cell keeps its quotes; a boolean that changed is
+	// a change.
+	if folded("'A1'!B2") != "'A1'!B2" || folded("'Data'!b2") != "DATA!B2" {
+		t.Errorf("folded: %q, %q", folded("'A1'!B2"), folded("'Data'!b2"))
+	}
+	flipped := filepath.Join(dir, "f.xlsx")
+	rewriteSheet(t, before, flipped, func(b []byte) []byte {
+		return regexp.MustCompile(`(<c r="A1"[^>]*t="b"[^>]*>)<v>1</v>`).ReplaceAll(b, []byte("${1}<f>FALSE()</f><v>0</v>"))
+	})
+	if r, _ := against(t, flipped, before); r.Summary.Formulas != 1 {
+		t.Errorf("TRUE to =FALSE(): %+v", r.Changed)
+	}
+}
