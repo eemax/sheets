@@ -438,8 +438,9 @@ cells. Excel 365 comment threads are listed but cannot be changed.
 
   Formulas Excel rewrites for rows or columns added or removed (a column
   inserted between the columns a formula reads too, or a row inserted on
-  the sheet it reads), a sheet renamed, or a sheet deleted (`#REF!`), are
-  not changes, nor is LibreOffice's `TRUE()` for `TRUE`. An array
+  the sheet it reads), cells cut and pasted, a sheet renamed, or a sheet
+  deleted (`#REF!`), are not changes, nor is LibreOffice's `TRUE()` for
+  `TRUE`. An array
   formula's result (a FILTER, SORT or SEQUENCE spilling) is where its
   formula puts it: one that lost a row or was sorted again moved its
   values in place, each with its cause, and rows inserted or deleted
