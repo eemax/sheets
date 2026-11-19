@@ -58,16 +58,21 @@
 
   It counts the cells the command wrote; the computed values it did not
   write whose results moved (the first five listed); formulas that show
-  an error they did not show before; formulas whose result sheets cannot
+  an error they did not show before (a file that stored no result for a
+  formula, as openpyxl's and XlsxWriter's do not, cannot say what it
+  showed before: an error the edit reached is counted and marked
+  `no result stored before`); formulas whose result sheets cannot
   know now (`unknown:`, by reason); charts, validations, conditional
   formats, shapes, pictures, names and tables lost (`lost:`); and the
   lint findings that changed, by rule. A value you did not mean to move, a
-  new error or a feature lost is a mistake: fix it, or `sheets undo`. It
-  comes from the results the save computed anyway, so it costs next to
-  nothing. The lint is compared when the sheets hold up to 2 MB of XML
-  (about 13,000 rows of four columns); on a larger workbook it says
-  `lint not compared` and `sheets lint` does it. `sheets check --against`
-  gives the whole report.
+  new error or a feature lost is a mistake: fix it, or `sheets undo`
+  (whose own report leaves the cells uncompared and gives the features
+  lost and the lint). The results come from what the save computed
+  anyway; the features and lint are read off the file before and after,
+  and the lint only when the sheets hold up to 512 KB of XML (about
+  3,500 rows of four columns), so an edit takes about 17 ms more at most
+  there, and on a larger workbook it says `lint not compared` and
+  `sheets lint` does it. `sheets check --against` gives the whole report.
 - All Excel functions work, including XLOOKUP, IFS, TEXTJOIN, LET and
   LAMBDA. Functions that return several values (FILTER, UNIQUE, SORT,
   SEQUENCE, ...) are stored as dynamic arrays and spill: the file holds the

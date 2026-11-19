@@ -34,6 +34,10 @@ type ResultChange struct {
 	// Blank: written, over a formula that had no result (a sort or move
 	// carrying it, or a rewrite of it): no result now is nothing new.
 	Blank bool
+	// Reached: the change reached the formula (it reads something the
+	// session wrote or moved); not one only computed because it had no
+	// result when opened.
+	Reached bool
 	// Before is the result stored when the session began; Was says it was
 	// known (a result stored and current).
 	Before grid.Cell
@@ -91,7 +95,7 @@ func SameResult(a, b grid.Cell) bool { return sameResult(a, b) }
 // the report has nothing to learn from it: a result recomputed to what it
 // was, or a written formula's plain value (the command reports those).
 func effectOf(f *formulaAt, written bool, carried carryKind, must bool, v grid.Cell, ok bool, why string) (ResultChange, bool) {
-	rc := ResultChange{Sheet: f.sheet, Row: f.row, Col: f.col, Written: written, Carried: written && carried == carryError, Blank: written && (carried == carryNone || f.priorBlank), After: valueOnly(v), Now: ok, Why: why}
+	rc := ResultChange{Sheet: f.sheet, Row: f.row, Col: f.col, Written: written, Carried: written && carried == carryError, Blank: written && (carried == carryNone || f.priorBlank), Reached: must, After: valueOnly(v), Now: ok, Why: why}
 	if !ok {
 		rc.After = grid.Cell{}
 	}

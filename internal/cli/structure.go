@@ -393,8 +393,10 @@ when the file was changed by something else since, unless --force.`,
 			}
 			if after, err := os.ReadFile(args[0]); err == nil && before != nil {
 				// The file as it was and as it is again: what the change
-				// report can say of it is the features lost and the lint.
+				// report can say of it is the features lost and the lint;
+				// the cells are not compared, and it says so.
 				a.trackBytes(args[0], before, after)
+				a.session.uncounted = true
 			}
 			if a.json {
 				return a.printJSON(map[string]any{"undone": e, "moved_to": moved})

@@ -30,6 +30,10 @@ type changeReport struct {
 	// ValuesOnly: a CSV file, which holds values; only cells written are
 	// counted.
 	ValuesOnly bool `json:"values_only,omitempty"`
+	// Uncounted: an undo, which restores the file as it was and does not
+	// compare the cells (the counts are left out, not given as 0); the
+	// features lost and the lint are compared.
+	Uncounted bool `json:"counts_omitted,omitempty"`
 	// Cells is the number of cells the command wrote (set, cleared, pasted,
 	// sorted into place).
 	Cells int `json:"cells"`
@@ -51,10 +55,27 @@ type changeReport struct {
 	Lint             *changeLint   `json:"lint,omitempty"`
 }
 
+// MarshalJSON leaves the counts out of an undo's report.
+func (r changeReport) MarshalJSON() ([]byte, error) {
+	if !r.Uncounted {
+		type plain changeReport
+		return marshalPlain(plain(r))
+	}
+	return marshalPlain(struct {
+		Uncounted        bool          `json:"counts_omitted"`
+		FeaturesLost     int           `json:"features_lost"`
+		FeaturesLostList []lostFeature `json:"features_lost_list,omitempty"`
+		Lint             *changeLint   `json:"lint,omitempty"`
+	}{true, r.FeaturesLost, r.FeaturesLostList, r.Lint})
+}
+
 type changeValue struct {
 	Cell   string `json:"cell"`
 	Before string `json:"before"` // "" when the formula was written (or had no result)
 	After  string `json:"after"`
+	// NoResultBefore: the formula stored no result before, so whether it
+	// showed this error already is not known.
+	NoResultBefore bool `json:"no_result_before,omitempty"`
 }
 
 type changeUnknown struct {
@@ -88,11 +109,12 @@ const (
 	changeWhys   = 3 // reasons for unknown values
 	changeRules  = 3 // lint rules
 	// lintBytes bounds the sheets' XML linted before and after an edit:
-	// both sides, read and linted side by side, add about 75 ms to an
-	// edit of 1.5 MB (10,000 rows of four columns, on an M4), and 2 MB is
-	// about 13,000 such rows. Larger workbooks say so, and sheets lint
-	// does it.
-	lintBytes = 2 << 20
+	// reading and linting a side takes about 34 ms per MB (both sides run
+	// side by side, on an M4), which on a streaming edit of 10,000 rows
+	// of four columns (1.5 MB) was 1.7 times the time without it. At
+	// 512 KB (about 3,500 such rows) it is about 17 ms. Larger workbooks
+	// say so, and sheets lint does it.
+	lintBytes = 512 << 10
 )
 
 // cellPos is a cell where it stands now; sheet lower-cased.
@@ -106,6 +128,7 @@ type resultTrack struct {
 	written bool
 	carried bool // written, an error it showed where it came from
 	blank   bool // written, over a formula that had no result
+	reached bool // the change reached it (not only computed for lack of a result)
 	before  grid.Cell
 	was     bool
 	after   grid.Cell
@@ -122,6 +145,7 @@ type session struct {
 	after      []byte
 	started    bool
 	valuesOnly bool
+	uncounted  bool               // an undo: nothing counted, only features and lint compared
 	written    map[cellPos]string // sheet as spelled
 	results    map[cellPos]*resultTrack
 	ops        []xlsx.LineOp
@@ -206,9 +230,10 @@ func (s *session) effects(ef xlsx.Effects) {
 				r.carried, r.blank = rc.Carried, rc.Blank
 			}
 			r.written = r.written || rc.Written
+			r.reached = r.reached || rc.Reached
 			continue
 		}
-		s.results[p] = &resultTrack{sheet: rc.Sheet, written: rc.Written, carried: rc.Carried, blank: rc.Blank, before: rc.Before, was: rc.Was, after: rc.After, now: rc.Now, why: rc.Why}
+		s.results[p] = &resultTrack{sheet: rc.Sheet, written: rc.Written, carried: rc.Carried, blank: rc.Blank, reached: rc.Reached, before: rc.Before, was: rc.Was, after: rc.After, now: rc.Now, why: rc.Why}
 	}
 	for _, w := range ef.Written {
 		p := cellPos{strings.ToLower(w.Sheet), w.Row, w.Col}
@@ -341,7 +366,7 @@ func (s *session) renamed() map[string]string {
 
 // report works out the short form.
 func (s *session) report() *changeReport {
-	r := &changeReport{ValuesOnly: s.valuesOnly, Cells: len(s.written)}
+	r := &changeReport{ValuesOnly: s.valuesOnly, Uncounted: s.uncounted, Cells: len(s.written)}
 	if s.valuesOnly {
 		return r
 	}
@@ -407,8 +432,14 @@ func (s *session) report() *changeReport {
 		}
 		// An error is new unless the formula showed one before: where it
 		// came from (a sort or move), or the result it had before a rewrite.
-		if t.after.Kind == grid.Error && !t.carried && (w || t.was) && !(t.was && t.before.Kind == grid.Error) {
+		// A formula the change reached that stored no result (openpyxl's
+		// and XlsxWriter's) shows one now: nothing says it showed one
+		// before, so it is counted, and told so.
+		if t.after.Kind == grid.Error && !t.carried && (w || t.was || t.reached) && !(t.was && t.before.Kind == grid.Error) {
 			r.Errors++
+			if !w && !t.was {
+				cv.NoResultBefore = true
+			}
 			if len(r.ErrorList) < changeListed {
 				r.ErrorList = append(r.ErrorList, cv)
 			}
@@ -598,11 +629,15 @@ func (a *app) printChange(r *changeReport) {
 		return
 	}
 	head := "change: " + plural(r.Cells, "cell") + " written"
-	if r.ValuesOnly {
+	if r.ValuesOnly && !r.Uncounted {
 		a.printf("%s (a CSV file holds values only)\n", head)
 		return
 	}
-	head += fmt.Sprintf(", %s moved, %s, %s, %s lost", plural(r.Moved, "value"), plural(r.Errors, "new error"), plural(r.Unknown, "new unknown"), plural(r.FeaturesLost, "feature"))
+	if r.Uncounted {
+		head = "change: cells not compared (an undo restores the file as it was)" + fmt.Sprintf(", %s lost", plural(r.FeaturesLost, "feature"))
+	} else {
+		head += fmt.Sprintf(", %s moved, %s, %s, %s lost", plural(r.Moved, "value"), plural(r.Errors, "new error"), plural(r.Unknown, "new unknown"), plural(r.FeaturesLost, "feature"))
+	}
 	if l := r.Lint; l != nil {
 		head += ", lint " + lintHead(l)
 	}
@@ -620,6 +655,8 @@ func (a *app) printChange(r *changeReport) {
 			p := v.Cell + " " + v.After
 			if v.Before != "" {
 				p += " (was " + v.Before + ")"
+			} else if v.NoResultBefore {
+				p += " (no result stored before)"
 			}
 			parts = append(parts, p)
 		}

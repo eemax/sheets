@@ -57,7 +57,7 @@ exec sheets --json chart delete d.xlsx Data!D1
 stdout '"deleted":"Data!D1"'
 stdout '"change":\{"cells":0,.*"features_lost":1,'
 exec sheets --json undo d.xlsx
-stdout '"change":\{"cells":0,.*"features_lost":0'
+stdout '"change":\{"counts_omitted":true,"features_lost":0'
 exec sheets undo d.xlsx
 stdout '^change: .*, 1 feature lost, '
 exec sheets query d.xlsx 'select * from Data' --into Out
@@ -89,6 +89,36 @@ exec sheets set e.xlsx Data!B3 '=INFO("osversion")'
 stdout ', 1 new unknown,'
 exec sheets set e.xlsx Data!B3 '=INFO("release")'
 stdout ', 0 new unknowns,'
+
+# A file that stored no result for its formulas (openpyxl's) cannot say
+# what they showed before: an error the edit reached is counted and marked,
+# one it did not reach (C1, 1/0 all along) is not told.
+fixture noresults.xlsx
+cp noresults.xlsx noresults2.xlsx
+exec sheets set noresults.xlsx Data!A1 0
+stdout '^change: 1 cell written, 0 values moved, 1 new error, '
+stdout '^new errors: Data!B1 #DIV/0! \(no result stored before\)$'
+! stdout 'C1'
+env SHEETS_STREAM=always
+exec sheets set noresults2.xlsx Data!A1 0
+stdout '^change: 1 cell written, 0 values moved, 1 new error, '
+stdout '^new errors: Data!B1 #DIV/0! \(no result stored before\)$'
+env SHEETS_STREAM=
+exec sheets --json set noresults.xlsx Data!A1 5
+stdout '"change":\{"cells":1,"moved":2,.*"new_errors":0,'
+
+# undo does not compare the cells: it says so instead of counting 0, and
+# leaves the counts out of --json.
+stdin div.tsv
+exec sheets write u.xlsx Data!A1
+exec sheets set u.xlsx Data!A2 7
+exec sheets undo u.xlsx
+stdout '^change: cells not compared \(an undo restores the file as it was\), 0 features lost, lint '
+! stdout 'cells written'
+exec sheets set u.xlsx Data!A2 7
+exec sheets --json undo u.xlsx
+stdout '"change":\{"counts_omitted":true,"features_lost":0,'
+! stdout '"cells"'
 
 -- info.tsv --
 N	X
