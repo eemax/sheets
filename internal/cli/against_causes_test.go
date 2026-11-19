@@ -499,6 +499,55 @@ func TestAgainstCausesWholeGrid(t *testing.T) {
 	}
 }
 
+// A sort on a sheet whose used range spans the grid (2,000 rows and one
+// value at XFD1048576): each run of rows moved is a source as wide as the
+// sheet, and check --against follows it through the columns that hold
+// something, not the 16,384 of each row (f0.5). A total over the rows is
+// not moved by it; a cell reading one by position is.
+func TestAgainstCausesWholeGridSort(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	var csv strings.Builder
+	csv.WriteString("Item,Units\n")
+	for i := 1; i <= 2000; i++ {
+		fmt.Fprintf(&csv, "I%d,%d\n", i, i*37%101)
+	}
+	src := filepath.Join(dir, "S.csv")
+	if err := os.WriteFile(src, []byte(csv.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plain := filepath.Join(dir, "plain.xlsx")
+	if out, code := runCLI("", "convert", src, plain); code != 0 {
+		t.Fatal(out)
+	}
+	if out, code := runCLI("", "set", plain, "S!D1", "=SUM(B2:B2001)", "S!D2", "=B2"); code != 0 {
+		t.Fatal(out)
+	}
+	before := filepath.Join(dir, "b.xlsx")
+	rewriteSheet(t, plain, before, func(b []byte) []byte {
+		b = regexp.MustCompile(`<dimension ref="[^"]*"/>`).ReplaceAll(b, []byte(`<dimension ref="A1:XFD1048576"/>`))
+		return bytes.Replace(b, []byte("</sheetData>"), []byte(`<row r="1048576"><c r="XFD1048576"><v>5</v></c></row></sheetData>`), 1)
+	})
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"sort", "S!A1:B2001", "Units:desc"})
+	start := time.Now()
+	r, code := against(t, after, before)
+	took := time.Since(start)
+	t.Logf("sort of 2,000 rows on a grid-wide sheet: %s", took.Round(time.Millisecond))
+	if took > 5*time.Second*raceSlow {
+		t.Errorf("took %s", took)
+	}
+	m := causes(r)
+	if _, ok := m["S!D1"]; ok {
+		t.Errorf("S!D1 (a total over the rows sorted) moved: %q", m["S!D1"])
+	}
+	if got := m["S!D2"]; !strings.HasPrefix(got, "rows moved: S!A2:B2 (were S!A") {
+		t.Errorf("S!D2 (=B2): cause %q (moved %+v)", got, r.Moved)
+	}
+	if code != 0 || len(r.Unexplained) != 0 || r.Summary.MovedRows < 1900 {
+		t.Errorf("exit %d, unexplained %+v, %d rows moved", code, r.Unexplained, r.Summary.MovedRows)
+	}
+}
+
 // LibreOffice's round trip writes a TRUE typed in as =TRUE() and drops the
 // quotes a sheet's name needs not ('Data'!B2 as Data!B2): Excel's and its
 // own way of writing the same, not changes (the f5.5 pool file, saved again

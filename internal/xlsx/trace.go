@@ -56,6 +56,7 @@ type Tracer struct {
 	sheets map[string]*grid.Sheet
 	used   map[string]grid.Range // what each sheet uses, by lower-cased name
 	idx    *depIndex             // who reads what, kept for SpreadAll
+	cols   map[string][]int      // by lower-cased sheet: the columns worth looking at (see columnsOf)
 	wb     *grid.Workbook
 }
 
@@ -275,12 +276,13 @@ func (t *Tracer) SpreadBut(sources []Source, stop map[At]bool) map[At]int {
 			// what a formula reading them can find changed.
 			rg = rg.Intersect(grid.Range{R1: 1, C1: 1, R2: u.R2, C2: u.C2})
 		}
-		if !rg.Empty() && rg.Rows()*rg.Cols() > wideSource {
+		cols := t.columnsOf(s.Sheet, rg.C1, rg.C2)
+		if !rg.Empty() && rg.Rows()*len(cols) > wideSource {
 			queue = append(queue, item{src: i, wide: true})
 			continue
 		}
 		for r := rg.R1; r <= rg.R2; r++ {
-			for c := rg.C1; c <= rg.C2; c++ {
+			for _, c := range cols {
 				k := keyOf(s.Sheet, r, c)
 				if _, ok := t.at[k]; ok && !s.Readers {
 					reach(k, i) // a formula changed: what it computes follows
@@ -366,6 +368,62 @@ func (t *Tracer) SpreadBut(sources []Source, stop map[At]bool) map[At]int {
 // wideSource is how many cells a source may span for Spread to look up the
 // readers of each: past it, it reads each formula's references instead.
 const wideSource = 1 << 20
+
+// wholeRow is how many columns a source may span for Spread to look at each
+// of them: past it, only the columns that can make a difference (columnsOf).
+const wholeRow = 64
+
+// columnsOf gives the columns c1..c2 of a source's rows that Spread looks
+// at. A source spanning few columns gives them all. One spanning many (rows
+// added or moved across a sheet, whose used range may reach the last column
+// for one far cell) gives the first column and those where the sheet holds a
+// cell or a formula reads from: of the rest no formula reads a cell and none
+// is there, so looking at them finds nothing (a formula reading some of the
+// source's cells reads the first column or starts in one of them).
+func (t *Tracer) columnsOf(sheet string, c1, c2 int) []int {
+	if c2 < c1 {
+		return nil
+	}
+	if c2-c1 < wholeRow {
+		cols := make([]int, 0, c2-c1+1)
+		for c := c1; c <= c2; c++ {
+			cols = append(cols, c)
+		}
+		return cols
+	}
+	if t.cols == nil {
+		held := map[string]map[int]bool{}
+		for _, s := range t.wb.Sheets {
+			m := map[int]bool{}
+			s.Each(s.Used(), func(_, col int, _ *grid.Cell) { m[col] = true })
+			held[strings.ToLower(s.Name)] = m
+		}
+		for _, refs := range t.refs {
+			for _, r := range refs {
+				k := strings.ToLower(r.Sheet)
+				if held[k] == nil {
+					held[k] = map[int]bool{}
+				}
+				held[k][r.Range.C1] = true
+			}
+		}
+		t.cols = map[string][]int{}
+		for k, m := range held {
+			cols := make([]int, 0, len(m))
+			for c := range m {
+				cols = append(cols, c)
+			}
+			sort.Ints(cols)
+			t.cols[k] = cols
+		}
+	}
+	all := t.cols[strings.ToLower(sheet)]
+	cols := []int{c1}
+	for i := sort.SearchInts(all, c1+1); i < len(all) && all[i] <= c2; i++ {
+		cols = append(cols, all[i])
+	}
+	return cols
+}
 
 // orderFree tells whether a formula reads what it reads of a source's
 // block (Source.Reordered) only as a set over all of its rows (and, Across,
@@ -499,8 +557,9 @@ func (t *Tracer) SpreadAll(sources []Source, limit int) map[At]Reach {
 			rg = rg.Intersect(grid.Range{R1: 1, C1: 1, R2: u.R2, C2: u.C2})
 		}
 		queue = queue[:0]
+		cols := t.columnsOf(s.Sheet, rg.C1, rg.C2)
 		for r := rg.R1; r <= rg.R2; r++ {
-			for c := rg.C1; c <= rg.C2; c++ {
+			for _, c := range cols {
 				k := keyOf(s.Sheet, r, c)
 				if _, ok := t.at[k]; ok && !s.Readers {
 					reach(k, i) // a formula changed: what it computes follows
