@@ -262,6 +262,7 @@ func (s *session) shiftRef(home, ref string) string {
 	if err != nil {
 		return ref
 	}
+	was, renamed := rg, false
 	for _, op := range s.ops {
 		if !strings.EqualFold(op.Sheet, sheet) {
 			continue
@@ -270,7 +271,7 @@ func (s *session) shiftRef(home, ref string) string {
 		case op.Gone:
 			return ""
 		case op.Rename != "":
-			sheet = op.Rename
+			sheet, renamed = op.Rename, true
 			continue
 		}
 		lo, hi, top := &rg.R1, &rg.R2, grid.MaxRows
@@ -293,8 +294,13 @@ func (s *session) shiftRef(home, ref string) string {
 		}
 		*lo, *hi = a, b
 	}
+	if rg == was && !renamed {
+		return ref
+	}
 	out := rg.String()
-	if rg.R1 == rg.R2 && rg.C1 == rg.C2 && !strings.Contains(body, ":") {
+	if rg == was {
+		out = strings.ReplaceAll(body, "$", "")
+	} else if rg.R1 == rg.R2 && rg.C1 == rg.C2 && !strings.Contains(body, ":") {
 		out = grid.CellName(rg.R1, rg.C1)
 	}
 	if qualified {
@@ -573,7 +579,9 @@ func (a *app) trackBytes(path string, before, after []byte, results ...xlsx.Resu
 	a.changed = nil
 }
 
-// printChange prints the short form, at most 1 + 1 + 1 + 3 + 1 + 3 lines.
+// printChange prints the short form: at most 11 lines (the head, what
+// moved, the new errors, three reasons for unknowns and the rest counted,
+// the features lost, three lint rules).
 func (a *app) printChange(r *changeReport) {
 	if r == nil {
 		return
