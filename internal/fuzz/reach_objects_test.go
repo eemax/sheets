@@ -597,6 +597,11 @@ func TestFilePanes(t *testing.T) {
 // only by a fuzz run: insert before the last frozen line does not move the
 // split, and the frozen header shows the row inserted above it.
 func TestPoolPanesMove(t *testing.T) {
+	// Under -race (ten times slower) three panes of the pool: one of each shape.
+	panes, minApplied := 0, 30
+	if raceOn {
+		minApplied = 6
+	}
 	judged := 0
 	for _, w := range loadPool(t) {
 		wb, err := xlsx.ReadBytes(w.Data)
@@ -609,9 +614,10 @@ func TestPoolPanesMove(t *testing.T) {
 		}
 		for _, sh := range wb.Sheets {
 			pane, ok := f.panes[strings.ToLower(sh.Name)]
-			if !ok {
+			if !ok || raceOn && panes >= 3 {
 				continue
 			}
+			panes++
 			s, err := newSession(t.TempDir(), w.Data)
 			if err != nil {
 				t.Fatal(err)
@@ -685,9 +691,9 @@ func TestPoolPanesMove(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("%d edits applied over the pool's panes", judged)
-	if judged < 30 {
-		t.Errorf("%d edits applied over the pool's panes, want at least 30", judged)
+	t.Logf("%d edits applied over %d panes of the pool", judged, panes)
+	if judged < minApplied {
+		t.Errorf("%d edits applied over the pool's panes, want at least %d", judged, minApplied)
 	}
 }
 

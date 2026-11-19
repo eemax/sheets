@@ -167,8 +167,10 @@ They judge files, never a command's output text.
    `move`'s source and target, the range a `sort` takes (the whole sheet when
    it names a sheet or a table), the values a `replace` finds (as sheets'
    replace reads them, `grid.Display`: a date as 2026-07-01, 12%; a number
-   with no format too; ignoring case: the whole find must be in one of these
-   texts), the rows or columns an insert adds, and a sheet copied. Every
+   with no format too; and as the command reads its flags: ignoring case
+   unless `--case`, the whole text with `--exact`, a regular expression with
+   `--regex`: the whole find must be in one of these texts), the rows or
+   columns an insert adds, and a sheet copied. Every
    other cell is followed through the edit (rows and columns inserted or
    deleted move it, a sheet renamed takes it along) and must hold what it
    held, where it stands now; an empty one must stay empty, and no sheet may
@@ -269,11 +271,35 @@ They judge files, never a command's output text.
      ranges (sheets writes `A2:B12` as `A2:A12 B2:B12` after a move far
      away: 3 false findings in the first 3 minutes on pools with objects);
    - an object the edit's reach lies on may change (a set into a merge, a
-     clear over a note, a validation cut by a move: what is left of it is its
-     own); a table, a chart, hidden lines and a sheet's visibility may not
+     `clear --all` over a note, a validation cut by a move: what is left of it is
+     its own); a table, a chart, hidden lines and a sheet's visibility may not
      (a table's column names follow its header cells: a replace may rename
      one). The rows an insert adds are in the reach for cells, and hold no
      object of what was there;
+   - **a clear without `--all` reaches values and formulas only** (fix round
+     5, f4.2): sheets' own help says it keeps formatting, notes, links, merges,
+     validations and the conditional formats (the Delete key), so a note, a link,
+     a merge, a validation, a conditional format, a hidden line, and the look of
+     its cells (the number format with it: a date shown as 46022) are judged as
+     outside its reach (`reach.touchContents`), and only `clear --all` (and a
+     script's `clear()`, which is `all`) may change them. `copy --values` is the
+     same but for the look: the cells take values and number formats, and the
+     target's notes, links, merges, validations and conditional formats stay. A
+     clear that acts as `--all` (the audit's `if all {` made `if true || all {`
+     in `ranges.go`) is a finding, since `clear 'Data!E7'` on a date empties the
+     cell and drops its format;
+   - **a frozen pane's split** (f4.3) is judged by where it stands (`reach.judgePanes`,
+     `paneAfter`): rows or columns inserted at or above the last frozen one
+     lengthen it, those deleted shorten it by the frozen ones among them, lines
+     below it leave it, a renamed sheet takes its pane along, a sheet made as a
+     copy is new and a sheet made holds none. The reader gives it
+     (`ViewOf`: the rows and columns frozen), and the editors invariant compares
+     the two files'. No other edit moves a split. The audit's off-by-one in
+     `splitAfter` (`from > split` as `from >= split`) leaves the frozen header
+     showing the row inserted above it: the default run finds it as `cols-insert
+     reach 100002` after 0.5 s (`cols insert book.xlsx 'Summary!A' -n 1` on
+     `openpyxl-30`: 1 column frozen where 2 are due), and `TestPoolPanesMove`
+     finds it in `go test` alone;
    - a sheet made as a copy is new, and not judged.
    The editors invariant compares the grid's objects of the two files too, so
    a slip in the streaming editor's own shifting shows there, and one both
@@ -524,7 +550,7 @@ How the fuzzer was checked: each is caught.
 
 ## The pool
 
-There are 40 small workbooks, about 338 KB in all, in `testdata/pool/`:
+There are 40 small workbooks, about 354 KB in all, in `testdata/pool/`:
 20 written by openpyxl and 20 by XlsxWriter. They come from
 `scripts/fuzzgen.py`, each from its own seed. Each holds:
 
@@ -550,6 +576,11 @@ There are 40 small workbooks, about 338 KB in all, in `testdata/pool/`:
 - a **note** on one of the header cells `Data!B1` to `F1` ("check this") in 14
   files, 5 from openpyxl and 9 from XlsxWriter (`fuzzgen.py --notes`; fix round
   4, f3.1): the pool held none, and a note lost went unseen in the default mode;
+- a **frozen pane** on 17 sheets of 15 files (`fuzzgen.py --panes`; fix round 5,
+  f4.3): on `Data` in 9 files and on a second sheet in 8 (two files have two), a
+  header row, a first column, both, or a few rows and columns, 3 with rows only,
+  3 with columns only and 11 with both: the pool held none, and every rows or
+  columns insert or delete in the default mode ran with no split to move;
 - an Excel table in 19 of the files: over the data (A1:G, 9 files; sheets
   does not move cells into, out of or within a table, so the cells the
   formulas read cannot be moved there), or in a block of its own (W1:Y5,
@@ -570,7 +601,7 @@ results of every type but an error, and the edits add the rest.
 
 To regenerate the pool:
 
-    uv run --with openpyxl==3.1.5 --with xlsxwriter==3.3.1 python scripts/fuzzgen.py --notes internal/fuzz/testdata
+    uv run --with openpyxl==3.1.5 --with xlsxwriter==3.3.1 python scripts/fuzzgen.py --notes --panes internal/fuzz/testdata
 
 - **The versions are pinned:** a newer release may write other bytes, which
   would change every edit each seed makes and need `known.txt` made again.
@@ -591,6 +622,15 @@ To regenerate the pool:
   seeds hold, but those that reach a note (six of the default run's: fix round
   4, below). The must-refuse cases made from the files with a note changed
   with them (13 of the 14).
+- **`--panes`** freezes panes from a random stream of its own (`--objects` adds
+  them too, so long mode's fresh pools hold them), and changes no cell: the 25
+  files without one are the file the pool had before, byte for byte, and each of
+  the 15 with one differs by its sheet part. So the sequences of every seed make
+  the same edits as before, and `known.txt`'s seeds hold: the default run is the
+  same 2,000 edits and 26 findings, 0 new. The must-refuse cases made from the
+  files with a pane changed with them (2 of the 15). `TestFilePanes` checks the
+  pool holds a pane of each shape (rows, columns, both), and `TestPoolPanesMove`
+  runs both editors over each.
 - **A different pool** (or `--seed`) makes the edits of each seed other ones,
   so `known.txt` must then be made again.
 
@@ -1218,6 +1258,121 @@ catch and did not. Each is fixed, with a test, its repro and a number.
   s (`long move kinds 700012`), `rows-insert-arrays` 1 s (`long cols-insert kinds
   700000`), `wp12-sheet-rows` 19 s (`long set kinds 700123`).
 
+### Fix round 5 (the audit's f4.1, f4.2 and f4.3)
+
+The audit of fix round 4 found two mediums and a low, each a slip the reach
+invariant is there to catch, and did not (the audit's scratch mutations of
+sheets' code passed the default run). Each is fixed, with tests, its repro and a
+number. This is the last round: what is open after it is a follow-up.
+
+- **f4.1, `replace --exact` read as a substring (medium).** `model.replace` never
+  read `--exact`: every cell whose shown text merely contained the find was in
+  the reach, and the generator adds `--exact` to 30% of its value replaces. A
+  replace that ignored it and rewrote cells it must not touch passed: the audit's
+  mutation (`ranges.go`: `replacer(…, useRegex, false, caseSens)`) made `sheets
+  replace r.xlsx 5 7 --exact` rewrite `Data!D6` (385) and `Data!E7` (2026-12-05).
+  The model finds as the command does now (the same pattern as `replacer`,
+  `regexp` with `(?i)` unless `--case`, `^(?:…)$` with `--exact`, the find
+  quoted unless `--regex`), over the text a value is shown as, or the formula's
+  with `--formulas`; `--formulas` reaches the values too, as the command does
+  (checked: `replace 'Sheet1!' 'Data!' --formulas` rewrote a text `Sheet1!x`),
+  which the model had left out. The audit's mutation is found in the default run
+  as `do reach 100146` after 36 s (`SHEETS_FUZZ_UNTIL=new`: the repro of the
+  audit stops there): `replace 'Åäö' 'Ä & Ö' --exact` on `xlsxwriter-21.xlsx`
+  rewrites `Data!A7`, `Åäö 日本語`, which the find is only a part of.
+  `TestReach` holds 14 cases (a whole text, a part, a number holding the digit,
+  case with and without `--case`, `--exact --case`, one sheet, `--formulas` with
+  `--exact`, a text under `--formulas`, `--regex` matched and not).
+- **f4.2, a clear without `--all` reached notes, links, merges and formats
+  (medium).** 80% of the generator's clears are plain, and a plain clear got the
+  reach of `--all`: a note, a link or a merge is an object an edit's reach may
+  change, and a cell in the reach is not judged for its look. Sheets' own help
+  says a plain clear keeps formatting, notes and links (the Delete key). The
+  audit's mutation (`ranges.go`: `if all {` as `if true || all {`) deleted `Data!D1`'s note and the
+  date style of `E2:E3` and passed. See Objects, under The invariants: a clear
+  without `--all` reaches values and formulas only now (`reach.touchContents`),
+  and everything else of its cells is judged as outside it: notes, links, merges,
+  validations, conditional formats, hidden lines, and the look of the cells it
+  empties (the reader keeps no empty cell, so the look is read from the file,
+  with sheets' own `Looks`, by `checkFile`). `copy --values` is the same but
+  for the look (it pastes number formats). The mutation is found in the default
+  run as `do reach 100175` after 43 s: `clear 'Data!E7'` on `openpyxl-16.xlsx`,
+  `Data!E7: outside the edit's reach, its look was [format=yyyy-mm-dd], and is []
+  now`. **The README's "a clear over a note" is corrected** (a `clear --all`
+  does). `TestReachObjects` holds 12 more cases (a plain clear keeps the note,
+  link, merge it covers, one in a range, a hidden row, and may not drop
+  another's; a `clear --all` may drop each; `copy --values` keeps the
+  target's note, link and merge, a plain copy replaces them) and `TestReachFile`
+  7 (validations, conditional formats and looks under a plain clear, a `clear
+  --all`, a paste of values). **Not changed, and open:** `set`, `write`,
+  `replace` and a script's `setValue` still reach every object under their
+  cells (a `set` into a note's cell may drop the note and pass): the audit named
+  clear and `copy --values`.
+- **f4.3, frozen panes (low).** No pool file held a pane, and no object judged
+  one, though the house style freezes the header of every sheet `fmt` touches
+  and every rows or columns edit runs `movePanes` and `splitAfter`. The audit's
+  off-by-one (`from > split` as `from >= split`) left the pane at one row after
+  `sheets rows insert b.xlsx 'Data!1'` on a formatted sheet, so the frozen header
+  showed the inserted row. See the pool (`fuzzgen.py --panes`: 17 panes in 15 of
+  the 40 files) and Objects. The off-by-one is found in the default run as
+  `cols-insert reach 100002` after 0.5 s, and by `TestPoolPanesMove` in `go test`
+  alone. `TestPaneAfter` holds 13 cases of where a split goes, `TestReachPanes`
+  24 of the judgement (a pane kept, lost or made by a far edit; rows and
+  columns inserted among the frozen ones, at the first that scrolls, below;
+  deleted; a sheet renamed, copied, added), `TestFilePanes` the pool and the
+  editors' comparison.
+- **The default run** is the same as before the round: 2,000 edits (1,885
+  applied) in 321 sequences, **26 findings, 0 new**, known.txt as it was (the
+  committed pool changed in 15 files by a pane, and no seed's edits changed).
+  **The audit's three mutations are found in it**, each stopping
+  `SHEETS_FUZZ_UNTIL=new` (the audit's repros exit 0 now, as asked), and with no
+  stop the default run makes, on top of the clean tree's 26: with the f4.1
+  mutation 28 findings, 2 new (`do reach 100146` and `replace reach 100184`,
+  both of a replace that rewrote a text it must not), with the f4.2 mutation 27,
+  1 new (`do reach 100175`), with the f4.3 mutation 37, 11 new (`cols-insert reach
+  100002` and `100043`, `cols-delete reach 100010` and `100072`, `rows-insert reach
+  100009`, `100039`, `100187`, `100227` and `100230`, `rows-delete reach 100268`,
+  `do reach 100126`). The f4.2 mutation makes one finding because a plain clear
+  meets a note in only a few of the default run's sequences (the pool's notes
+  are in the header cells `B1` to `F1`); the look of a cell it empties is what
+  it is found by. Held by tests: `TestPoolPanesMove` runs both editors over each
+  pane of the pool (72 edits applied) and fails on the `splitAfter` mutation
+  with `go test` alone.
+- **The long run** (`~/sheets-evals/wave2/fuzz/fix5/long-20m-a.log`, `SHEETS_FUZZ=long
+  SHEETS_FUZZ_TIME=20m go test ./internal/fuzz -count=1 -v -timeout 30m`, seed
+  2721491, a fresh one) passes, the whole package with it: **55,712 edits
+  (51,822 applied) in 9,181 sequences, 1,200 s, 23 pools of 40 with objects and
+  panes, 874 findings, 156.9 per 10,000, 0 new**. By the bug known.txt names that
+  each shows: escape 416, sort-editors 227, stream-note-prefix 106,
+  sheet-copy-note 96, map-order 19, spill-into-merge 3, script-legacy-dynamic 2,
+  spill-overwrites 2, table-header-control 2 and full-keeps-array-metadata 1. All
+  23 bug lines' repros replay and show their bug, 0 fixed. **No finding is a
+  frozen pane's, a clear's look, or a replace's:** the pools of the run hold
+  panes (`--objects` adds them), and the sequences moved them by rows and columns
+  inserted and deleted. LibreOffice's second opinion: 116 workbooks sent, 116
+  recalculated, 4,342 plain formulas with a result sheets stored, 4,333 agree and
+  9 differ, all calls of `IF` with `N` (the markers: `IF N` 4, `IF N ISNUMBER` 2,
+  `IF N OR` 2, `IF N SUM` 1). Reported, never a failure. The rate is a little
+  higher than fix round 4's (150.1), by the same bugs (escape 416 where that run
+  made 339), not by a new one.
+- **The mutants** are found again, all seven, in 61 s in all, exit 0
+  (`~/sheets-evals/wave2/fuzz-mutants/`, `summary.txt` and one log each; the last
+  round's are in `fix4-final-logs/` there): `empty-text-lost` 1 s (`long copy
+  reach 700005`), `move-leaves-formula` 1 s (`long move kinds 700006`),
+  `one-cell-array-moved-plain` 1 s (`long copy kinds 700005`),
+  `part-of-legacy-array` 13 s (`long move kinds 700119`), `rewrite-loses-kind` 2
+  s (`long move kinds 700012`), `rows-insert-arrays` 1 s (`long cols-insert kinds
+  700000`), `wp12-sheet-rows` 14 s (`long set kinds 700123`): the same findings as
+  fix round 4's.
+- **check full** (`scripts/check.sh full`, 1,536 tests: 1,500 before, the
+  cases of the round): **81 s** at a load average of 2.5 and **83 s** at 3.0, under
+  the 110 s bar (Timings, below); the two runs between them, started straight after
+  the first, at a load of 5 and 6 that my own run was part of, took 102 and 118 s.
+  The pane reading costs 4 microseconds a file (`ViewOf`, all the sheets of a
+  pool file), and `TestPoolPanesMove` 3 s plain (72 edits applied) and 4 s under `-race`
+  (three panes, 12 edits). The fuzz package alone: `go test` 58 to 63 s, `go test
+  -race` 66 s.
+
 ## Timings
 
 **The bar is 110 s since fix round 4** (Max's, at a load average of 2 to 4; it
@@ -1392,6 +1547,28 @@ with the output of each, and `check-full-busy-*.log`):
   alone (2,000 edits in 321 sequences), the same as before the notes were in the
   pool.
 
+**After fix round 5** (the reach of a clear, `replace --exact` and frozen panes;
+`~/sheets-evals/wave2/fuzz/fix5/check-full-*.log`). The bar is 110 s at a load
+average of 2 to 4:
+
+| run | load average before (1, 5, 15 min) | check full | tests |
+|---|---|---|---|
+| 1 | 2.51, 3.19, 3.54 | **81.5 s** (user 300 s, system 38 s) | 1,536 |
+| 4, after waiting for the load to settle | 3.04, 5.01, 4.53 | **82.8 s** (user 292 s, system 40 s) | 1,536 |
+| 2, straight after run 1 | 5.07, 4.31, 3.97 | 102.0 s | 1,536 |
+| 3, straight after run 2 | 6.06, 5.29, 4.42 | 117.6 s | 1,536 |
+
+- **81 to 83 s at a load of 2.5 to 3, 27 s under the bar.** Fix round 4 measured
+  76, 80 and 82 s at 3.4 to 3.6: the round adds 36 tests (1,536 against 1,500)
+  and about 7 CPU-seconds in all (338 against 331), the fuzz run's own work being
+  the same 2,000 edits (`ViewOf` costs 4 microseconds a file; the plain run is 58
+  to 63 s alone, as before). Runs 2 and 3 started straight after a run of mine, so the load they
+  started at is mostly my own, and the wall time follows it as in fix round 4's
+  busy runs (100 to 122 s at 5 to 9): the bar holds at the load it was set at, and
+  not above it.
+- **Under `-race` the fuzz package runs 66 s**, its default mode at its 200-edit
+  minimum, and `TestPoolPanesMove` takes three panes of the pool (4 s).
+
 ## How the fuzzer was checked
 
 ### The mutants
@@ -1467,7 +1644,10 @@ change: `empty-text-lost` is found first by the reach invariant now
 (`long copy reach 700005`: a formula that reads nothing the edit touched lost
 its result `""`), where it was found by the editors invariant (`long write
 editors 700017`); the logs are in `~/sheets-evals/wave2/fuzz-mutants/`, the
-last round's in `fix2-final-logs/` there. The logs are in `~/sheets-evals/wave2/fuzz-mutants/`
+last round's in `fix2-final-logs/` there. After fix round 5 (the reach of a clear,
+`replace --exact` and panes in the pool), 61 s, the same seven findings as in fix
+round 4, found by the same invariants (fix round 4's logs are in `fix4-final-logs/`).
+The logs are in `~/sheets-evals/wave2/fuzz-mutants/`
 (fix round 1's in `fix1-logs/` there, fix round 2's first run in
 `fix2-logs/`). With the seed the audit used, 40016, `rewrite-loses-kind` is found as
 `long move kinds 4001600026` after 3 s, which replays with no finding on the

@@ -49,9 +49,11 @@ import (
 // formula whose value changes with nothing it reads changed.
 //
 // What a sheet holds besides cells (merges, tables, notes, links, charts, the
-// filter, hidden rows and columns, validations, conditional formats, the look
-// of a cell) is judged the same way, by what the edit's shifts do to each
-// (objects.go, reach_objects.go): the reach says where an edit may change one.
+// filter, hidden rows and columns, frozen panes, validations, conditional
+// formats, the look of a cell) is judged the same way, by what the edit's
+// shifts do to each (objects.go, reach_objects.go): the reach says where an
+// edit may change one, and an edit that reaches contents only (a clear
+// without --all, copy --values: touchContents) changes none.
 type reach struct {
 	before *grid.Workbook
 	sheets map[string]*grid.Sheet // the sheets before, by lower-case name

@@ -50,9 +50,14 @@ import (
 // fuzzer-long's audit, f4.3).
 //
 // An object that an edit's reach lies on may be changed by it (a set into a
-// merge, a clear over a validation, a copy onto a note), but not a table, a
-// filter, a chart, a hidden row or column, nor the sheet's visibility: no edit
-// the fuzzer makes changes those but by shifting them. A script's own
+// merge, a clear --all over a validation, a copy onto a note), but not a
+// table, a filter, a chart, a hidden row or column, nor the sheet's
+// visibility: no edit the fuzzer makes changes those but by shifting them.
+// The reach of a clear without --all, and of the target of copy --values, is
+// the cells' contents alone (reach.touchContents): the notes, links, merges,
+// validations, conditional formats and the look of its cells stay, and are
+// judged as outside the reach, as sheets' own help says (fuzzer-long's audit,
+// f4.2: a clear that acted as --all, dropping them, went by). A script's own
 // commands that are not modelled give no judgement (model.why), here as for
 // cells.
 type object struct {
