@@ -551,8 +551,8 @@ func (r *report) linesTouching() map[xlsx.At][]lineKey {
 	for _, e := range r.edits {
 		old := e.sheet
 		for was, now := range r.renamed {
-			if strings.EqualFold(now, e.sheet) {
-				old = r.A.wb.Sheet(was).Name
+			if sa := r.A.wb.Sheet(was); sa != nil && strings.EqualFold(now, e.sheet) {
+				old = sa.Name
 				break
 			}
 		}
@@ -1767,12 +1767,12 @@ func (r *report) prepare(p diff.SheetPair) *job {
 	return j
 }
 
-// pairCleared finds the last rows of a sheet removed alone (nothing kept,
-// added or typed in after them, a sort or a column added or removed beside
-// them none): taken as removed, they are given (as numbered before). Where
-// nothing shows they were removed (notTyped names the sheets: typedRemoved),
-// they are paired with the rows they were cleared in, numbered as they would be
-// kept, and given none.
+// pairCleared finds the last rows of a sheet removed with none kept, added or
+// typed in after them (and no sort, block or column added or removed beside
+// them), which hold something: they are given, numbered as before, to be told
+// removed or cleared where they were (typedRemoved). Where nothing shows they
+// were removed (notTyped names the sheets), they are paired with the rows they
+// were cleared in, numbered as they would be with them kept, and none is given.
 func (r *report) pairCleared(p diff.SheetPair, j *job, typedFrom map[int]bool) ([]diff.Pair, []int) {
 	rows := p.Rows
 	if len(p.Blocks) > 0 || len(p.Moved) > 0 || len(j.colsAdded)+len(j.colsRemoved) > 0 || r.out.ValuesOnly {
@@ -1785,11 +1785,10 @@ func (r *report) pairCleared(p diff.SheetPair, j *job, typedFrom map[int]bool) (
 	if tail == len(rows) {
 		return rows, nil
 	}
-	kept := tail - 1 // the last row kept
-	for kept >= 0 && (rows[kept].Old == 0 || rows[kept].New == 0) {
-		kept--
-	}
-	if kept < 0 {
+	// A row kept right before them numbers them as they would be (rows added
+	// or typed in between would number them twice).
+	kept := tail - 1
+	if kept < 0 || rows[kept].Old == 0 || rows[kept].New == 0 {
 		return rows, nil
 	}
 	var olds []int
@@ -1814,15 +1813,15 @@ func (r *report) pairCleared(p diff.SheetPair, j *job, typedFrom map[int]bool) (
 }
 
 // typedRemoved tells whether something shows that the rows prepare took as
-// removed, with cells typed in where they were (job.typed) or the last rows
-// with nothing in their place (job.cleared), were removed (the first result) or
-// were cleared where they are (the second), which their values alike cannot tell: a
-// formula, a defined name or an Excel table of the old version that reads the
-// sheet from the first of them down reads now as Excel rewrites it for their
-// removal, or as it would with the rows kept. With nothing to show it (a CSV
-// file, rows nothing reads) neither is: the rows with cells typed in were not
-// removed (their cells changed where they are, and the values cleared are among
-// the changes), and the last rows with none were.
+// removed were removed (the first result) or were cleared where they are (the
+// second): rows with cells typed in where they were (job.typed), or the last
+// rows with nothing in their place (job.cleared). Their values alike cannot
+// tell: a formula, a defined name or an Excel table of the old version that
+// reads the sheet from the first of them down reads now as Excel rewrites it
+// for their removal, or as it would with the rows kept. With nothing to show
+// it (a CSV file, rows nothing reads) neither is, and the rows with cells typed
+// in were not removed (their cells changed where they are, and the values
+// cleared are among the changes), while the last rows with none were.
 func (r *report) typedRemoved(j *job, jobs []*job) (bool, bool) {
 	typedOld := append(append([]int{}, j.typedOld...), j.cleared...)
 	if len(typedOld) == 0 || r.out.ValuesOnly {
@@ -3604,19 +3603,15 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	causeText := func(c candidate, k int) string {
 		got := inputsOf(c)
 		var labels []string
+		structure := structureOf(c)
 		if k >= r.cells {
-			labels = append(labels, r.causes[k])
 			// The nearest is a structure change: others that reach the value
 			// moved it too (rows removed and rows added, each as it can).
-			for _, n := range structureOf(c) {
-				if n != k {
-					labels = append(labels, r.causes[n])
-				}
-			}
-		} else {
-			for _, n := range structureOf(c) {
-				labels = append(labels, r.causes[n])
-			}
+			structure = append(structure, k)
+			sort.Ints(structure)
+		}
+		for _, n := range structure {
+			labels = append(labels, r.causes[n])
 		}
 		// Each cell that read lines removed is a source of its own, with the
 		// label of the lines: said once.

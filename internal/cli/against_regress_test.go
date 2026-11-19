@@ -255,8 +255,21 @@ func TestAgainstRegressStructureAndInput(t *testing.T) {
 			t.Errorf("a row removed, B2 set to %s: exit %d, unexplained %+v", b2, code, r.Unexplained)
 		}
 	}
+	// The row that held the MAX deleted and an input below it set: the MAX fell
+	// for the row, and the input is among what reaches it; with the input raised
+	// above the MAX, the row made no difference to it.
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", "Data!5"}, []string{"set", "Data!B2", "6"})
+	r, _ := against(t, after, before)
+	if m, want := causes(r)["Summary!B6"], "rows removed: Data!5 in "+before+", input Data!B2"; m != want {
+		t.Errorf("the MAX's row removed, B2 set to 6: cause %q, want %q", m, want)
+	}
+	after = edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", "Data!5"}, []string{"set", "Data!B2", "20"})
+	r, _ = against(t, after, before)
+	if m := causes(r)["Summary!B6"]; m != "input Data!B2" {
+		t.Errorf("the MAX's row removed, B2 set to 20: cause %q, want input Data!B2", m)
+	}
 	// A row inserted and typed in, an input lowered by more than the row added.
-	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "insert", "Data!4"},
+	after = edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "insert", "Data!4"},
 		[]string{"set", "Data!A4", "Zed", "Data!B4", "3"}, []string{"set", "Data!B2", "0"})
 	r, code := against(t, after, before)
 	m := causes(r)
