@@ -231,7 +231,8 @@ They judge files, never a command's output text.
    (merges, tables, notes, links, charts, the filter, hidden rows and columns,
    a sheet's visibility) and from the file, with sheets' own readers
    (validations, conditional formats, the look of each cell: one open of the
-   file per edit, 1.3 ms). Each object outside the reach stands as it did,
+   file per edit, 1.3 ms, and not under `-race`, where it would cost 40 ms: see
+   Timings). Each object outside the reach stands as it did,
    followed through the edit's shifts the way a cell is:
    - a span (a merge, a table, the filter, the cells of a validation or a
      conditional format) goes with the lines inserted or deleted before it,
@@ -246,7 +247,7 @@ They judge files, never a command's output text.
      rows are inserted or a sheet is renamed;
    - a validation's or a conditional format's cells are judged, not its
      ranges (sheets writes `A2:B12` as `A2:A12 B2:B12` after a move far
-     away: 30 false findings in the first run on pools with objects);
+     away: 3 false findings in the first 3 minutes on pools with objects);
    - an object the edit's reach lies on may change (a set into a merge, a
      clear over a note, a validation cut by a move: what is left of it is its
      own); a table, a chart, hidden lines and a sheet's visibility may not
@@ -991,6 +992,87 @@ named their bugs (or a new face of one), each with a repro:
   1910 against 1911 once, and twice a `SUM` of another sheet's column, 0
   against 2 and 5. They are for the Excel oracle (WP-11) to settle.
 
+### Fix round 3 (the audit's f2.1 and f2.2)
+
+The audit of fix round 2 found two holes in the reach invariant, and no live
+bug in sheets that went through them. Both are closed.
+
+- **f2.2, a result dropped (medium).** A formula outside the reach whose result
+  was pending after the edit was taken as one that may change, whatever it
+  read. So a save that dropped the cached results of every formula in the
+  workbook (a `cannot vouch` rule firing too widely, a recalculation that
+  empties results) passed, and pandas, previews and openpyxl readers lost the
+  values. Only a result unknown before may be computed now; a result known
+  before and unknown after, with nothing it reads changed, is a finding
+  (`reach.go`, `check`; `TestReach` holds both sides, and the audit's repro
+  exits 0). Nothing legitimate needed the excuse: the default run makes no new
+  finding, and neither did a 20-minute long run on pools with objects. The
+  mutant `empty-text-lost` is the case: it was found as `write editors 700017`
+  (the editors invariant saw one editor keep an empty text the other dropped),
+  and is found first now as `long copy reach 700005`: `Summary!F2: outside the
+  edit's reach, it held =IF(N("p")=0,IF(Data!B2>3,"hi","")) (text ""), and holds
+  =IF(N("p")=0,IF(Data!B2>3,"hi","")) (nothing (pending)) now, and nothing it
+  reads may have changed`.
+- **f2.1, objects (medium).** The invariant judged cells, and nothing a sheet
+  holds besides them (see **Objects** in The invariants, above): tables, merges,
+  notes, links, charts, the filter, hidden rows and columns, a sheet's
+  visibility, validations, conditional formats, the look of a cell. All of
+  them are judged now, outside the reach and followed through the edit's
+  shifts, and compared between the editors' two files. The audit's repro
+  (`openpyxl-00`'s table grown by 3 rows, a merge, a note, each after a
+  `set Data!ZZ900 1`) is found, in `TestReachObjectsPool`.
+- **Pools with objects.** The committed pool and long mode's pools held a
+  table, a chart, a validation and a conditional format in many files, and no
+  merge, note, link, hidden row or column, nor a styled cell: a judgement of
+  objects the pool does not hold would never have run. `fuzzgen.py --objects`
+  adds them (see Long mode), for runs from seed 2,000,000; the committed pool
+  is unchanged, and so is every pool a seed below it makes (40 of 40 byte for
+  byte).
+- **What the first runs found.** Four bugs of sheets, which the audit's
+  inventory of the committed pool could not have found: two named in known.txt
+  (`stream-note-prefix`: the streaming editor writes the drawing of a note
+  with a prefix the file does not declare after rows or columns are inserted or
+  deleted, so Excel calls the file corrupt; `sheet-copy-note`: the next edit
+  after a sheet is copied loses the note of the sheet it was copied from), a
+  third (`spill-into-merge`: a dynamic array whose results reach a merged range
+  replaces the merge's text with the result, where Excel gives `#SPILL!`), and
+  two that are not judged, so that a run goes on past them: the full editor
+  writes every note again with the author `Author`, and the streaming editor
+  leaves a chart where it was when rows are inserted or deleted above it,
+  where the full editor moves it with its cells (Objects, above). The model
+  learned from the first runs what Excel does and sheets may: a validation's
+  `sqref` is written as other ranges (3 false findings in 3 minutes), a hyperlink's place
+  is static text, a merge cut to one cell goes, a table's column names follow
+  its header cells (a replace renames one).
+- **Slips found on purpose.** A scratch copy in which the streaming editor does
+  not shift merges is found by the editors invariant (`rows-insert editors
+  200003100008`); one in which no editor rewrites the formulas of a validation
+  or a conditional format when rows move is found by the reach invariant, in
+  the default run (7 findings: `rows-insert reach 100037` and others), and by
+  nothing before.
+- **The long runs.** The first 20 minutes on pools with objects
+  (`~/sheets-evals/wave2/fuzz/fix3/long-20m-a.log`, seed 2394518: 58,446 edits,
+  907 findings, 8 new: the merge bug, and a batch's copy line that map-order's
+  face did not take) failed, and known.txt names what they found. The second
+  (`long-20m-b.log`, seed 2807502, a fresh one) passes: **57,812 edits (53,946
+  applied) in 9,531 sequences, 1,200 s, 24 pools, 951 findings, 164.5 per
+  10,000, 0 new**. By the bug known.txt names that each shows: escape 432,
+  sort-editors 221, stream-note-prefix 189, sheet-copy-note 83, map-order 17,
+  spill-into-merge 5, and one each of insert-turns-dynamic, intersection-kept,
+  replace-loses-kind and spill-overwrites. The rate is higher than the last run's
+  122.6 because two of the new bugs end a sequence at the first edit the full
+  editor takes on a workbook with a note (272 of the 951: the cost of judging
+  notes). All 23 bug lines' repros show their bug. LibreOffice's second opinion:
+  117 workbooks sent, 117 recalculated, 4,285 plain formulas with a result
+  sheets stored, 4,278 agree and 7 differ, all calls of `IF` with `N` (the
+  markers): five read a range where one value goes (`Data!C4:C5*2`:
+  LibreOffice's `#VALUE!`, or another row's), two an `IF` on a cell
+  (`B2>1000`, `B12>3`) whose result is the empty text for LibreOffice and a
+  value for sheets. Reported, never a failure.
+- **The mutants** are found again, all seven, in 59 s in all, exit 0 (the logs
+  are in `~/sheets-evals/wave2/fuzz-mutants/`, the last round's in
+  `fix2-final-logs/` there).
+
 ## Timings
 
 On Max's MacBook (M4), 2026-11-18, `scripts/check.sh full`, wall time, from a
@@ -1099,6 +1181,32 @@ load average of 2.8 to 5.4: **118.5 s** (1,406 tests), the fuzz package
 47.8 s in the plain step and 63.7 s in the race step, 16.5 s under the bar
 (the log: `~/sheets-evals/wave2/fuzz/fix2/check-full-time-final.log`).
 
+**After fix round 3** (the reach invariant's objects, the validations,
+conditional formats and looks read from the file, the editors invariant
+comparing them), `scripts/check.sh full` on the same MacBook, 2026-11-19,
+beside its base (15bdab8, fix round 2's last commit), each alone, at a load
+average of 2 to 4 (the logs: `~/sheets-evals/wave2/fuzz/fix3/check-full-time*.log`):
+
+| run | check full | fuzz, plain | fuzz, race |
+|---|---|---|---|
+| base (15bdab8) | 123.8 s (1,408 tests) | 48.1 s | 67.8 s |
+| branch, the file's objects read under `-race` too | 148.4 s (1,424 tests) | 55.3 s | 85.5 s |
+| branch, not read under `-race` | 127.2 s (1,424 tests) | 55.1 s | 64.4 s |
+
+- **The first try was 13 s over the bar.** Reading a file's validations,
+  conditional formats and looks (sheets' own readers, one open of the file)
+  costs 2 ms an edit in the plain run (2,000 edits: 36 s to 42 s) and about 40
+  ms under `-race`, whose run makes at least 200 edits whatever the time (206
+  edits in 52.7 s, against 43.7 s). The cap cannot give, so `TestMain` turns
+  the read off under `-race` (`fileChecks`, as it turns the repeats down to 3):
+  the grid's objects (tables, merges, notes, links, charts, hidden rows and
+  columns) are still judged there, and the file's are judged in the plain run
+  and in long mode. The race step is back to its base, and check full takes 3.4
+  s more than its base, **127.2 s**, 7.8 s under the bar.
+- **The plain run costs 6 s more** (TestFuzz 36.1 s to 42.3 s for the same 2,000
+  edits): the file read after each edit and the second read, of the full
+  editor's file, for the editors invariant.
+
 ## How the fuzzer was checked
 
 ### The mutants
@@ -1168,7 +1276,13 @@ finding was the code's. Run once more after fix round 2 (the reach
 invariant's names and replace, insert-turns-dynamic's batch face), it took
 66 s and found the same seven findings again, each the base makes clean.
 And on the last commit, with every face known.txt holds, it took 57 s and
-found the same seven again. The logs are in `~/sheets-evals/wave2/fuzz-mutants/`
+found the same seven again. After fix round 3 (objects, and a result known
+before and unknown after no longer excused), 59 s, the same seven, with one
+change: `empty-text-lost` is found first by the reach invariant now
+(`long copy reach 700005`: a formula that reads nothing the edit touched lost
+its result `""`), where it was found by the editors invariant (`long write
+editors 700017`); the logs are in `~/sheets-evals/wave2/fuzz-mutants/`, the
+last round's in `fix2-final-logs/` there. The logs are in `~/sheets-evals/wave2/fuzz-mutants/`
 (fix round 1's in `fix1-logs/` there, fix round 2's first run in
 `fix2-logs/`). With the seed the audit used, 40016, `rewrite-loses-kind` is found as
 `long move kinds 4001600026` after 3 s, which replays with no finding on the
@@ -1184,7 +1298,7 @@ took the known `long sort editors 4001600015` for it. Each finding of seed
 | `rewrite-loses-kind` | 2 s | `long move kinds 700012` | `sheets move book.xlsx 'Data!C2:C3' 'Plan!H6'`: the formula reading them, rewritten `=Plan!H6:H7*2`, is stored as a dynamic array |
 | `one-cell-array-moved-plain` | 1 s | `long copy kinds 700005` | `sheets copy book.xlsx 'Summary!D2:D3' 'Summary!D2'`: the one-cell legacy array in D2 is stored plain |
 | `move-leaves-formula` | 1 s | `long move kinds 700006` | `sheets move book.xlsx 'Data!I2:J3' 'Old!A5'`: J3 still holds its legacy array |
-| `empty-text-lost` | 2 s | `long write editors 700017` | `sheets cols delete book.xlsx 'Data!Q:Q'`, then a write: `Data!L2` holds an empty text in the streaming editor's file, no result in the full editor's |
+| `empty-text-lost` | 1 s | `long copy reach 700005` (fix round 3; before it, `long write editors 700017`: `sheets cols delete book.xlsx 'Data!Q:Q'`, then a write: `Data!L2` holds an empty text in the streaming editor's file, no result in the full editor's) | `sheets copy book.xlsx 'Summary!D2:D3' 'Summary!D2'`, then `sheets copy book.xlsx 'Summary!F1:G2' 'Summary!I4'`: `Summary!F2`, outside the reach, held `=IF(N("p")=0,IF(Data!B2>3,"hi","")) (text "")` and holds no result now, with nothing it reads changed |
 | `part-of-legacy-array` | 14 s | `long move kinds 700119` | `sheets move book.xlsx 'Data!T2' 'Data!G7'`, the first cell of the legacy array T2:T3: G7 is stored plain |
 
 The default run (seed 1, 2,000 edits) finds each of the seven as well
