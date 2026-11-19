@@ -220,6 +220,26 @@ They judge files, never a command's output text.
      cells change with its formula, and with an edit that reaches into it or
      cuts through it.
 
+   **What a move leaves** (fix round 4, the audit's f3.2). The cells a move
+   vacates (its source outside its target, and outside what a later line of a
+   batch or a script writes: the model cuts those out, in order, and shifts
+   what is left with rows and columns inserted or deleted after) are in the
+   reach, so they may hold anything the edit puts there; and the invariant
+   judges that they hold **nothing**: no value and no formula, but for the cells
+   of a table's header (named again when cleared) and those an array fills. The
+   kinds invariant saw a formula left behind; a move that leaves its values acts
+   as a copy, and passed every invariant (a scratch mutation of `ranges.go` that
+   keeps the source's non-formula cells, so that
+   `sheets move book.xlsx 'Data!P5:Q5' 'Data!P9'` leaves `hello` and `42` in
+   both places, made no finding in the default run). With the mutation the
+   default run finds it as `move reach 100005` (the clean tree makes none): after
+   `sheets move book.xlsx 'Data!B5' 'Data!B7'` on `openpyxl-12.xlsx`,
+   `Data!B5: a move left it, and it holds number 5 now (what a move leaves holds nothing)`.
+   `TestReach` holds 11 cases: values or a formula left behind, one of two, a
+   move onto its own source, to another sheet, a batch that writes into what it
+   left or inserts rows after, a script's `moveTo`, and a copy, which leaves its
+   source.
+
    **Objects** (fix round 3, the audit's f2.1). The invariant judged cells
    only: values, formulas, number formats and defined names. A table grown by
    three rows, a merge or a note made out of nothing, a validation or a
@@ -527,6 +547,9 @@ There are 40 small workbooks, about 338 KB in all, in `testdata/pool/`:
   with `&` or an apostrophe (`R&D`, `Bob's Plan`), which the workbook's parts
   and the formulas that quote them must escape;
 - defined names, charts, validations and conditional formats;
+- a **note** on one of the header cells `Data!B1` to `F1` ("check this") in 14
+  files, 5 from openpyxl and 9 from XlsxWriter (`fuzzgen.py --notes`; fix round
+  4, f3.1): the pool held none, and a note lost went unseen in the default mode;
 - an Excel table in 19 of the files: over the data (A1:G, 9 files; sheets
   does not move cells into, out of or within a table, so the cells the
   formulas read cannot be moved there), or in a block of its own (W1:Y5,
@@ -547,7 +570,7 @@ results of every type but an error, and the edits add the rest.
 
 To regenerate the pool:
 
-    uv run --with openpyxl==3.1.5 --with xlsxwriter==3.3.1 python scripts/fuzzgen.py internal/fuzz/testdata
+    uv run --with openpyxl==3.1.5 --with xlsxwriter==3.3.1 python scripts/fuzzgen.py --notes internal/fuzz/testdata
 
 - **The versions are pinned:** a newer release may write other bytes, which
   would change every edit each seed makes and need `known.txt` made again.
@@ -559,6 +582,15 @@ To regenerate the pool:
 - **The script reads each file back** and refuses one whose stored kinds
   don't match their markers. XlsxWriter, for one, stores any formula calling
   SEQUENCE as a dynamic array.
+- **`--notes`** gives the notes `--objects` would (the same ones for a seed:
+  it takes the draw before theirs, which is the merge's, and does not use it)
+  and nothing else, from the random stream `--objects` uses and with no change
+  to the cells: the 26 files without a note are the file the pool had before,
+  byte for byte, and each of the 14 with one differs by its comments part.
+  So the sequences of every seed make the same edits as before, and `known.txt`'s
+  seeds hold, but those that reach a note (six of the default run's: fix round
+  4, below). The must-refuse cases made from the files with a note changed
+  with them (13 of the 14).
 - **A different pool** (or `--seed`) makes the edits of each seed other ones,
   so `known.txt` must then be made again.
 
@@ -672,13 +704,22 @@ under `-race`, whose 3 repeats may miss what 20 see.
 **Bug lines** name a known bug by its findings' face, for long mode, whose
 fresh seeds make findings no list of seeds can hold:
 
-    bug <name>: <class>[,<class>...] <invariant>; repro [long] <seed>; detail <pattern>[; edit <pattern>]
+    bug <name>: <class>[,<class>...] <invariant>; repro [long] <seed>; detail <pattern>[; edit <pattern>][; copied]
 
 A finding shows the bug when its edit class is one of those, its invariant
 is that one, the first line of its detail matches the detail pattern (a Go
 regular expression), and with an edit pattern its last edit as a shell
 command matches that too (`(?m)^sort |getSort\(\)`: a batch or a script
-holding a sort). A bug may have several faces, one line each (the escape: a
+holding a sort). A face that needs the sequence says so with `copied` (fix
+round 4, f3.1): the detail pattern then names the sheet the finding is about
+(`(?P<sheet>…)`), and the finding shows the bug only when an edit of its
+sequence that both editors took copied that sheet, or made it as a copy
+(`sheet copy`, alone or as a line of a batch, the last edit's included; a
+rename after follows the sheet). `sheet-copy-note` is the one: a note lost
+by a `clear`, a rows insert or any other edit in a workbook where no sheet was
+copied is a finding, as is one lost on a sheet no copy touched (the face was
+every note lost before, which read the audit's mutation that drops the notes a
+rows edit moves as known). A bug may have several faces, one line each (the escape: a
 `text` finding, and an `editors` one where a formula reads the text). Where
 a face needs what the edit does not show, the invariant says it: a typed
 text, or a formula lost, in a dynamic array's results (before the edit or
@@ -732,8 +773,8 @@ fuzzer for a time, not a count, over pools it makes fresh.
   or to a cell (40%), a hidden column (40%) and row (30%), a styled header
   (50%). A fresh run's default seed is above it. The flag is not given for a
   smaller seed, and without it the script makes the files it always made, byte
-  for byte (the committed pool's, and 40 of 40 for seed 5, compared with the
-  script before), so every repro in known.txt, all of runs below it, replays
+  for byte (40 of 40 for seed 5, compared with the script before; the committed
+  pool's 26 files without a note, since fix round 4), so every repro in known.txt, all of runs below it, replays
   on the pool it was found on: the first version changed the pools of every
   seed, which would have left the long repros found before it showing nothing.
   The extras come from a random stream of their own, so the cells and the
@@ -1026,8 +1067,8 @@ bug in sheets that went through them. Both are closed.
   merge, note, link, hidden row or column, nor a styled cell: a judgement of
   objects the pool does not hold would never have run. `fuzzgen.py --objects`
   adds them (see Long mode), for runs from seed 2,000,000; the committed pool
-  is unchanged, and so is every pool a seed below it makes (40 of 40 byte for
-  byte).
+  was unchanged then (it holds notes since fix round 4, `--notes`), and so is
+  every pool a seed below it makes (40 of 40 byte for byte).
 - **What the first runs found.** Four bugs of sheets, which the audit's
   inventory of the committed pool could not have found: two named in known.txt
   (`stream-note-prefix`: the streaming editor writes the drawing of a note
@@ -1073,7 +1114,116 @@ bug in sheets that went through them. Both are closed.
   are in `~/sheets-evals/wave2/fuzz-mutants/`, the last round's in
   `fix2-final-logs/` there).
 
+### Fix round 4 (the audit's f3.1, f3.2 and f3.3)
+
+The audit of fix round 3 found three mediums, each a slip the fuzzer claimed to
+catch and did not. Each is fixed, with a test, its repro and a number.
+
+- **f3.1, a lost note read as known (medium).** The two `sheet-copy-note` lines
+  of known.txt covered all 16 edit classes and took any note lost outside the
+  reach, or held by one editor and not the other; nothing in them needed a sheet
+  copy, and `TestKnownFaces` asserted that a plain `clear` or `rows-insert`
+  losing a note was this bug. So in long mode every note-losing slip read as
+  known: a scratch mutation that drops every note a rows or columns edit moves
+  (`internal/xlsx/notes.go`, `moveNotes`: the note is deleted and never put
+  back) made 13 `sheet-copy-note` findings in 3 minutes on seed 2884411, 5 on
+  the clean tree, 0 new, and `SHEETS_FUZZ_UNTIL=new` never stopped. The
+  committed pool held no note either, so the default mode judged none.
+  - **The face needs the copy** (`copied` on a bug line, see Findings and
+    known.txt): the finding is the bug only when an edit of its sequence that
+    both editors took copied the sheet it names, or made it as a copy, with the
+    renames after it followed. A note lost by a `clear`, a rows insert or any
+    edit where no sheet was copied, on another sheet than the one copied, after a
+    copy both editors refused (`Finding.Taken` says which edits they took; a
+    shrunk finding's is the replay's), or by an edit before the copy, is a new
+    finding. A copy in the batch that loses the note counts (a batch of `sheet
+    copy Data Backup` and `clear Data!L5 --all` loses `Data!C1`'s note in the one
+    session, which the full editor does). It need not be the next edit: after
+    `sheet copy Data Backup`, a `set` by the streaming editor keeps the note and
+    the full editor's loses it, so the bug shows at the first edit that saves
+    the comments part.
+  - **The committed pool holds notes** (`fuzzgen.py --notes`, in 14 of the 40
+    files; see The pool). The default run's findings of them, now listed by seed:
+    five of the sheet copy bug (`clear reach 100103`, `do reach 100085` and
+    `100310`, `move reach 100217`, `script reach 100011`), each after `sheets
+    sheet copy` of a sheet of `xlsxwriter-23` or `-29`, and one of the drawing
+    prefix (`rows-insert xml 100099`, on `openpyxl-06`). The run is 2,000 edits
+    in 321 sequences, 26 findings, 0 new.
+  - **The scratch mutations are found now, in the default run.** The audit's
+    (`moveNotes` drops the notes it moves) as `script reach 100049` after 8 s:
+    `Data: outside the edit's reach, the note "check this" on B1 is not there as
+    it was`; one in which `ClearRange` drops every note of the sheet when it
+    clears notes (`--all`, `--notes`) as `clear reach 100060` after 9 s. Both stop
+    `SHEETS_FUZZ_UNTIL=new` in a sequence with no sheet copy. The audit's repro
+    (long mode, seed 2884411, `SHEETS_FUZZ_UNTIL=new`) stops after 11 s at
+    `long rows-insert editors 288441100088`, the full editor's file holding the
+    note on `Data!B4` that the streaming editor's does not, where it never
+    stopped.
+  - **Held by tests.** `TestKnownSheetCopyNote` holds 25 sequences, 13 known (the
+    sheet copied, its copy, in other letters, a name with quotes, both faces, a
+    copy long before, a copy in an earlier batch or in the batch itself, a copy of
+    a copy, three renames after) and 12 not (no copy, in four edits, a sheet added,
+    a copy refused, a batch refused, another sheet, in both faces, a sheet renamed
+    away, another sheet copied, a batch that copies another sheet). The
+    four cases of `TestKnownFaces` that took a note lost with no copy for this bug
+    read as none now. `TestPoolNotes` holds the pool's notes (both producers).
+  - **What the face does not see.** A note lost in a sequence that did copy its
+    sheet reads as known, whatever else lost it: a run needs only the sequences
+    without one. And a finding is judged by its first violation: the xml finding
+    of `stream-note-prefix` on an openpyxl workbook with a note, ahead of a
+    reach one in the same edit, shows as the xml one (the others are the "also"
+    lines of its detail).
+- **f3.2, a move that left its values behind (medium).** See What a move leaves,
+  under The invariants: the cells a move vacated, outside its target, hold
+  nothing. The audit's scratch mutation (`ranges.go`: the wipe of the vacated
+  source keeps every non-formula cell) is found in the default run as `move reach
+  100005` after 1 s (it passed with `SHEETS_FUZZ_UNTIL=new` before, 43 s,
+  `TestFuzz` PASS). No false finding: the default seeds 1 (2,000 edits), 2 and 3
+  (2,500 edits each), and the long run below, make no `a move left it` finding.
+- **f3.3, check full at the bar by a thin margin (medium).** Max's bar is 110 s
+  now, at a load average of 2 to 4 (it was fuzzer-core's 135 s; the audit's three
+  runs took 137.6, 125.7 and 129.4 s, one over). `scripts/check.sh full` runs its
+  three `go test` stages at the same time, the plain, the streaming editor's and
+  the `-race` one, and prints each one's output in the order it started them; its
+  wall time is the longest stage's, not their sum (57 s, 4 s and 66 s when run
+  one after the other, alone, at a load of 2.6 to 2.9, the sum measured the same
+  day as 127 s). The tests are the same
+  ones, in the same stages (1,500 tests); the
+  fuzz package's own runs are as they were (2,000 edits plain, 200 at least
+  under `-race`: fuzzer-core's minimums), so no invariant weakens. Three timed
+  runs at a load average of 3.4 to 3.6 before them (Timings, below): **76, 80
+  and 82 s**. A stage still running when the script ends is stopped, and a
+  failing test is reported by the stage it is in, with exit status 1 as before.
+  Cost: the CPU time is the same, about 330 CPU-seconds in all, so a machine with
+  fewer free cores gains less; on a Mac at load 5 to 9 (other sessions running
+  tests) it took 114, 100 and 122 s.
+- **The long run** (`~/sheets-evals/wave2/fuzz/fix4/long-20m-a.log`, `SHEETS_FUZZ=long
+  SHEETS_FUZZ_TIME=20m go test ./internal/fuzz -count=1 -v -timeout 30m`, seed
+  2506746, a fresh one) passes, the whole package with it: **51,377 edits
+  (47,648 applied) in 8,457 sequences, 1,200 s, 22 pools of 40 with objects, 771
+  findings, 150.1 per 10,000, 0 new**. By the bug known.txt names that each
+  shows: escape 339, sort-editors 194, stream-note-prefix 123, sheet-copy-note 90,
+  map-order 16, script-legacy-dynamic 4, spill-into-merge 2, and one each of
+  insert-turns-dynamic, spill-overwrites and table-header-control. All 23 bug
+  lines' repros replay and show their bug. LibreOffice's second opinion: 116
+  workbooks sent, 116 recalculated, 4,406 plain formulas with a result sheets
+  stored, 4,398 agree and 8 differ, all calls of `IF` with `N` (the markers),
+  `IF N` 4, `IF N AND` 3, `IF N OR` 1. Reported, never a failure.
+- **The mutants** are found again, all seven, in 73 s in all, exit 0
+  (`~/sheets-evals/wave2/fuzz-mutants/`, `summary.txt` and one log each; the last
+  round's are in `fix3-final-logs/` there): `empty-text-lost` 1 s (`long copy
+  reach 700005`), `move-leaves-formula` 1 s (`long move kinds 700006`),
+  `one-cell-array-moved-plain` 1 s (`long copy kinds 700005`),
+  `part-of-legacy-array` 17 s (`long move kinds 700119`), `rewrite-loses-kind` 3
+  s (`long move kinds 700012`), `rows-insert-arrays` 1 s (`long cols-insert kinds
+  700000`), `wp12-sheet-rows` 19 s (`long set kinds 700123`).
+
 ## Timings
+
+**The bar is 110 s since fix round 4** (Max's, at a load average of 2 to 4; it
+was fuzzer-core's 135 s, which the rounds below are measured against). See
+After fix round 4, at the end of this section: `check.sh` runs its stages
+together now.
 
 On Max's MacBook (M4), 2026-11-18, `scripts/check.sh full`, wall time, from a
 clean copy of each commit. The bar is 135 s. Other sessions were running
@@ -1206,6 +1356,41 @@ average of 2 to 4 (the logs: `~/sheets-evals/wave2/fuzz/fix3/check-full-time*.lo
 - **The plain run costs 6 s more** (TestFuzz 36.1 s to 42.3 s for the same 2,000
   edits): the file read after each edit and the second read, of the full
   editor's file, for the editors invariant.
+
+**After fix round 4** (the audit's f3.3: `check.sh` runs its three `go test`
+stages at the same time), `scripts/check.sh full` on the same MacBook,
+2026-11-19, on the code of 1e61faf (the notes in the pool, the face with a copy,
+the vacated cells; the README after it), one run after another, the machine's
+other sessions running tests too (the logs: `~/sheets-evals/wave2/fuzz/fix4/check-full-time-*.log`
+with the output of each, and `check-full-busy-*.log`):
+
+| run | load average before (1, 5, 15 min) | check full | fuzz, plain | fuzz, race |
+|---|---|---|---|---|
+| 1 | 3.36, 6.83, 5.84 | **76 s** (1,500 tests) | 72.0 s | 74.1 s |
+| 2 | 3.51, 6.08, 5.67 | **80 s** | 75.0 s | 77.1 s |
+| 3 | 3.59, 5.83, 5.66 | **82 s** | 77.8 s | 80.6 s |
+| earlier, one after another, the audit's three (d61696d) | 2.4 to 3.7 | 137.6, 125.7, 129.4 s | 55 to 57 s | 62 s |
+| busy, the same code, three runs in a row | 5.05, 7.38, 9.46 | 114 s, 122 s, 100 s | 110.2, 120.4, 94.3 s | 112.2, 119.4, 96.6 s |
+
+- **At a load of 2 to 4 it takes 76 to 82 s, 28 s under the 110 s bar at its
+  worst.** The wall time is the fuzz package's, in both stages: its plain run
+  (`TestFuzz`, 2,000 edits) and its race run (at least 200 edits) are one
+  thread each, and `cmd/sheets` and `internal/xlsx` under `-race` (59 s and 44 s
+  alone) are beside them. Each stage takes longer together than alone (the plain
+  fuzz package 56 s alone, 72 to 78 s beside the others): the Mac has four
+  performance cores and six efficiency ones, and six threads or more share them,
+  which is the price.
+- **Busy, it is still under the old bar:** at a load of 5 to 9 (my own run is part of
+  it; other sessions' test runs are the rest) the three took 114, 122 and 100 s,
+  two of them over the 110 s bar: it holds at a load of 2 to 4, as asked, and
+  not above it. The stages one after another took 125 to 137 s at the
+  lighter load, so the change gains 45 to 55 s at the same load.
+- **The work is the same:** 1,500 tests (1,424 before this round: 38 more in
+  the plain stage and the same 38 in the race stage, the 25 sequences and the test
+  of `TestKnownSheetCopyNote`, `TestPoolNotes` and 11 cases of `TestReach`), and
+  `-race` still runs the fuzz package's default mode at its 200-edit minimum. The plain fuzz run is 44 to 46 s
+  alone (2,000 edits in 321 sequences), the same as before the notes were in the
+  pool.
 
 ## How the fuzzer was checked
 
