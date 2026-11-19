@@ -1,0 +1,71 @@
+# sheets diff is git's diff driver for workbooks: git runs it with seven
+# arguments (path, old file, hash, mode, new file, hash, mode; nine for a
+# rename), so git diff shows what changed in a .xlsx file, not "Binary
+# files differ".
+[!exec:git] skip 'needs git'
+env HOME=$WORK
+env GIT_CONFIG_NOSYSTEM=1
+env GIT_CONFIG_GLOBAL=$WORK/gitconfig
+env GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+fixture against_before.xlsx
+
+# The setup line the guide gives.
+exec git init -q repo
+cd repo
+exec git config diff.sheets.command 'sheets diff'
+cp ../attributes .gitattributes
+cp ../against_before.xlsx book.xlsx
+exec git add .gitattributes book.xlsx
+exec git commit -q -m one
+
+# A change in the working tree: git diff prints sheets' diff.
+exec sheets set book.xlsx Data!B3 10
+exec git diff
+cmp stdout ../changed.out
+
+# Staged, then committed: git diff --cached, and git show and git log -p
+# with --ext-diff (they leave drivers out without it).
+exec git add book.xlsx
+exec git diff --cached
+cmp stdout ../changed.out
+exec git commit -q -m two
+exec git show --ext-diff --format= HEAD
+cmp stdout ../changed.out
+exec git log -p --ext-diff --format=%s
+stdout '^sheets diff a/book.xlsx b/book.xlsx \(new file\)$'
+stdout '^Data: added \(A1:D7\)$'
+
+# Renamed and changed: nine arguments.
+exec git mv book.xlsx sales.xlsx
+exec sheets set sales.xlsx Data!C2 31
+exec git add sales.xlsx
+exec git diff --cached -M
+stdout '^sheets diff a/book.xlsx b/sales.xlsx \(renamed\)$'
+stdout '^  C2  30 → 31$'
+
+# Deleted.
+exec git rm -q -f sales.xlsx
+exec git diff --cached
+stdout '^sheets diff a/book.xlsx b/book.xlsx \(deleted\)$'
+stdout '^Data: removed \(A1:D7\)$'
+
+# Seven arguments that are not git's are refused as before.
+! exec sheets diff a b c d e f g
+stderr 'accepts between 1 and 2 arg\(s\), received 7'
+
+-- gitconfig --
+-- attributes --
+*.xlsx diff=sheets
+-- changed.out --
+sheets diff a/book.xlsx b/book.xlsx
+Data: 4 cells changed
+  B3  7 → 10
+  D3  140 → 200  (result of =B3*C3)
+  B7  28 → 31  (result of =SUM(B2:B6))
+  D7  630 → 690  (result of =SUM(D2:D6))
+Summary: 5 cells changed
+  B2  28 → 31  (result of =SUM(Data!B2:B6))
+  B3  630 → 690  (result of =SUM(Data!D2:D6))
+  B4  157.5 → 172.5  (result of =B3*TaxRate)
+  B5  472.5 → 517.5  (result of =B3-B4)
+  B6  9 → 10  (result of =MAX(Data!B2:B6))
