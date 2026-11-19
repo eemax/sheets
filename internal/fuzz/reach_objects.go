@@ -230,8 +230,22 @@ func (rc *reach) judgeObjects(before, after map[string][]object, exists func(k s
 		for _, g := range groups {
 			if at, ok := sameCover(g.want, g.got, mask); !ok {
 				name := strings.TrimSpace(g.o.kind + " " + g.o.label)
-				return fmt.Sprintf("%s: outside the edit's reach, the %s is not there as it was: the edit's shifts give the %s over %s, and the sheet holds it over %s (they differ at %s)",
-					display(k), name, name, listRanges(g.want), listRanges(g.got), grid.CellName(at[0], at[1]))
+				reads := ""
+				if g.o.refs != "" {
+					if want, _ := rc.sameRefs(g.o.refs, g.o.refs, g.from, k, display); want != "" {
+						reads = " reading " + want
+					}
+				}
+				// A rule of its own, read another way (not in the group).
+				other := ""
+				for _, a := range unmatched {
+					if a.cover && a.kind == g.o.kind && a.fixed == g.o.fixed {
+						other = fmt.Sprintf(", and the sheet holds one reading %s over %s", a.refs, a.rg)
+						break
+					}
+				}
+				return fmt.Sprintf("%s: outside the edit's reach, the %s is not there as it was: the edit's shifts give the %s%s over %s, and the sheet holds it over %s (they differ at %s)%s",
+					display(k), name, name, reads, listRanges(g.want), listRanges(g.got), grid.CellName(at[0], at[1]), other)
 			}
 		}
 		if len(unmatched) > 0 {

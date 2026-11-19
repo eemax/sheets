@@ -302,7 +302,7 @@ func TestReachFile(t *testing.T) {
 			f := fileBook(0)
 			f.objects["data"][0].rg.R2 = 9
 			return f
-		}, wantErr: "the validation list is not there as it was: the edit's shifts give the validation list over B2:B5, and the sheet holds it over B2:B9 (they differ at B6)"},
+		}, wantErr: "the validation list is not there as it was: the edit's shifts give the validation list reading list a,b over B2:B5, and the sheet holds it over B2:B9 (they differ at B6)"},
 		{name: "a validation made", edit: far, after: func() *fileObjects {
 			f := fileBook(0)
 			f.objects["data"] = append(f.objects["data"], object{kind: "validation", rg: grid.Range{R1: 9, C1: 1, R2: 9, C2: 1}, free: true, relative: true, cover: true, refs: "whole"})
@@ -312,12 +312,12 @@ func TestReachFile(t *testing.T) {
 			f := fileBook(0)
 			f.objects["data"] = f.objects["data"][:1]
 			return f
-		}, wantErr: "the conditional format is not there as it was: the edit's shifts give the conditional format over B2:C5, and the sheet holds it over nothing (they differ at B2)"},
+		}, wantErr: "the conditional format is not there as it was: the edit's shifts give the conditional format reading =$B2>10 over B2:C5, and the sheet holds it over nothing (they differ at B2)"},
 		{name: "a conditional format's rule rewritten", edit: far, after: func() *fileObjects {
 			f := fileBook(0)
 			f.objects["data"][1].refs = "=$B3>10"
 			return f
-		}, wantErr: "the conditional format is not there as it was: the edit's shifts give the conditional format over B2:C5, and the sheet holds it over nothing (they differ at B2)"},
+		}, wantErr: "the conditional format is not there as it was: the edit's shifts give the conditional format reading =$B2>10 over B2:C5, and the sheet holds it over nothing (they differ at B2), and the sheet holds one reading =$B3>10 over B2:C5"},
 		{name: "a look changed", edit: far, after: func() *fileObjects {
 			f := fileBook(0)
 			f.looks["data"][[2]int{1, 1}] = ""
@@ -353,7 +353,7 @@ func TestReachFile(t *testing.T) {
 			f := fileBook(2)
 			f.objects["data"][1].rg.R2 = 5
 			return f
-		}, wantErr: "the conditional format is not there as it was: the edit's shifts give the conditional format over B2:C7, and the sheet holds it over B2:C5 (they differ at B6)"},
+		}, wantErr: "the conditional format is not there as it was: the edit's shifts give the conditional format reading =$B2>10 over B2:C7, and the sheet holds it over B2:C5 (they differ at B6)"},
 	} {
 		before := objBook(0)
 		mo := newModel(before)
