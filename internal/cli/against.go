@@ -1148,9 +1148,13 @@ func (r *report) cutCells(j *job) bool {
 	// The cells around stayed: a sort moves the cells of many rows, and a
 	// few others changed is a block cut among edits.
 	others := 0
+	changed := map[[2]int]bool{} // where they are
 	sa.Each(ua, func(row, col int, x *grid.Cell) {
 		if others > cutOthers || src.Contains(row, col) || dst.Contains(row, col) {
 			return
+		}
+		if _, _, ok := r.arrays.anchor(sa, row, col); ok {
+			return // part of an array formula's result: computed, and moved with what it reads
 		}
 		y := sb.At(row, col)
 		if y == nil || y.IsEmpty() {
@@ -1164,10 +1168,22 @@ func (r *report) cutCells(j *job) bool {
 		}
 		if !same {
 			others++
+			changed[[2]int{row, col}] = true
 		}
 	})
 	if others > cutOthers {
 		return false
+	}
+	// Straight down or up, a cut leaves the other cells of the rows it left and
+	// went to, and of its columns, as they were; a sort of some columns that
+	// carried a blank cell does not (the rows the blank left and went to hold
+	// other labels, and the column's cells between them are others).
+	if dc == 0 {
+		for at := range changed {
+			if at[0] >= src.R1 && at[0] <= src.R2 || at[0] >= dst.R1 && at[0] <= dst.R2 || at[1] >= src.C1 && at[1] <= src.C2 {
+				return false
+			}
+		}
 	}
 	// Moved straight down or up with nothing else in the rows it spans or
 	// below (or straight across, in the columns): that is as well rows (or

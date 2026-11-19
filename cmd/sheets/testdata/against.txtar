@@ -644,14 +644,15 @@ exec sheets move blk3.xlsx Sales!A30:C33 Sales!H1
 exec sheets check blk3.xlsx --against blk2.xlsx
 stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown, 4 rows moved$'
 stdout '^  Sales!H1:J4, were A30:C33$'
-# A block cut with an input changed beside it: the block moved, the input
-# changed.
+# A block cut with an input changed elsewhere: the block moved, the input
+# changed. (An input changed in the rows the block left or went to is not told
+# from a sort of some columns, and is changes.)
 cp side.xlsx side3.xlsx
 exec sheets move side3.xlsx Data!H1:H3 Data!H30
-exec sheets set side3.xlsx Data!B3 10
+exec sheets set side3.xlsx Data!B6 10
 exec sheets check side3.xlsx --against side.xlsx
 stdout ': 1 input changed, 0 formulas changed, '
-stdout '^  Data!B3  input  7 → 10$'
+stdout '^  Data!B6  input  4 → 10$'
 stdout '^  Data!H30:H32, were H1:H3$'
 # A sort of a table with blank cells is still a sort: the blanks that moved
 # with their rows are no block cut.
@@ -662,6 +663,15 @@ exec sheets check blanks2.xlsx --against blanks.xlsx
 stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown, 4 rows moved$'
 stdout '^  Data!2, were 5$'
 ! stdout '^changed:'
+# A sort of one column that carries a blank cell, the rows between the blank's
+# two places changing too, is inputs changed, not a cell cut and pasted.
+exec sheets set onecol.xlsx Data!A1 Item Data!B1 Units Data!A2 bx Data!B2 2 Data!B3 4 Data!A4 Kiwi Data!B4 -1 Data!A5 Fig Data!B5 0 Data!A6 bx Data!B6 1 Data!B7 14 Data!A8 bx Data!B8 8 Data!D2 '=A2&"-x"' Data!D3 '=A3&"-x"' Data!D4 '=A4&"-x"' Data!D5 '=A5&"-x"' Data!D6 '=A6&"-x"'
+cp onecol.xlsx onecol2.xlsx
+exec sheets sort onecol2.xlsx Data!A1:A6 Item
+exec sheets check onecol2.xlsx --against onecol.xlsx
+stdout ': 4 inputs changed, 0 formulas changed, 4 computed values moved'
+stdout '^  Data!A3  input  \(empty\) → "bx"$'
+! stdout 'rows moved'
 # Cleared and not pasted anywhere, it is a change; pasted with a value
 # changed, the cells are not the cells that were.
 cp blk.xlsx clear.xlsx
