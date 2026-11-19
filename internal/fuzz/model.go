@@ -493,6 +493,17 @@ func (m *model) reached(got *grid.Workbook) string {
 	return m.r.check(got, sheets, m.order)
 }
 
+// reachedFile judges what the file holds that the reader gives no cells for:
+// the validations, the conditional formats and the look of each cell, before
+// and after the edit (reach.checkFile). The first difference, "" when there is
+// none or the model cannot read the edit.
+func (m *model) reachedFile(got *grid.Workbook, before, after *fileObjects) string {
+	if m.why != "" || m.r == nil || before == nil || after == nil {
+		return ""
+	}
+	return m.r.checkFile(got, before, after, m.order)
+}
+
 // sort: the rows move, and where is not modelled.
 func (m *model) sort(k string) {
 	m.touch(k)

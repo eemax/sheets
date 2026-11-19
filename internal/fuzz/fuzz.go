@@ -522,7 +522,11 @@ type session struct {
 	root  string
 	paths [2]string
 	cur   *grid.Workbook // the streaming copy, parsed: what the next edit is made from
-	res   *Result        // counts the stored forms saved and the edits repeated, when not nil
+	// objs are the validations, conditional formats and looks of the streaming
+	// copy (file objects), read from objsFor: the next edit's before.
+	objs    *fileObjects
+	objsFor []byte
+	res     *Result // counts the stored forms saved and the edits repeated, when not nil
 }
 
 func newSession(dir string, data []byte) (*session, error) {
@@ -737,6 +741,8 @@ func (s *session) stepNow(e Edit, i int) (outcome, error) {
 		} else if msg := m.reached(wb); msg != "" {
 			// Nothing outside the edit's reach changed (see reach.go).
 			o.broken = append(o.broken, violation{"reach", msg})
+		} else if msg := s.reachedFile(m, prev, wb, before[0], after[0]); msg != "" {
+			o.broken = append(o.broken, violation{"reach", msg})
 		}
 	}
 	s.cur = wb
@@ -750,6 +756,30 @@ func (s *session) stepNow(e Edit, i int) (outcome, error) {
 		}
 	}
 	return o, nil
+}
+
+// reachedFile judges the objects the reader gives no cells for (validations,
+// conditional formats, looks) of the streaming copy before the edit and after
+// it (model.reachedFile). The file before is the one read after the last
+// edit, when the sequence goes on from it. A file that does not open for
+// editing is not judged here (the next edit would refuse it).
+func (s *session) reachedFile(m *model, prev, wb *grid.Workbook, before, after []byte) string {
+	if m.why != "" {
+		return ""
+	}
+	b := s.objs
+	if b == nil || !bytes.Equal(s.objsFor, before) {
+		var err error
+		if b, err = readFileObjects(before, prev); err != nil {
+			return ""
+		}
+	}
+	a, err := readFileObjects(after, wb)
+	if err != nil {
+		return ""
+	}
+	s.objs, s.objsFor = a, after
+	return m.reachedFile(wb, b, a)
 }
 
 // streamed tells whether the streaming editor could take an edit itself, on

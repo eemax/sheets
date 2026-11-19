@@ -53,8 +53,11 @@ type reach struct {
 	// at are the cells outside the reach so far, non-empty before the edit,
 	// by sheet (lower case) and where they stand now: where they stood.
 	at map[string]map[[2]int]origin
-	// rects is the reach, where it stands now, by sheet.
-	rects map[string][]grid.Range
+	// rects is the reach, where it stands now, by sheet. solid is the part
+	// an edit's cells reach (every rect but the lines an insert adds), and
+	// fresh the lines inserted: what an object may change under is solid;
+	// fresh lines hold nothing of what was there (objects.go).
+	rects, solid, fresh map[string][]grid.Range
 	// regions are the arrays of the workbook before (dynamic, legacy), where
 	// they stand now; member the regions each of their other cells belonged
 	// to (two arrays whose results meet share a cell: Excel shows #SPILL! at
@@ -109,7 +112,7 @@ type region struct {
 }
 
 func newReach(wb *grid.Workbook) *reach {
-	rc := &reach{before: wb, sheets: map[string]*grid.Sheet{}, at: map[string]map[[2]int]origin{}, rects: map[string][]grid.Range{}, member: map[origin][]*region{}, copies: map[string]bool{}}
+	rc := &reach{before: wb, sheets: map[string]*grid.Sheet{}, at: map[string]map[[2]int]origin{}, rects: map[string][]grid.Range{}, solid: map[string][]grid.Range{}, fresh: map[string][]grid.Range{}, member: map[origin][]*region{}, copies: map[string]bool{}}
 	for _, s := range wb.Sheets {
 		k := strings.ToLower(s.Name)
 		rc.sheets[k] = s
@@ -143,10 +146,20 @@ var whole = grid.Range{R1: 1, C1: 1, R2: grid.MaxRows, C2: grid.MaxCols}
 
 // touch puts a range of a sheet, as it stands now, in the edit's reach.
 func (rc *reach) touch(k string, rg grid.Range) {
+	rc.touchLines(k, rg, true)
+}
+
+// touchLines is touch, for lines an insert adds when solid is false.
+func (rc *reach) touchLines(k string, rg grid.Range, solid bool) {
 	if rc == nil || rg.Empty() {
 		return
 	}
 	rc.rects[k] = append(rc.rects[k], rg)
+	if solid {
+		rc.solid[k] = append(rc.solid[k], rg)
+	} else {
+		rc.fresh[k] = append(rc.fresh[k], rg)
+	}
 	for p := range rc.at[k] {
 		if rg.Contains(p[0], p[1]) {
 			delete(rc.at[k], p)
@@ -281,13 +294,15 @@ func (rc *reach) shift(k string, cols bool, at, to, n int) {
 		}
 		return rg, ok
 	}
-	var rects []grid.Range
-	for _, rg := range rc.rects[k] {
-		if g, ok := span(rg); ok {
-			rects = append(rects, g)
+	for _, list := range []map[string][]grid.Range{rc.rects, rc.solid, rc.fresh} {
+		var rects []grid.Range
+		for _, rg := range list[k] {
+			if g, ok := span(rg); ok {
+				rects = append(rects, g)
+			}
 		}
+		list[k] = rects
 	}
-	rc.rects[k] = rects
 	for _, g := range rc.regions {
 		if g.sheet != k || g.gone {
 			continue
@@ -312,7 +327,7 @@ func (rc *reach) shift(k string, cols bool, at, to, n int) {
 		if cols {
 			rg = grid.Range{R1: 1, C1: at, R2: grid.MaxRows, C2: at + n - 1}
 		}
-		rc.touch(k, rg)
+		rc.touchLines(k, rg, false)
 	}
 }
 
@@ -322,9 +337,11 @@ func (rc *reach) rename(from, to string) {
 		return
 	}
 	rc.xforms = append(rc.xforms, xform{kind: 'r', sheet: from, to: to})
-	rc.at[to], rc.rects[to] = rc.at[from], rc.rects[from]
+	rc.at[to], rc.rects[to], rc.solid[to], rc.fresh[to] = rc.at[from], rc.rects[from], rc.solid[from], rc.fresh[from]
 	delete(rc.at, from)
 	delete(rc.rects, from)
+	delete(rc.solid, from)
+	delete(rc.fresh, from)
 	if rc.copies[from] {
 		rc.copies[to] = true
 		delete(rc.copies, from)
@@ -1076,5 +1093,6 @@ func (rc *reach) check(after *grid.Workbook, sheets map[string]bool, order []str
 			return msg
 		}
 	}
-	return ""
+	// What the sheets hold besides cells (objects.go).
+	return rc.checkObjects(now, display)
 }

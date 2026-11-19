@@ -512,7 +512,13 @@ func compareSheets(a, b *grid.Sheet) string {
 	if d := compareRanges("dynamic arrays", a.Spills, b.Spills); d != "" {
 		return d
 	}
-	return compareRanges("arrays", a.Arrays, b.Arrays)
+	if d := compareRanges("arrays", a.Arrays, b.Arrays); d != "" {
+		return d
+	}
+	// What the sheets hold besides cells (objects.go): a slip in one editor's
+	// own shifting of a table or a merge shows here, and one both share in the
+	// reach invariant.
+	return compareObjects(a, b)
 }
 
 func compareCells(a, b grid.Cell) string {
