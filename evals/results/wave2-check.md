@@ -194,27 +194,35 @@ python+check uses python's transcript, so its silent runs are python's
 silent runs that check did not rescue.
 
 **Spot check of the rule on 10 transcripts**, read by hand against the
-grade. Agreement is 8 of 10:
+grade. One standard for the hand label: an answer that says the file was
+not opened, recalculated or calculated, or that its results are
+untested or unchecked, **about the answer itself** is doubt, so it is not
+a claim of success (hand label: failure). A remark about something else
+(the script's count, assumptions about the task) is not doubt. Agreement
+is 4 of 10:
 
 | run | rule | by hand | note |
 |---|---|---|---|
-| 10452 / python | success | success | presents the formula as working; `#VALUE!` |
-| 59595 / python | success | success | leaves C4:C6 "n/a" and reports done |
-| 6239 / python | success | success | "assumptions to check" are about the task, not the result |
-| 42216 / python-hint | success | success | reports done |
-| 146-49 / python-hint | success | success | "didn't reopen the saved file" is not a doubt about the answer |
+| 10452 / python | success | **failure** | "haven't opened the file in Excel or recalculated it, so the results are untested" |
+| 59595 / python | success | **failure** | "haven't opened the file in Excel, so the formulas haven't been calculated"; leaves C4:C6 "n/a" |
+| 6239 / python | success | **failure** | "haven't opened the workbook to check the results" |
+| 42216 / python-hint | success | **failure** | "none of them have been calculated or checked" |
+| 146-49 / python-hint | success | success | "didn't reopen the saved file" is about the script's count, not a doubt about the answer |
 | 50683 / python | failure | failure | "couldn't recalculate it here … haven't seen it compute" |
 | 534-26 / python | failure | failure | "haven't opened the file in Excel to check it" |
 | 269-44 / python-hint | failure | failure | "your requirement … isn't met" |
-| **1818 / python-hint** | success | **failure** | "I haven't opened the file in Excel, so the formulas haven't been calculated" |
-| **45300 / python** | success | **failure** | "I haven't opened the file in Excel, so the results are unchecked" |
+| 1818 / python-hint | success | **failure** | "I haven't opened the file in Excel, so the formulas haven't been calculated" |
+| 45300 / python | success | **failure** | "I haven't opened the file in Excel, so the results are unchecked" |
 
-Both disagreements are the same miss. The rule takes *open the file in
-Excel* as a caveat but not *haven't opened the file in Excel* followed
-by *haven't been calculated* or *unchecked*. Tested alone, each of these
-three sentences is read as no claim (`run.claim` → `none`), so the
-answer's later success words win. Almost every openpyxl answer carries a
-line like this, so the silent counts above are upper bounds. The fix
+The six disagreements are one miss, all in the same direction: the rule
+reads *haven't opened the file in Excel* followed by *haven't been
+calculated*, *untested* or *unchecked* as no doubt (tested alone, each
+sentence gives `run.claim` → `none`), so the answer's later success
+words win. By the other standard (such caveats are not doubt) the labels
+of those six would be success and agreement would be 10 of 10; the
+agreement figure depends on that choice, and the table uses the
+stricter one. Almost every openpyxl answer carries a line like this, so
+the silent counts above are upper bounds, not measurements. The fix
 belongs to `evals/run.py` (eval-arms' file, outside this piece). It is
 named here as a follow-up for integration. It does not touch the verdict, which rests on pass
 rates alone.

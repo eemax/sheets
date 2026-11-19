@@ -445,6 +445,7 @@ def grade(out, data, t, arm, profile):
                 break
         if not os.path.exists(done):
             res["problems"] = ["LibreOffice could not open the result"]
+            res["ungradable"] = True
         else:
             res.update(grade_file(gt, done, t, "lo"))
     with open(os.path.join(d, "result.json"), "w") as f:
@@ -493,6 +494,11 @@ PAIRS = [("python+check", "python-hint"), ("python+check", "python"), ("python-h
 
 
 def report(out, results, arms):
+    # A task LibreOffice could not convert for any arm, after the retry, is
+    # UNGRADABLE for every arm alike: left out of every rate and test.
+    bad = sorted({r["id"] for r in results if r.get("ungradable")})
+    all_results = results
+    results = [r for r in results if r["id"] not in bad]
     by = {(r["id"], r["arm"]): r for r in results}
     ids = sorted({r["id"] for r in results})
     lines = ["# SpreadsheetBench Verified", "",
@@ -532,6 +538,8 @@ def report(out, results, arms):
         if rows:
             lines += ["", f"Paired, {name}: exact one-sided McNemar, the first arm better.", "",
                       "| pair | tasks | both pass | first only | second only | neither | p |", "|---|---|---|---|---|---|---|"] + rows
+    if bad:
+        lines += ["", "UNGRADABLE for every arm (LibreOffice could not open a result): " + ", ".join(bad)]
     lines += ["", "| task | kind | " + " | ".join(f"{a} lo/stored" for a in arms) + " |", "|---|---|" + "---|" * len(arms)]
     mark = {True: "✅", False: "❌"}
     for i in ids:
@@ -547,7 +555,7 @@ def report(out, results, arms):
     with open(os.path.join(out, "report.md"), "w") as f:
         f.write("\n".join(lines) + "\n")
     with open(os.path.join(out, "results.json"), "w") as f:
-        json.dump(results, f, indent=1)
+        json.dump(all_results, f, indent=1)
     print("\n".join(lines[:lines.index("## Failures")]))
 
 
