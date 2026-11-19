@@ -291,6 +291,104 @@ func TestAgainstCausesRemovedFall(t *testing.T) {
 	}
 }
 
+// stored rewrites the result a workbook stores for a formula's cell on the
+// second sheet (Summary), and leaves the workbook not to be calculated on
+// load, as a file another tool wrote and Excel calculated.
+func stored(t *testing.T, src, dst, cell, value string) {
+	t.Helper()
+	re := regexp.MustCompile(`(<c r="` + cell + `"[^>]*><f>[^<]*</f>)<v>[^<]*</v>`)
+	rewriteParts(t, src, dst, func(name string, b []byte) []byte {
+		switch name {
+		case "xl/workbook.xml":
+			return regexp.MustCompile(` fullCalcOnLoad="(true|1)"`).ReplaceAll(b, nil)
+		case "xl/worksheets/sheet2.xml":
+			was := b
+			if b = re.ReplaceAll(b, []byte("${1}<v>"+value+"</v>")); bytes.Equal(b, was) {
+				t.Fatalf("no result stored for %s in %s", cell, b)
+			}
+		}
+		return b
+	})
+}
+
+// A row removed whose removal cannot have moved a value the way it moved
+// (a MAX that rose, a SUM that rose though the row held 4): the value stored
+// by another tool is unexplained, with exit 1, whether the formula was
+// rewritten for the row (Excel's shrinking of its range) or an input in its
+// column changed too (f0.1). What the row can move, it moves.
+func TestAgainstCausesRemovedWrongWay(t *testing.T) {
+	dir, before := causesFixture(t)
+	deleted := edited(t, before, filepath.Join(dir, "d.xlsx"), []string{"rows", "delete", "Data!6"})
+	unrelated := edited(t, before, filepath.Join(dir, "u.xlsx"), []string{"rows", "delete", "Data!6"}, []string{"set", "Data!C2", "31"})
+	for _, c := range []struct {
+		name, from, cell, value string
+	}{
+		{"a MAX that rose", deleted, "B6", "50"},
+		{"a SUM that rose", deleted, "B2", "999"},
+		{"a SUM that rose, an unrelated input changed", unrelated, "B2", "999"},
+	} {
+		after := filepath.Join(dir, "a.xlsx")
+		stored(t, c.from, after, c.cell, c.value)
+		r, code := against(t, after, before)
+		got := false
+		for _, u := range r.Unexplained {
+			got = got || u.Cell == "Summary!"+c.cell
+		}
+		if m := causes(r)["Summary!"+c.cell]; !got || m != "" || code != 1 {
+			t.Errorf("%s: exit %d, unexplained %+v, cause %q", c.name, code, r.Unexplained, m)
+		}
+	}
+	// The way the removal can move them: the row held 4, so the total fell.
+	r, _ := against(t, deleted, before)
+	if m := causes(r)["Summary!B2"]; !strings.HasPrefix(m, "rows removed: Data!6") {
+		t.Errorf("the total that fell: cause %q", m)
+	}
+}
+
+// A row added that holds nothing cannot move a total over it: a total stored
+// as another number is unexplained (f0.3). Rows added that hold a number
+// move it as they can, with the cell they were given named.
+func TestAgainstCausesAddedEmptyRow(t *testing.T) {
+	dir, before := causesFixture(t)
+	empty := edited(t, before, filepath.Join(dir, "i.xlsx"), []string{"rows", "insert", "Data!4"})
+	r, code := against(t, empty, before)
+	if len(r.Moved)+len(r.Unexplained) != 0 || code != 0 {
+		t.Errorf("an empty row alone: exit %d, moved %+v, unexplained %+v", code, r.Moved, r.Unexplained)
+	}
+	for _, c := range []struct{ cell, value string }{{"B2", "999"}, {"B6", "50"}} {
+		after := filepath.Join(dir, "a.xlsx")
+		stored(t, empty, after, c.cell, c.value)
+		r, code := against(t, after, before)
+		got := false
+		for _, u := range r.Unexplained {
+			got = got || u.Cell == "Summary!"+c.cell
+		}
+		if m := causes(r)["Summary!"+c.cell]; !got || m != "" || code != 1 {
+			t.Errorf("%s stored as %s: exit %d, unexplained %+v, moved %+v", c.cell, c.value, code, r.Unexplained, r.Moved)
+		}
+	}
+	// A number in the row moves a total up and a MAX that it tops: the row
+	// added is their cause.
+	filled := edited(t, before, filepath.Join(dir, "f.xlsx"), []string{"rows", "insert", "Data!4"}, []string{"set", "Data!B4", "11"})
+	r, code = against(t, filled, before)
+	for _, c := range []string{"Summary!B2", "Summary!B6"} {
+		if m := causes(r)[c]; m != "rows added: Data!4" {
+			t.Errorf("%s with a number added: cause %q (unexplained %+v)", c, m, r.Unexplained)
+		}
+	}
+	if len(r.Unexplained) != 0 || code != 0 {
+		t.Errorf("a number added: exit %d, unexplained %+v", code, r.Unexplained)
+	}
+	// One that is lower than the MAX cannot have moved it, nor can it lower
+	// the total.
+	low := edited(t, before, filepath.Join(dir, "l.xlsx"), []string{"rows", "insert", "Data!4"}, []string{"set", "Data!B4", "2"})
+	lowStored := filepath.Join(dir, "ls.xlsx")
+	stored(t, low, lowStored, "B6", "50")
+	if r, code := against(t, lowStored, before); code != 1 || len(r.Unexplained) != 1 || r.Unexplained[0].Cell != "Summary!B6" {
+		t.Errorf("a MAX that rose for a lower number: exit %d, unexplained %+v, moved %+v", code, r.Unexplained, r.Moved)
+	}
+}
+
 // rewriteParts copies a workbook, its parts rewritten.
 func rewriteParts(t *testing.T, src, dst string, rewrite func(name string, b []byte) []byte) {
 	t.Helper()

@@ -458,9 +458,12 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     a sum of some of them): a total over all of them (SUM, MAX, COUNT, an
     average, SUMIF or SUMPRODUCT over the same rows, a table's column)
     did not move for the sort, and names the input that moved it. Rows
-    removed are a cause only of what they can move that way: a MAX that
-    rose, a COUNT that rose, or a SUM that fell though they held 0 or less,
-    moved for something else. A formula changed is listed too, with what
+    removed or added are a cause only of what they can move that way, a
+    formula Excel rewrote for them included: a MAX that rose for a row
+    removed, a COUNT that rose, a SUM that fell though they held 0 or
+    less, or a total that moved for an empty row inserted in its range,
+    did not move for them, and stays `unexplained` unless something else
+    moved it. A formula changed is listed too, with what
     it computes now. A value that moved because rows added or removed moved
     its formula or what it reads (`=ROW()`, a range older Excel reads one
     cell of) has them as its cause;
