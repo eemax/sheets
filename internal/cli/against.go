@@ -1576,89 +1576,12 @@ func (r *report) compare() {
 			B.wb.Sheets[0].Name = A.wb.Sheets[0].Name
 		}
 	}
-	opts := diff.Options{Moves: true, LostRefs: true, ColumnShifts: true, Dates: true, Spills: true, Ranges: true}
-	al := diff.Align(A.wb, B.wb, opts)
-	r.renamed = map[string]string{}
 	r.formulaSrc = map[xlsx.At]string{}
 	var tr *xlsx.Tracer
 	if !out.ValuesOnly {
 		tr = xlsx.NewTracer(B.wb)
 	}
-	jobs := make([]*job, len(al.Sheets)) // nil for a sheet added or removed
-	for i, p := range al.Sheets {
-		switch {
-		case p.Old == nil:
-		case p.New == nil:
-			r.renamed[strings.ToLower(p.Old.Name)] = ""
-			r.removedSheets = append(r.removedSheets, p.Old.Name)
-		default:
-			r.renamed[strings.ToLower(p.Old.Name)] = p.New.Name
-			jobs[i] = r.prepare(p)
-		}
-	}
-	for from, to := range r.renamed {
-		if to != "" && !strings.EqualFold(from, to) {
-			r.renames = append(r.renames, [2]string{from, to})
-		}
-	}
-	sort.Slice(r.renames, func(i, j int) bool { return r.renames[i][0] < r.renames[j][0] })
-	if !out.ValuesOnly {
-		// An Excel table renamed: its structured references are rewritten.
-		r.tables = tableRenames(r.fa, r.fb, r.renamed)
-		for from, to := range r.tables {
-			r.tableRenames = append(r.tableRenames, [2]string{from, to})
-		}
-		sort.Slice(r.tableRenames, func(i, j int) bool { return r.tableRenames[i][0] < r.tableRenames[j][0] })
-		for _, rn := range r.tableRenames {
-			from := rn[0]
-			for _, f := range r.fa {
-				if f.Kind == xlsx.FeatureTable && strings.ToLower(f.What) == rn[0] {
-					from = f.What
-				}
-			}
-			out.Structure = append(out.Structure, structureEntry{"table renamed", from + " → " + rn[1]})
-		}
-	}
-	edits := func() []lineEdit {
-		var es []lineEdit
-		for _, j := range jobs {
-			if j != nil {
-				es = append(es, j.edit())
-			}
-		}
-		return es
-	}
-	r.setEdits(edits())
-	if !out.ValuesOnly && (r.anyLines || r.anyCut || len(r.renames) > 0 || len(r.tables) > 0) {
-		// A sheet whose formulas read another that lines were added to or
-		// removed from, or that was renamed: its rows are keyed by their
-		// formulas, which Excel rewrote, so they pair again with the old
-		// formulas as Excel would have rewritten them. Kept when that leaves
-		// fewer lines added and removed.
-		touched := map[string]bool{}
-		for _, j := range jobs {
-			if j != nil && (j.lineCount() > 0 || len(j.cut) > 0 || !strings.EqualFold(j.sa.Name, j.sb.Name)) {
-				touched[strings.ToLower(j.sa.Name)] = true
-			}
-		}
-		again := opts
-		again.Rewrite = func(sheet, f string) string {
-			home := r.renamed[strings.ToLower(sheet)]
-			return r.shifted(r.renamedIn(f), home, false, home)
-		}
-		changed := false
-		for i, j := range jobs {
-			if j == nil || !readsOthers(j.sa, touched) {
-				continue
-			}
-			if k := r.prepare(diff.AlignSheet(A.wb, j.sa, B.wb, j.sb, again)); k.lineCount() < j.lineCount() {
-				jobs[i], changed = k, true
-			}
-		}
-		if changed {
-			r.setEdits(edits())
-		}
-	}
+	al, jobs := r.align()
 	var removals []removal
 	for i, p := range al.Sheets {
 		switch {
@@ -1886,6 +1809,111 @@ func (r *report) compare() {
 		r.cause(at.Sheet, grid.Range{R1: at.Row, C1: at.Col, R2: at.Row, C2: at.Col}, r.formulaSrc[at])
 	}
 	r.trace(tr)
+}
+
+// align pairs the two versions' sheets, and the rows and columns of each
+// sheet in both (a job each; nil for a sheet added or removed), and works
+// out the sheets renamed, the tables renamed and the lines added and
+// removed.
+func (r *report) align() (diff.Alignment, []*job) {
+	A, B, out := r.A, r.B, r.out
+	opts := diff.Options{Moves: true, LostRefs: true, ColumnShifts: true, Dates: true, Spills: true, Ranges: true}
+	al := diff.Align(A.wb, B.wb, opts)
+	r.renamed = map[string]string{}
+	jobs := make([]*job, len(al.Sheets)) // nil for a sheet added or removed
+	for i, p := range al.Sheets {
+		switch {
+		case p.Old == nil:
+		case p.New == nil:
+			r.renamed[strings.ToLower(p.Old.Name)] = ""
+			r.removedSheets = append(r.removedSheets, p.Old.Name)
+		default:
+			r.renamed[strings.ToLower(p.Old.Name)] = p.New.Name
+			jobs[i] = r.prepare(p)
+		}
+	}
+	for from, to := range r.renamed {
+		if to != "" && !strings.EqualFold(from, to) {
+			r.renames = append(r.renames, [2]string{from, to})
+		}
+	}
+	sort.Slice(r.renames, func(i, j int) bool { return r.renames[i][0] < r.renames[j][0] })
+	if !out.ValuesOnly {
+		// An Excel table renamed: its structured references are rewritten.
+		r.tables = tableRenames(r.fa, r.fb, r.renamed)
+		for from, to := range r.tables {
+			r.tableRenames = append(r.tableRenames, [2]string{from, to})
+		}
+		sort.Slice(r.tableRenames, func(i, j int) bool { return r.tableRenames[i][0] < r.tableRenames[j][0] })
+		for _, rn := range r.tableRenames {
+			from := rn[0]
+			for _, f := range r.fa {
+				if f.Kind == xlsx.FeatureTable && strings.ToLower(f.What) == rn[0] {
+					from = f.What
+				}
+			}
+			out.Structure = append(out.Structure, structureEntry{"table renamed", from + " → " + rn[1]})
+		}
+	}
+	edits := func() []lineEdit {
+		var es []lineEdit
+		for _, j := range jobs {
+			if j != nil {
+				es = append(es, j.edit())
+			}
+		}
+		return es
+	}
+	r.setEdits(edits())
+	if !out.ValuesOnly && (r.anyLines || r.anyCut || len(r.renames) > 0 || len(r.tables) > 0) {
+		// A sheet whose formulas read another that lines were added to or
+		// removed from, or that was renamed: its rows are keyed by their
+		// formulas, which Excel rewrote, so they pair again with the old
+		// formulas as Excel would have rewritten them. Kept when that leaves
+		// fewer lines added and removed.
+		touched := map[string]bool{}
+		for _, j := range jobs {
+			if j != nil && (j.lineCount() > 0 || len(j.cut) > 0 || !strings.EqualFold(j.sa.Name, j.sb.Name)) {
+				touched[strings.ToLower(j.sa.Name)] = true
+			}
+		}
+		again := opts
+		again.Rewrite = func(sheet, f string) string {
+			home := r.renamed[strings.ToLower(sheet)]
+			return r.shifted(r.renamedIn(f), home, false, home)
+		}
+		changed := false
+		for i, j := range jobs {
+			if j == nil || !readsOthers(j.sa, touched) {
+				continue
+			}
+			if k := r.prepare(diff.AlignSheet(A.wb, j.sa, B.wb, j.sb, again)); k.lineCount() < j.lineCount() {
+				jobs[i], changed = k, true
+			}
+		}
+		if changed {
+			r.setEdits(edits())
+		}
+	}
+	return al, jobs
+}
+
+// alignedFeatures compares two versions' features (fa, fb) with their sheets
+// and lines paired as check --against pairs them: a sheet renamed, rows and
+// columns added and removed, found by what the sheets hold.
+func alignedFeatures(before, after []byte, fa, fb []xlsx.Feature) ([]lostFeature, []changedFeature, bool) {
+	wa, err := xlsx.ReadBytes(before)
+	if err != nil {
+		return nil, nil, false
+	}
+	wb, err := xlsx.ReadBytes(after)
+	if err != nil {
+		return nil, nil, false
+	}
+	r := &report{out: &againstResult{}, A: &sideOf{wb: wa}, B: &sideOf{wb: wb}, arrays: arrays{}, fa: fa, fb: fb}
+	r.align()
+	lost, changed := compareFeatures(fa, fb, r.renamed, r.tables, r.shiftRef)
+	return lost, changed, true
 }
 
 // spanWith takes in the rows added or removed (lines) that join a span of

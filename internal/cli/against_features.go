@@ -80,16 +80,33 @@ func compareFeatures(before, after []xlsx.Feature, renamed, tables map[string]st
 		}
 		return to, true
 	}
-	// moved gives the places a feature of the old version is now, by the
-	// rows and columns added and removed ("" when they took it).
-	moved := func(f xlsx.Feature, home string) string {
+	// movedTo gives the sheet (lower-cased) and places a feature of the old
+	// version is on now, by the rows and columns added and removed, and the
+	// cells cut and pasted, perhaps to another sheet ("" when they took it).
+	movedTo := func(f xlsx.Feature, home string) (string, string) {
 		var out []string
-		for _, w := range strings.Fields(f.Where) {
-			if s := shift(home, w); s != "" && !strings.Contains(s, "#REF!") {
-				out = append(out, s)
+		sheet := strings.ToLower(home)
+		for i, w := range strings.Fields(f.Where) {
+			s := shift(home, w)
+			if s == "" || strings.Contains(s, "#REF!") {
+				continue
 			}
+			on := strings.ToLower(home)
+			if k := strings.LastIndex(s, "!"); k >= 0 && !strings.Contains(w, "!") {
+				on, s = strings.ToLower(strings.ReplaceAll(strings.Trim(s[:k], "'"), "''", "'")), s[k+1:]
+			}
+			if i == 0 {
+				sheet = on
+			} else if on != sheet {
+				return "", "" // split between sheets: not the feature it was
+			}
+			out = append(out, s)
 		}
-		return placeKey(strings.Join(out, " "))
+		return sheet, placeKey(strings.Join(out, " "))
+	}
+	moved := func(f xlsx.Feature, home string) string {
+		_, p := movedTo(f, home)
+		return p
 	}
 	seriesMoved := func(f xlsx.Feature, home string) []string {
 		out := make([]string, len(f.Series))
@@ -186,12 +203,11 @@ func compareFeatures(before, after []xlsx.Feature, renamed, tables map[string]st
 			}
 			return head + typeKey(f.Type), nil, true
 		case f.Kind == xlsx.FeatureValidation || f.Kind == xlsx.FeatureCond:
-			k := head + sheet + "\x00" + typeKey(f.Type) + "\x00" + ruleKey(f.Rule)
 			if pass == 0 {
-				p := moved(f, home)
-				return k + "\x00" + p, nil, p != ""
+				on, p := movedTo(f, home)
+				return head + on + "\x00" + typeKey(f.Type) + "\x00" + ruleKey(f.Rule) + "\x00" + p, nil, p != ""
 			}
-			return k, nil, true
+			return head + sheet + "\x00" + typeKey(f.Type) + "\x00" + ruleKey(f.Rule), nil, true
 		case f.Kind == xlsx.FeatureChart:
 			return head + sheet + "\x00" + typeKey(f.Type), func(g xlsx.Feature) bool {
 				if pass == 0 {
@@ -267,11 +283,11 @@ func compareFeatures(before, after []xlsx.Feature, renamed, tables map[string]st
 				continue
 			}
 			home, ok := nowOf(f)
-			p := moved(f, home)
+			on, p := movedTo(f, home)
 			if !ok || p == "" {
 				continue
 			}
-			for _, j := range byPlace[f.Kind+"\x00"+strings.ToLower(home)+"\x00"+p] {
+			for _, j := range byPlace[f.Kind+"\x00"+on+"\x00"+p] {
 				g := after[j]
 				if used[j] || sameType && typeKey(g.Type) != typeKey(f.Type) {
 					continue

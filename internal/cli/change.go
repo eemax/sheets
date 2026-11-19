@@ -299,6 +299,17 @@ func (s *session) follows(sheet string, row, col int) bool {
 
 // opMove is where a change of lines puts a cell (false: it took it).
 func opMove(op xlsx.LineOp, p cellPos, sheet string) (cellPos, string, bool) {
+	if op.Move {
+		// Cut and pasted: the cells of the source go with it; those it was
+		// pasted over are gone.
+		switch {
+		case p.sheet == strings.ToLower(op.Sheet) && op.Src.Contains(p.row, p.col):
+			return cellPos{strings.ToLower(op.To), p.row + op.DR, p.col + op.DC}, op.To, true
+		case p.sheet == strings.ToLower(op.To) && movedTo(op).Contains(p.row, p.col):
+			return p, sheet, false
+		}
+		return p, sheet, true
+	}
 	if p.sheet != strings.ToLower(op.Sheet) {
 		return p, sheet, true
 	}
@@ -316,6 +327,21 @@ func opMove(op xlsx.LineOp, p cellPos, sheet string) (cellPos, string, bool) {
 	n, ok := lineMove(op, *at)
 	*at = n
 	return p, sheet, ok
+}
+
+// movedTo is where cells cut and pasted went.
+func movedTo(op xlsx.LineOp) grid.Range {
+	return grid.Range{R1: op.Src.R1 + op.DR, C1: op.Src.C1 + op.DC, R2: op.Src.R2 + op.DR, C2: op.Src.C2 + op.DC}
+}
+
+// movedCells tells the command's session of cells cut and pasted (sheets
+// move): what an earlier step found in them is where they went, and the
+// features they carried are found there.
+func (a *app) movedCells(path, from string, src grid.Range, to string, dr, dc int) {
+	if a.session == nil {
+		a.session = newSession(path)
+	}
+	a.session.effects(xlsx.Effects{Ops: []xlsx.LineOp{{Sheet: from, Move: true, Src: src, To: to, DR: dr, DC: dc}}})
 }
 
 // lineMove is where a change of lines puts line n.
@@ -344,12 +370,21 @@ func (s *session) shiftRef(home, ref string) string {
 	if err != nil {
 		return ref
 	}
-	was, renamed := rg, false
+	was, renamed, across := rg, false, false
 	for _, op := range s.ops {
 		if !strings.EqualFold(op.Sheet, sheet) {
 			continue
 		}
 		switch {
+		case op.Move:
+			// Cut and pasted whole, it went with the cells; else it stays.
+			if op.Src.Contains(rg.R1, rg.C1) && op.Src.Contains(rg.R2, rg.C2) {
+				rg.R1, rg.C1, rg.R2, rg.C2 = rg.R1+op.DR, rg.C1+op.DC, rg.R2+op.DR, rg.C2+op.DC
+				if !strings.EqualFold(op.To, sheet) {
+					sheet, renamed, across = op.To, true, true
+				}
+			}
+			continue
 		case op.Gone:
 			return ""
 		case op.Rename != "":
@@ -385,7 +420,7 @@ func (s *session) shiftRef(home, ref string) string {
 	} else if rg.R1 == rg.R2 && rg.C1 == rg.C2 && !strings.Contains(body, ":") {
 		out = grid.CellName(rg.R1, rg.C1)
 	}
-	if qualified {
+	if qualified || across {
 		return grid.QuoteSheet(sheet) + "!" + out
 	}
 	return out
@@ -397,6 +432,9 @@ func (s *session) renamed() map[string]string {
 	out := map[string]string{}
 	now := map[string]string{} // name now (lower-cased) → first name, lower-cased
 	for _, op := range s.ops {
+		if op.Move {
+			continue
+		}
 		k := strings.ToLower(op.Sheet)
 		first, ok := now[k]
 		if !ok {
@@ -549,6 +587,14 @@ func (s *session) compare(r *changeReport) {
 	}
 	if len(fa) > 0 {
 		lost, changed := compareFeatures(fa, fb, s.renamed(), nil, s.shiftRef)
+		if s.uncounted && len(lost) > 0 {
+			// An undo: what the edit it undid renamed or moved (a sheet, the
+			// lines a chart stands on) is not the session's to follow, so the
+			// two versions are paired as check --against pairs them.
+			if l, c, ok := alignedFeatures(s.before, s.after, fa, fb); ok {
+				lost, changed = l, c
+			}
+		}
 		r.FeaturesLost = len(lost)
 		r.FeaturesLostList = lost[:min(len(lost), changeListed)]
 		if len(changed) > 0 {
