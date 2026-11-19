@@ -138,13 +138,13 @@ type spillCell struct {
 	before, after grid.Cell
 }
 
-// spillResults are those cells' values, before and after, as results the
+// spillEffects are those cells' values, before and after, as results the
 // report can compare: a value that changed is one the command moved.
 func spillEffects(spilled map[cellKey]*spillCell) []ResultChange {
 	var out []ResultChange
 	for k, c := range spilled {
 		out = append(out, ResultChange{Sheet: c.sheet, Row: k.row, Col: k.col,
-			Before: c.before, Was: c.before.Kind != grid.Empty, After: c.after, Now: true})
+			Before: c.before, Was: true, After: c.after, Now: true})
 	}
 	return out
 }

@@ -84,55 +84,125 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 		}
 		return true
 	}
-	// pass 0 matches the same place, 1 the same feature anywhere on the sheet
-	// (it moved or grew).
+	// A feature of the new version is found by a key of what it must have
+	// in common with the old one (its kind, sheet, type, rule and, on the
+	// first pass, place), so each old feature costs one lookup, not a scan
+	// of the new ones: a sheet with tens of thousands of rules is the case.
+	// pass 0 matches the same place, 1 the same feature anywhere on the
+	// sheet (it moved or grew).
+	type bucket struct {
+		idx  []int
+		head int
+	}
+	var index [2]map[string]*bucket
+	cs := func(f xlsx.Feature) string {
+		if f.Chartsheet {
+			return "cs"
+		}
+		return "-"
+	}
+	// afterKey is the key of a feature of the new version.
+	afterKey := func(g xlsx.Feature, pass int) string {
+		sheet := strings.ToLower(g.Sheet)
+		head := g.Kind + "\x00" + cs(g) + "\x00"
+		switch {
+		case g.Kind == xlsx.FeatureName:
+			return head + sheet + "\x00" + strings.ToLower(g.Where)
+		case g.Kind == xlsx.FeatureTable:
+			return head + sheet + "\x00" + strings.ToLower(g.What)
+		case g.Chartsheet:
+			if pass == 0 {
+				return head + sheet + "\x00" + typeKey(g.Type)
+			}
+			return head + typeKey(g.Type)
+		case g.Kind == xlsx.FeatureValidation || g.Kind == xlsx.FeatureCond:
+			k := head + sheet + "\x00" + typeKey(g.Type) + "\x00" + ruleKey(g.Rule)
+			if pass == 0 {
+				k += "\x00" + placeKey(g.Where)
+			}
+			return k
+		case g.Kind == xlsx.FeatureChart:
+			return head + sheet + "\x00" + typeKey(g.Type)
+		}
+		if pass == 0 {
+			return head + sheet + "\x00" + placeKey(g.Where)
+		}
+		return head + sheet + "\x00" + strings.ToLower(g.What)
+	}
+	// beforeKey is the key an old feature looks for, and what else must hold
+	// of the one it finds (nil: nothing).
+	beforeKey := func(f xlsx.Feature, home string, pass int) (string, func(xlsx.Feature) bool, bool) {
+		sheet := strings.ToLower(home)
+		head := f.Kind + "\x00" + cs(f) + "\x00"
+		switch {
+		case f.Kind == xlsx.FeatureName:
+			// By its name, in the scope it had.
+			return head + sheet + "\x00" + strings.ToLower(f.Where), nil, pass == 0
+		case f.Kind == xlsx.FeatureTable:
+			name := f.What
+			if to, ok := tables[strings.ToLower(f.What)]; ok {
+				name = to
+			}
+			return head + sheet + "\x00" + strings.ToLower(name), nil, pass == 0
+		case f.Chartsheet:
+			// A chart sheet is no worksheet, so a rename of it is not
+			// followed: its chart is the one chart sheet left of its type.
+			if pass == 0 {
+				return head + sheet + "\x00" + typeKey(f.Type), nil, true
+			}
+			return head + typeKey(f.Type), nil, true
+		case f.Kind == xlsx.FeatureValidation || f.Kind == xlsx.FeatureCond:
+			k := head + sheet + "\x00" + typeKey(f.Type) + "\x00" + ruleKey(f.Rule)
+			if pass == 0 {
+				p := moved(f, home)
+				return k + "\x00" + p, nil, p != ""
+			}
+			return k, nil, true
+		case f.Kind == xlsx.FeatureChart:
+			return head + sheet + "\x00" + typeKey(f.Type), func(g xlsx.Feature) bool {
+				if pass == 0 {
+					return samePlace(f, g, home)
+				}
+				return sameSeries(f, g, home)
+			}, true
+		}
+		if pass == 0 {
+			p := moved(f, home)
+			return head + sheet + "\x00" + p, nil, p != ""
+		}
+		return head + sheet + "\x00" + strings.ToLower(f.What), nil, true
+	}
 	match := func(f xlsx.Feature, pass int) bool {
 		home, ok := nowOf(f)
 		if !ok {
 			return false
 		}
-		for i, g := range after {
-			if used[i] || g.Kind != f.Kind || g.Chartsheet != f.Chartsheet {
-				continue
+		key, pred, ok := beforeKey(f, home, pass)
+		if !ok {
+			return false
+		}
+		if index[pass] == nil {
+			index[pass] = map[string]*bucket{}
+			for i, g := range after {
+				k := afterKey(g, pass)
+				bk := index[pass][k]
+				if bk == nil {
+					bk = &bucket{}
+					index[pass][k] = bk
+				}
+				bk.idx = append(bk.idx, i)
 			}
-			here := strings.EqualFold(g.Sheet, home)
-			switch {
-			case f.Kind == xlsx.FeatureName:
-				// By its name, in the scope it had.
-				if pass > 0 || !here || !strings.EqualFold(f.Where, g.Where) {
-					continue
-				}
-			case f.Kind == xlsx.FeatureTable:
-				name := f.What
-				if to, ok := tables[strings.ToLower(f.What)]; ok {
-					name = to
-				}
-				if pass > 0 || !here || !strings.EqualFold(name, g.What) {
-					continue
-				}
-			case f.Chartsheet:
-				// A chart sheet is no worksheet, so a rename of it is not
-				// followed: its chart is the one chart sheet left of its type.
-				if typeKey(f.Type) != typeKey(g.Type) || pass == 0 && !here {
-					continue
-				}
-			case !here:
+		}
+		bk := index[pass][key]
+		if bk == nil {
+			return false
+		}
+		for bk.head < len(bk.idx) && used[bk.idx[bk.head]] {
+			bk.head++
+		}
+		for _, i := range bk.idx[bk.head:] {
+			if used[i] || pred != nil && !pred(after[i]) {
 				continue
-			case f.Kind == xlsx.FeatureValidation || f.Kind == xlsx.FeatureCond:
-				if typeKey(f.Type) != typeKey(g.Type) || ruleKey(f.Rule) != ruleKey(g.Rule) || pass == 0 && !samePlace(f, g, home) {
-					continue
-				}
-			case f.Kind == xlsx.FeatureChart:
-				if typeKey(f.Type) != typeKey(g.Type) {
-					continue
-				}
-				if pass == 0 && !samePlace(f, g, home) || pass > 0 && !sameSeries(f, g, home) {
-					continue
-				}
-			default: // a shape or a picture
-				if pass == 0 && !samePlace(f, g, home) || pass > 0 && !strings.EqualFold(f.What, g.What) {
-					continue
-				}
 			}
 			used[i] = true
 			return true

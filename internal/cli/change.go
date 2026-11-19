@@ -52,7 +52,11 @@ type changeReport struct {
 	// pictures, names and tables the file had and no longer has.
 	FeaturesLost     int           `json:"features_lost"`
 	FeaturesLostList []lostFeature `json:"features_lost_list,omitempty"`
-	Lint             *changeLint   `json:"lint,omitempty"`
+	// RulesNotCompared: the validations and conditional formats were too
+	// many to compare after every edit (that many, at most, on the larger
+	// side); the other features were.
+	RulesNotCompared int         `json:"rules_not_compared,omitempty"`
+	Lint             *changeLint `json:"lint,omitempty"`
 }
 
 // MarshalJSON leaves the counts out of an undo's report.
@@ -65,8 +69,9 @@ func (r changeReport) MarshalJSON() ([]byte, error) {
 		Uncounted        bool          `json:"counts_omitted"`
 		FeaturesLost     int           `json:"features_lost"`
 		FeaturesLostList []lostFeature `json:"features_lost_list,omitempty"`
+		RulesNotCompared int           `json:"rules_not_compared,omitempty"`
 		Lint             *changeLint   `json:"lint,omitempty"`
-	}{true, r.FeaturesLost, r.FeaturesLostList, r.Lint})
+	}{true, r.FeaturesLost, r.FeaturesLostList, r.RulesNotCompared, r.Lint})
 }
 
 type changeValue struct {
@@ -91,8 +96,30 @@ type changeLint struct {
 	Errors   int    `json:"errors"`        // after less before
 	Warnings int    `json:"warnings"`
 	Notes    int    `json:"notes"`
+	// Added and Removed count the findings that rose and fell, by severity,
+	// rule by rule (Errors and the others net them: a new finding of one
+	// rule does not hide behind one that went away in another).
+	Added   lintCounts `json:"added"`
+	Removed lintCounts `json:"removed"`
 	// Rules are the rules whose counts changed, those that rose first.
 	Rules []changeRule `json:"rules,omitempty"`
+}
+
+type lintCounts struct {
+	Errors   int `json:"errors"`
+	Warnings int `json:"warnings"`
+	Notes    int `json:"notes"`
+}
+
+func (c *lintCounts) add(sev lint.Severity, n int) {
+	switch sev {
+	case lint.Error:
+		c.Errors += n
+	case lint.Warning:
+		c.Warnings += n
+	default:
+		c.Notes += n
+	}
 }
 
 type changeRule struct {
@@ -115,6 +142,13 @@ const (
 	// 512 KB (about 3,500 such rows) it is about 17 ms. Larger workbooks
 	// say so, and sheets lint does it.
 	lintBytes = 512 << 10
+	// featureRules bounds the validations and conditional formats read
+	// before and after an edit: reading a rule takes about 10 µs, which
+	// on a sheet with one validation per cell (tens of thousands) was
+	// 5 times the time of the edit. More rules than this on either side
+	// are not compared, and the report says so; sheets check --against
+	// compares them.
+	featureRules = 1000
 )
 
 // cellPos is a cell where it stands now; sheet lower-cased.
@@ -244,6 +278,16 @@ func (s *session) effects(ef xlsx.Effects) {
 			delete(s.results, p)
 		}
 	}
+}
+
+// follows tells whether the session holds a result for the cell (s may be
+// nil).
+func (s *session) follows(sheet string, row, col int) bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s.results[cellPos{strings.ToLower(sheet), row, col}]
+	return ok
 }
 
 // opMove is where a change of lines puts a cell (false: it took it).
@@ -461,6 +505,7 @@ func (s *session) compare(r *changeReport) {
 	}
 	var wg sync.WaitGroup
 	var fa, fb []xlsx.Feature
+	var na, nb int // rules past the bound, on each side
 	var lintA, lintB []lint.Finding
 	lintable := sheetBytes(s.before) <= lintBytes && sheetBytes(s.after) <= lintBytes
 	run := func(fn func()) {
@@ -468,7 +513,7 @@ func (s *session) compare(r *changeReport) {
 		go func() { defer wg.Done(); fn() }()
 	}
 	if s.before != nil && isXLSX(s.before) {
-		run(func() { fa, _ = xlsx.Features(s.before) })
+		run(func() { fa, na, _ = xlsx.FeaturesWithin(s.before, featureRules) })
 		if lintable {
 			run(func() {
 				if wb, err := xlsx.ReadBytes(s.before); err == nil {
@@ -477,7 +522,7 @@ func (s *session) compare(r *changeReport) {
 			})
 		}
 	}
-	run(func() { fb, _ = xlsx.Features(s.after) })
+	run(func() { fb, nb, _ = xlsx.FeaturesWithin(s.after, featureRules) })
 	failed := false
 	if lintable {
 		run(func() {
@@ -490,6 +535,11 @@ func (s *session) compare(r *changeReport) {
 		})
 	}
 	wg.Wait()
+	if na > 0 || nb > 0 {
+		// Rules are compared on both sides or on neither.
+		fa, fb = withoutRules(fa), withoutRules(fb)
+		r.RulesNotCompared = max(na, nb)
+	}
 	if len(fa) > 0 {
 		lost := lostFeatures(fa, fb, s.renamed(), nil, s.shiftRef)
 		r.FeaturesLost = len(lost)
@@ -503,6 +553,17 @@ func (s *session) compare(r *changeReport) {
 	default:
 		r.Lint = lintDelta(lintA, lintB)
 	}
+}
+
+// withoutRules is the features less the validations and conditional formats.
+func withoutRules(fs []xlsx.Feature) []xlsx.Feature {
+	var out []xlsx.Feature
+	for _, f := range fs {
+		if f.Kind != xlsx.FeatureValidation && f.Kind != xlsx.FeatureCond {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // lintDelta compares two lint runs, rule by rule, by the cells found.
@@ -546,6 +607,8 @@ func lintDelta(before, after []lint.Finding) *changeLint {
 		if d == 0 {
 			continue
 		}
+		(&out.Added).add(c.sev, max(d, 0))
+		(&out.Removed).add(c.sev, max(-d, 0))
 		switch c.sev {
 		case lint.Error:
 			out.Errors += d
@@ -621,9 +684,9 @@ func (a *app) trackBytes(path string, before, after []byte, results ...xlsx.Resu
 	a.changed = nil
 }
 
-// printChange prints the short form: at most 11 lines (the head, what
+// printChange prints the short form: at most 12 lines (the head, what
 // moved, the new errors, three reasons for unknowns and the rest counted,
-// the features lost, three lint rules).
+// the features lost, the rules not compared, three lint rules).
 func (a *app) printChange(r *changeReport) {
 	if r == nil {
 		return
@@ -637,6 +700,9 @@ func (a *app) printChange(r *changeReport) {
 		head = "change: cells not compared (an undo restores the file as it was)" + fmt.Sprintf(", %s lost", plural(r.FeaturesLost, "feature"))
 	} else {
 		head += fmt.Sprintf(", %s moved, %s, %s, %s lost", plural(r.Moved, "value"), plural(r.Errors, "new error"), plural(r.Unknown, "new unknown"), plural(r.FeaturesLost, "feature"))
+	}
+	if r.RulesNotCompared > 0 {
+		head += " (rules not compared)"
 	}
 	if l := r.Lint; l != nil {
 		head += ", lint " + lintHead(l)
@@ -684,6 +750,9 @@ func (a *app) printChange(r *changeReport) {
 		}
 		a.printf("lost: %s%s\n", strings.Join(parts, ", "), more(r.FeaturesLost, len(r.FeaturesLostList)))
 	}
+	if r.RulesNotCompared > 0 {
+		a.printf("lost: validations and conditional formats not compared (%s, more than %s: sheets check --against compares them)\n", plural(r.RulesNotCompared, "rule"), grid.FormatNumber(featureRules))
+	}
 	if l := r.Lint; l != nil {
 		if !l.Compared {
 			a.printf("lint: not compared: %s\n", l.Why)
@@ -704,16 +773,17 @@ func lintHead(l *changeLint) string {
 		return "not compared"
 	}
 	var parts []string
-	for _, x := range []struct {
-		n    int
-		word string
-	}{{l.Errors, "error"}, {l.Warnings, "warning"}, {l.Notes, "note"}} {
-		if x.n != 0 {
-			sign := "+"
-			if x.n < 0 {
-				sign = "-"
+	for _, side := range []struct {
+		sign string
+		c    lintCounts
+	}{{"+", l.Added}, {"-", l.Removed}} {
+		for _, x := range []struct {
+			n    int
+			word string
+		}{{side.c.Errors, "error"}, {side.c.Warnings, "warning"}, {side.c.Notes, "note"}} {
+			if x.n != 0 {
+				parts = append(parts, side.sign+plural(x.n, x.word))
 			}
-			parts = append(parts, sign+plural(abs(x.n), x.word))
 		}
 	}
 	if len(parts) == 0 {

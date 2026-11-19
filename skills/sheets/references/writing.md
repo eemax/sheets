@@ -68,11 +68,16 @@
   new error or a feature lost is a mistake: fix it, or `sheets undo`
   (whose own report leaves the cells uncompared and gives the features
   lost and the lint). The results come from what the save computed
-  anyway; the features and lint are read off the file before and after,
-  and the lint only when the sheets hold up to 512 KB of XML (about
-  3,500 rows of four columns), so an edit takes about 17 ms more at most
-  there, and on a larger workbook it says `lint not compared` and
-  `sheets lint` does it. `sheets check --against` gives the whole report.
+  anyway; the features and lint are read off the file before and after.
+  The lint only when the sheets hold up to 512 KB of XML (about 3,500 rows
+  of four columns): on a larger workbook it says `lint not compared` and
+  `sheets lint` does it. The validations and conditional formats only when
+  there are up to 1,000 of them (one for each cell is tens of thousands):
+  past that the head says `rules not compared` and a line gives their
+  number; the rest (charts, names, tables) is compared as ever. The head
+  line counts every lint finding that rose, even when another went away
+  (`lint +1 error -1 error`). `sheets check --against` gives the whole
+  report.
 - All Excel functions work, including XLOOKUP, IFS, TEXTJOIN, LET and
   LAMBDA. Functions that return several values (FILTER, UNIQUE, SORT,
   SEQUENCE, ...) are stored as dynamic arrays and spill: the file holds the

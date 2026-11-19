@@ -12,6 +12,7 @@ import (
 	"github.com/eemax/sheets/internal/grid"
 	"github.com/eemax/sheets/internal/lint"
 	"github.com/eemax/sheets/internal/xlsx"
+	"github.com/xuri/excelize/v2"
 )
 
 func num(n float64) grid.Cell { return grid.Cell{Kind: grid.Number, Num: n} }
@@ -296,5 +297,45 @@ func TestChangeLarge(t *testing.T) {
 				t.Errorf("%s (%s): a report of %d lines:\n%s", c.name, editor, len(lines), out)
 			}
 		}
+	}
+}
+
+// A sheet with a validation for each cell is more rules than are compared
+// after every edit: the report says so, in its head and its own line and in
+// --json, and still compares what else is lost.
+func TestChangeManyRules(t *testing.T) {
+	f := excelize.NewFile()
+	defer f.Close()
+	var cells []string
+	for r := 1; r <= featureRules+200; r++ {
+		cells = append(cells, grid.CellName(r, 2))
+	}
+	for _, c := range cells {
+		dv := excelize.NewDataValidation(true)
+		dv.SetSqref(c)
+		dv.SetRange(0, 9, excelize.DataValidationTypeWhole, excelize.DataValidationOperatorBetween)
+		if err := f.AddDataValidation("Sheet1", dv); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "rules.xlsx")
+	if err := f.SaveAs(path); err != nil {
+		t.Fatal(err)
+	}
+	var out, errs bytes.Buffer
+	if code := Main([]string{"set", path, "A1", "5"}, strings.NewReader(""), &out, &errs); code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out.String(), errs.String())
+	}
+	lines := reportLines(out.String())
+	if len(lines) < 2 || !strings.Contains(lines[0], "0 features lost (rules not compared)") ||
+		!strings.Contains(strings.Join(lines, "\n"), "lost: validations and conditional formats not compared (1200 rules, more than 1000: sheets check --against compares them)") {
+		t.Errorf("report:\n%s", out.String())
+	}
+	out.Reset()
+	if code := Main([]string{"--json", "set", path, "A1", "6"}, strings.NewReader(""), &out, &errs); code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out.String(), errs.String())
+	}
+	if !strings.Contains(out.String(), `"rules_not_compared":1200`) || !strings.Contains(out.String(), `"features_lost":0`) {
+		t.Errorf("json: %s", out.String())
 	}
 }

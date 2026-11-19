@@ -255,12 +255,12 @@ func (a *app) checkFile(path string, fix bool) (*checkResult, *xlsx.CheckResult,
 			res.Fixed = true
 		}
 		if cr.Data != nil {
-			// What the fix stores replaces results the file marked as out of
-			// date, or filled ones it lacked: none of them was known, so none
-			// moved or is new (as with the editors, which count only results
-			// that were stored and current). The report has the features and
-			// the lint.
-			a.trackBytes(path, data, cr.Data)
+			// What the fix stores tells the session what the file holds now:
+			// a result an earlier step of a batch left out is back, one that
+			// moved is moved, and an error stored where none was is new (as
+			// with the editors, a result the file marked out of date or
+			// lacked was not known, so it did not move).
+			a.trackBytes(path, data, cr.Data, a.fixResults(cr.Changes)...)
 		}
 		wb = cr.After
 	} else {
@@ -276,6 +276,32 @@ func (a *app) checkFile(path string, fix bool) (*checkResult, *xlsx.CheckResult,
 	res.Findings = append(own, lintFindings(lint.Check(wb, lint.Options{}))...)
 	sort.SliceStable(res.Findings, func(i, j int) bool { return res.Findings[i].Severity > res.Findings[j].Severity })
 	return res, cr, nil
+}
+
+// fixResults are the results check --fix stored, dropped or replaced, as
+// the session follows them: only the cells it already follows (an earlier
+// step of a batch worked on them) and the errors it stored, which is all
+// the report can use of them.
+func (a *app) fixResults(cs []xlsx.Change) []xlsx.ResultChange {
+	var out []xlsx.ResultChange
+	for _, c := range cs {
+		if c.Kind != "stored" && c.Kind != "replaced" && c.Kind != "dropped" {
+			continue
+		}
+		rc := xlsx.ResultChange{Sheet: c.Sheet, Row: c.Row, Col: c.Col, After: c.After, Now: c.Kind != "dropped", Reached: true}
+		follows := a.session.follows(c.Sheet, c.Row, c.Col)
+		if rc.Now && c.After.Kind != grid.Error && !follows {
+			continue
+		}
+		if !rc.Now {
+			if !follows {
+				continue
+			}
+			rc.After, rc.Why = grid.Cell{}, c.Why
+		}
+		out = append(out, rc)
+	}
+	return out
 }
 
 func lintFindings(fs []lint.Finding) []checkFinding {

@@ -932,3 +932,37 @@ func TestCheckAgainstLarge(t *testing.T) {
 		t.Errorf("no cause: %+v", m)
 	}
 }
+
+// Comparing features takes time in step with their number, not its square:
+// 40,000 validations and as many conditional formats, one per cell, with a
+// few lost, shifted by rows inserted, in well under a second.
+func TestLostFeaturesMany(t *testing.T) {
+	const n = 40000
+	var before, after []xlsx.Feature
+	for r := 1; r <= n; r++ {
+		cell := grid.CellName(r, 2)
+		before = append(before,
+			xlsx.Feature{Kind: xlsx.FeatureValidation, Sheet: "Data", Where: cell, Type: "whole", Rule: "between|0|9"},
+			xlsx.Feature{Kind: xlsx.FeatureCond, Sheet: "Data", Where: cell, Type: "cellIs", Rule: "greaterThan|5"})
+		if r%10000 != 0 { // four of each lost
+			after = append(after,
+				xlsx.Feature{Kind: xlsx.FeatureValidation, Sheet: "Data", Where: grid.CellName(r+1, 2), Type: "whole", Rule: "between|0|9"},
+				xlsx.Feature{Kind: xlsx.FeatureCond, Sheet: "Data", Where: grid.CellName(r+1, 2), Type: "cellIs", Rule: "greaterThan|5"})
+		}
+	}
+	start := time.Now()
+	// One row inserted above them all.
+	got := lostFeatures(before, after, nil, nil, func(_, ref string) string {
+		rg, err := grid.ParseRange(ref)
+		if err != nil {
+			return ref
+		}
+		return grid.CellName(rg.R1+1, rg.C1)
+	})
+	if len(got) != 8 {
+		t.Errorf("%d lost, want 8: %v", len(got), got)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("took %s", took)
+	}
+}
