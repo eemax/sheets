@@ -254,8 +254,9 @@ They judge files, never a command's output text.
    And a replace put every number in its reach when its find held a digit,
    a space, an `e` or a dot, as seven of the generator's 15 finds do
    (`Apple`, `N/A`, `Acme Inc.`): a `replace Apple Pear` that also wiped
-   1200 was no finding (f1.4); it is now, as `Data!B1: outside the edit's
-   reach, it held number 1200, and holds nothing now`. Neither change makes
+   1200 was no finding (f1.4); it is now, as
+   `Data!B1: outside the edit's reach, it held number 1200, and holds nothing now`.
+   Neither change makes
    a new finding in the default run, and a scratch copy that calls every
    rewrite of a name a finding shows the default run rewrites names often
    (renames, inserts, moves, sheet copies), so the check is put to work.
@@ -617,7 +618,8 @@ holding a sort). A bug may have several faces, one line each (the escape: a
 `text` finding, and an `editors` one where a formula reads the text). Where
 a face needs what the edit does not show, the invariant says it: a typed
 text, or a formula lost, in a dynamic array's results (before the edit or
-after) ends its detail with
+after), and a cell outside the reach that changed in one's results before
+the edit, ends its detail with
 `, in the results of the dynamic array at U2:U4`,
 which the bug `spill-overwrites` reads (a face on what the cell held could
 not take a text the array put there without hiding every slip of the text
@@ -795,6 +797,7 @@ named their bugs (or a new face of one), each with a repro:
 | seed 718113, 20 minutes (fresh, fix round 2) | 45,052 | 522 | 115.9 | 1 | spill-overwrites, a number typed into an array's results, seen by the reach invariant as its format lost (a new face) |
 | seed 720212, 20 minutes (fresh, before map-order's paste faces) | 58,497 | 717 | 122.6 | 1 | map-order, a script's paste over a dynamic array an earlier edit set, a formula in one editor's file and none in the other's (a new face) |
 | seed 720212 again, 20 minutes (with the editors face) | 57,912 | 711 | 122.8 | 1 | map-order, the same sequence, its formula lost in both editors' files, seen by the kinds invariant (a new face) |
+| seed 720212 a third time, 20 minutes (the last commit's known.txt) | 55,240 | 677 | 122.6 | 0 | |
 
 - **The rate** is about 115 findings per 10,000 edits, nearly all the
   escape (60 to 67% of each run's) and sort editors (32 to 36%), then map
@@ -892,10 +895,25 @@ named their bugs (or a new face of one), each with a repro:
   replays as sort-editors now. A fresh seed may still find a bug known.txt
   does not name, about one in 10,000 to 50,000 edits by these runs: that is
   what the run is for, and it fails until known.txt names it.
-- **LibreOffice's second opinion**, in the three 20-minute runs: 116
-  workbooks each; 3,984, 4,068 and 4,231 plain formulas with a result sheets
-  stored, of which 15, 12 and 11 differ (the same kinds of difference as
-  seed 7's).
+- **The last run** is seed 720212's third 20 minutes, on the last commit's
+  known.txt (`long-seed720212-20m-third.log`): 55,240 edits (51,245 applied)
+  in 9,059 sequences on 23 fresh pools; 677 findings, **122.6 per 10,000
+  edits**, 0 new: escape 439, sort-editors 217, map-order 10,
+  spill-overwrites 4, script-legacy-dynamic 3, table-header-control 3,
+  insert-turns-dynamic 1. It passes, and each of the 19 bug lines' repros
+  still shows its bug. The seed's first run (`long-fresh-20m-final.log`, a
+  fresh seed) and its second (`long-seed720212-20m-again.log`) each made one
+  finding no face took, the same sequence's two faces of map-order, which
+  known.txt names now.
+- **LibreOffice's second opinion**, in the three 20-minute runs of fix round
+  1: 116 workbooks each; 3,984, 4,068 and 4,231 plain formulas with a result
+  sheets stored, of which 15, 12 and 11 differ (the same kinds of difference
+  as seed 7's). In the last run: 117 workbooks sent and recalculated, 4,381
+  plain formulas with a result, 4,371 agree and 10 differ. Seven are a
+  range read where one value goes (`=Data!C2:C3*2` in `Plan!C5`: sheets
+  189.82, LibreOffice `#VALUE!`; or another row's value). Three are a `SUM`:
+  1910 against 1911 once, and twice a `SUM` of another sheet's column, 0
+  against 2 and 5. They are for the Excel oracle (WP-11) to settle.
 
 ## Timings
 
@@ -996,8 +1014,10 @@ repro 10 times under `-race` too, 16 s there (1 s plain), and now checks that
 half in the plain run only. Names and the replace's display cost no time a
 run can see (the default run's 2,000 edits in 35.5 s).
 
-**On the last commit** (fix round 2's faces: the reach invariant naming a
-dynamic array's results, script-legacy-dynamic's delete, map-order's paste),
+**On the last code** (06fd17d: fix round 2's faces, the reach invariant
+naming a dynamic array's results, script-legacy-dynamic's delete, map-order's
+editors paste; the kinds face and `TestBugReproAnyFace` after it add 0.2 s
+to the plain step and 0.4 s to the race step),
 `time scripts/check.sh full` on the same MacBook, 2026-11-19, alone, at a
 load average of 2.8 to 5.4: **118.5 s** (1,406 tests), the fuzz package
 47.8 s in the plain step and 63.7 s in the race step, 16.5 s under the bar
