@@ -581,6 +581,16 @@ func TestAgainstRegressClearedBeside(t *testing.T) {
 	// A total row below the table: the record cleared is among the rows kept.
 	totalled := regressBook(t, dir, "totalled.xlsx", regressTable+"Total\t\t\n",
 		[]string{"set", "Data!B7", "=SUM(Data!B2:B6)", "Summary!A1", "=SUM(Data!B2:B6)", "Summary!A2", "=COUNTA(Data!A2:A6)"}, []string{"check", "--fix"})
+	// A formula column (Revenue = Units × Price) in the rows: a sort writes the
+	// formulas of the rows it moves again for their new place, and what they hold
+	// then shows nothing of a row deleted before it.
+	revenue := regressBook(t, dir, "revenue.xlsx", "Region\tUnits\tPrice\tRevenue\nNorth\t5\t30\t\nSouth\t7\t20\t\nEast\t3\t50\t\nWest\t9\t10\t\nMid\t4\t25\t\n",
+		[]string{"set", "Data!D2", "=B2*C2", "Data!D3", "=B3*C3", "Data!D4", "=B4*C4", "Data!D5", "=B5*C5", "Data!D6", "=B6*C6",
+			"Summary!A1", "=SUM(Data!B2:B6)", "Summary!A2", "=COUNTA(Data!A2:A6)"}, []string{"check", "--fix"})
+	// The same with a total row inside the formulas' range: a record cleared
+	// among the others, a row deleted and one inserted, read the same.
+	short := regressBook(t, dir, "short.xlsx", "Region\tUnits\nMid\t53\nWest\t50\nSouth\t63\nHub\t60\nTotal\t\n",
+		[]string{"set", "Data!B6", "=SUM(Data!B2:B5)", "Summary!A1", "=SUM(Data!B2:B5)", "Summary!A2", "=COUNTA(Data!A2:A5)"}, []string{"check", "--fix"})
 	insert := [][]string{{"cols", "insert", "Data!B"}, {"set", "Data!B1", "Code", "Data!B2", "X1", "Data!B3", "X2", "Data!B4", "X3", "Data!B5", "X4", "Data!B6", "X5"}}
 	with := func(cmds ...[]string) [][]string { return append(append([][]string{}, insert...), cmds...) }
 	for _, c := range []struct {
@@ -609,6 +619,12 @@ func TestAgainstRegressClearedBeside(t *testing.T) {
 			nil, 3, map[string][2]string{"Data!A6": {`"East"`, ""}, "Data!B6": {"3", ""}, "Data!C6": {"50", ""}}, 0},
 		{"a sort, a record deleted and a blank row inserted above a total row", totalled, [][]string{{"sort", "Data!A1:C6", "Units:desc"}, {"rows", "delete", "Data!6"}, {"rows", "insert", "Data!6"}},
 			[]string{"row added Data!6", "row removed Data!4"}, 0, nil, 0},
+		{"a sort, a record cleared among the others, a total row below", totalled, [][]string{{"sort", "Data!A1:C6", "Units"}, {"clear", "Data!A4:C4"}},
+			nil, 3, map[string][2]string{"Data!A4": {`"North"`, ""}, "Data!B4": {"5", ""}, "Data!C4": {"30", ""}}, 0},
+		{"a row deleted and a cell set, then the table sorted, a formula column in it", revenue, [][]string{{"rows", "delete", "Data!4"}, {"set", "Data!B4", "77"}, {"sort", "Data!A1:D5", "Units"}},
+			[]string{"row removed Data!4"}, 1, nil, 0},
+		{"a sort, a record cleared where the rows kept read the same as a row deleted and a blank one inserted", short,
+			[][]string{{"sort", "Data!A1:B5", "Units"}, {"clear", "Data!A4:B4"}}, nil, 2, map[string][2]string{"Data!A4": {`"Hub"`, ""}, "Data!B4": {"60", ""}}, 0},
 		{"a sort, the last record deleted", before, [][]string{{"sort", "Data", "Units:desc"}, {"rows", "delete", "Data!6"}},
 			[]string{"row removed Data!4"}, 0, nil, 0},
 		{"a sort, the last record deleted and a cell set", before, [][]string{{"sort", "Data", "Units:desc"}, {"rows", "delete", "Data!6"}, {"set", "Data!B6", "77"}},

@@ -2008,16 +2008,23 @@ func (r *report) typedRemoved(j *job, jobs []*job) (bool, bool) {
 	// for a name), and what the new version holds in its place.
 	type probe struct{ text, home, now string }
 	var probes []probe
+	type movedBlock struct{ cols, rows map[int]bool }
 	type placed struct {
 		sb       *grid.Sheet
 		row, col map[int]int
+		// moved are the old rows a sort moved (of the whole rows, and of each
+		// block's columns): a sort writes the formulas of the rows it moves again
+		// for their new place, so what such a formula holds now tells nothing of
+		// the rows removed or kept.
+		moved  map[int]bool
+		blocks []movedBlock
 	}
 	places := map[string]*placed{}
 	for _, k := range jobs {
 		if k == nil {
 			continue
 		}
-		pl := &placed{sb: k.sb, row: map[int]int{}, col: map[int]int{}}
+		pl := &placed{sb: k.sb, row: map[int]int{}, col: map[int]int{}, moved: map[int]bool{}}
 		for _, q := range k.rows {
 			if q.Old > 0 && q.New > 0 {
 				pl.row[q.Old] = q.New
@@ -2026,12 +2033,40 @@ func (r *report) typedRemoved(j *job, jobs []*job) (bool, bool) {
 		for _, c := range k.cols {
 			pl.col[c[0]] = c[1]
 		}
+		for _, m := range k.moved {
+			for i := 0; i < m.Rows; i++ {
+				pl.moved[m.From+i] = true
+			}
+		}
+		for _, b := range k.blocks {
+			mb := movedBlock{cols: map[int]bool{}, rows: map[int]bool{}}
+			for _, c := range b.cols {
+				mb.cols[c[0]] = true
+			}
+			for _, m := range b.moved {
+				for i := 0; i < m.Rows; i++ {
+					mb.rows[m.From+i] = true
+				}
+			}
+			pl.blocks = append(pl.blocks, mb)
+		}
 		places[strings.ToLower(k.sa.Name)] = pl
+	}
+	sorted := func(pl *placed, row, col int) bool {
+		if pl.moved[row] {
+			return true
+		}
+		for _, b := range pl.blocks {
+			if b.cols[col] && b.rows[row] {
+				return true
+			}
+		}
+		return false
 	}
 	lo := slices.Min(typedOld)
 	for at := range r.tracerA().Touching(j.sa.Name, [][2]int{{lo, grid.MaxRows}}, false) {
 		pl := places[strings.ToLower(at.Sheet)]
-		if pl == nil {
+		if pl == nil || sorted(pl, at.Row, at.Col) {
 			continue
 		}
 		c, d := r.A.wb.Sheet(at.Sheet).At(at.Row, at.Col), pl.sb.At(pl.row[at.Row], pl.col[at.Col])
@@ -2646,10 +2681,13 @@ func (r *report) align() (diff.Alignment, []*job) {
 				continue
 			}
 			// Rows typed over were edited in place unless something shows they
-			// were removed; the last rows removed alone, removed unless
-			// something shows they were cleared.
+			// were removed, and so was a row removed with a blank one added in
+			// its place among the rows kept (a record cleared in a sorted
+			// table, as a row removed and one added in the same place are
+			// paired); the last rows removed alone, removed unless something
+			// shows they were cleared.
 			removed, kept := r.typedRemoved(j, jobs)
-			if len(j.typed) > 0 && !removed || len(j.typed) == 0 && kept {
+			if inPlace := len(j.typed)+len(j.clearedAt) > 0; inPlace && !removed || !inPlace && kept {
 				redo = append(redo, i)
 			}
 		}
