@@ -104,8 +104,11 @@ bug map-order: set,write,do,script editors; repro long 701746; detail : stream h
 
 # Known (README, other seeds' findings: script kinds): a script that inserts
 # rows or columns leaves a legacy array with a dynamic array's cell metadata:
-# it is stored as a dynamic array.
-bug script-legacy-dynamic: script kinds; repro long 702888; detail =IF\(N\("l"\)=0,.*\) is stored as a dynamic array, not a legacy array$; edit \.insert\(
+# it is stored as a dynamic array. One that deletes them does too (seed
+# 366284: a script sets Data!I3 to =B2:B4*2 and deletes column C, and the
+# legacy array that moves into I3, =SUM(B2:B9*#REF!), is stored as a dynamic
+# array).
+bug script-legacy-dynamic: script kinds; repro long 702888; detail =IF\(N\("l"\)=0,.*\) is stored as a dynamic array, not a legacy array$; edit \.(insert|delete)\(
 
 # New (long mode, seed 7): a control character typed into an Excel table's
 # header (set 'Data!B1' $'ctl\x01x') is written raw into the table's part:
@@ -128,8 +131,15 @@ bug table-header-control: set,script xml; repro long 700021; detail xl/tables/ta
 # these faces read that. A text is quoted as Go quotes it, so a quote in it
 # reads as \" (seed 402252: write 'Data!T2' typing say "hi" into U3, which the
 # array in U2 fills: U3 holds its "Fig!"); each text in a face takes that.
+# A number typed into an array's results is lost to it the same way, which no
+# invariant judges (only a text typed is read back), but the cell takes the
+# number's format; once the array no longer covers it, sheets drops the cell,
+# format and all, which the reach invariant sees (seed 718113: set 'Data!M3'
+# 1,200 into the array at M2, then set M2 to =SEQUENCE(1,2): M3, shown as
+# #,##0 before, is General now).
 bug spill-overwrites: set,write text; repro long 711157; detail typed the text "(?:[^"\\]|\\.)*", and the cell holds .*, in the results of the dynamic array at [A-Z]+[0-9]+:[A-Z]+[0-9]+$
 bug spill-overwrites: set,write,do kinds; repro long 4001600827; detail : the edit should leave a [a-z ]+ there, and it holds no formula \(it was lost\), in the results of the dynamic array at [A-Z]+[0-9]+:[A-Z]+[0-9]+$
+bug spill-overwrites: set,write,do reach; repro long 71811303084; detail : outside the edit's reach, it held number .* shown as .*, and is shown as General now, in the results of the dynamic array at [A-Z]+[0-9]+:[A-Z]+[0-9]+$
 
 # New (long mode, seeds 61002 and 341566): an edit of rows or columns turns a
 # plain formula that reads no range (or one only through an aggregate) into a

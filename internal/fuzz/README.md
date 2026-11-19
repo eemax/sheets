@@ -165,9 +165,10 @@ They judge files, never a command's output text.
    (`reach.go`, driven by the model of kinds) says which cells it may
    change: the cells a `set`, `write` or `clear` names, a `copy`'s target, a
    `move`'s source and target, the range a `sort` takes (the whole sheet when
-   it names a sheet or a table), the values a `replace` finds (as sheets shows
-   them, ignoring case; a find a formatted number can hold matches every
-   number), the rows or columns an insert adds, and a sheet copied. Every
+   it names a sheet or a table), the values a `replace` finds (as sheets'
+   replace reads them, `grid.Display`: a date as 2026-07-01, 12%; a number
+   with no format too; ignoring case: the whole find must be in one of these
+   texts), the rows or columns an insert adds, and a sheet copied. Every
    other cell is followed through the edit (rows and columns inserted or
    deleted move it, a sheet renamed takes it along) and must hold what it
    held, where it stands now; an empty one must stay empty, and no sheet may
@@ -192,6 +193,12 @@ They judge files, never a command's output text.
      model moves it is a finding too. Any other edit leaves every formula
      outside its reach as it was, letter for letter. The references are read
      by a scanner that skips strings and names (`LOG10`, `_xlfn.SEQUENCE`).
+     **Defined names** are judged the same way (`checkNames`), since no edit
+     names one: each name of the workbook before is there after, under its
+     scope (a sheet renamed takes it along), its references as the edit's
+     shifts put them (rows inserted in `Units` grow it, a move of `Data!C2`
+     takes `Rate` along), and letter for letter after an edit that moves no
+     cells; no name appears but one scoped to a sheet the edit copied.
 
      The first version took any rewrite of a formula's references, by any
      edit that moves cells. A slip in `formula.MoveRefs` that reads
@@ -205,7 +212,7 @@ They judge files, never a command's output text.
    - **recomputed dependents:** a formula's value may change when it reads a
      cell whose value may (in the reach, or a formula whose value may, to a
      fixpoint), when its references were rewritten, when it uses a defined
-     name the edit defined again (rows deleted from `Units`), or when its
+     name the edit's shifts rewrote (rows deleted from `Units`), or when its
      result is unknown before or after (pending: sheets computed a result it
      did not know, or dropped one it cannot vouch for). An array's other
      cells change with its formula, and with an edit that reaches into it or
@@ -214,8 +221,10 @@ They judge files, never a command's output text.
    So a slip that writes a cell the edit does not name, moves one it should
    not, loses or rewrites a formula elsewhere (or shifts a reference other
    than the edit does), recomputes one with nothing it reads changed, or
-   shows a cell another way, is a finding. `TestReach` holds 63 cases, right
-   and wrong (18 of them the shifts), `TestReachFormats` the formats,
+   shows a cell another way, is a finding. `TestReach` holds 78 cases, right
+   and wrong (18 of them the shifts, 10 the names, 3 a replace's numbers, 2
+   two dynamic arrays whose results meet),
+   `TestReachFormats` the formats (and a replace reading a date),
    `TestRefToken` what the scanner reads, and `TestModelReadsGeneratedEdits`
    that the model reads every edit the generator makes on the pool. The
    default run makes no reach finding on today's code, with the shifts and
@@ -235,6 +244,21 @@ They judge files, never a command's output text.
    the reference (8 false findings in long mode's 20 minutes, each of which
    replays clean now). The check costs no time a run can see (36 s for the
    default run, as before).
+
+   Two holes the audit found, and closed in fix round 2. The model took any
+   defined name the edit rewrote as expected, whatever the edit, and every
+   formula using it as free to change: a slip that rewrote `Units` on a
+   `set 'Data!Z1' 5` (`Data!$B$2:$B$2` to `Data!$B$2:$B$3`), and the
+   `SUM(Units)` it took from 1 to 6, were no finding (f1.3). It is now:
+   `the defined name Units, outside the edit's reach, referred to =Data!$B$2:$B$2, and refers to =Data!$B$2:$B$3 now, after an edit that moves no cells`.
+   And a replace put every number in its reach when its find held a digit,
+   a space, an `e` or a dot, as seven of the generator's 15 finds do
+   (`Apple`, `N/A`, `Acme Inc.`): a `replace Apple Pear` that also wiped
+   1200 was no finding (f1.4); it is now, as `Data!B1: outside the edit's
+   reach, it held number 1200, and holds nothing now`. Neither change makes
+   a new finding in the default run, and a scratch copy that calls every
+   rewrite of a name a finding shows the default run rewrites names often
+   (renames, inserts, moves, sheet copies), so the check is put to work.
 4. **editors:** the streaming and the full editor give the same sheets,
    cells, formulas, kinds (arrays and spills) and values, pending or not.
    Both must also take the edit, or both refuse it.
@@ -601,7 +625,12 @@ writer). The repro is a sequence that shows it, `long` for
 one on long mode's pools; a long run replays each at its end, up to 10 times
 (the map-order bug's editors face shows one replay in two), and
 `TestBugRepros` replays those on the committed pool in every `go test`
-(all of them with `SHEETS_FUZZ=long`). Faces are kept narrow, so a new bug of
+(all of them with `SHEETS_FUZZ=long`). A repro that no longer shows its bug
+is reported as fixed, and one whose pool cannot be made as not replayed,
+with that pool's own failure; neither fails a run or the suite, so a fix of
+a listed bug passes before its lines are removed (the first version failed
+`TestBugRepros` on it, `fixed? escape`, in every `go test`: fuzzer-long's
+audit, f1.2; `TestBugsFixedReported` holds both). Faces are kept narrow, so a new bug of
 the same class and invariant still reads as new, and so do the mutants':
 `TestKnownFaces` holds real findings of each bug, and findings that no face
 may take (WP-12's mutant's formula lost by a set on a new sheet, the
@@ -652,14 +681,20 @@ fuzzer for a time, not a count, over pools it makes fresh.
   why and for how many sequences, and their findings are not long ones. The
   bugs known.txt names are known there too, and a long entry whose sequence
   ran on the committed pool is not reported fixed: its own pool never ran.
-  The repros on long mode's pools cannot be replayed, and the log says which.
-  (The first version failed such a run on known bugs and called 12 long
-  entries fixed, two of them bugs that still reproduce: f0.4.)
-  `TestPoolsFallBack` and `TestFixed` hold the cases. `TestFreshPools`
-  (with `SHEETS_FUZZ=long` only: it runs uv, and the default tests use no
-  network) checks that a seed's pool is the same each time and another
-  seed's another, with files from both producers that hold the invariants
-  and name their kinds.
+  The repros on long mode's pools cannot be replayed, and the log says which,
+  each with its own pool's failure. (The first version failed such a run on
+  known bugs and called 12 long entries fixed, two of them bugs that still
+  reproduce: f0.4. The second passed `TestFuzz` but failed the package:
+  `TestBugRepros` erred once for each long repro, every line naming pool
+  7006's command, the first to fail, and `TestFreshPools` failed: f1.5.)
+  `TestPoolsFallBack`, `TestFixed` and `TestBugsFixedReported` hold the
+  cases. `TestFreshPools` (with `SHEETS_FUZZ=long` only: it runs uv, and the
+  default tests use no network) checks that a seed's pool is the same each
+  time and another seed's another, with files from both producers that hold
+  the invariants and name their kinds. When uv cannot run openpyxl and
+  XlsxWriter at all, it is skipped and says why; a pool that cannot be made
+  with uv working fails it. So `SHEETS_FUZZ=long go test ./internal/fuzz`
+  with no uv passes, and says what it could not do.
 - **LibreOffice's second opinion:** up to 120 workbooks the sequences leave,
   spread over the run, are recalculated by LibreOffice
   (`soffice --convert-to xlsx`, recalculating on load), and the values sheets stored
@@ -742,6 +777,18 @@ named their bugs (or a new face of one), each with a repro:
 | seed 341566, 20 minutes (fresh) | 49,048 | 555 | 113.2 | 4 | replace-loses-kind (named during the run), table-header-renamed, insert-turns-dynamic, spill-overwrites (a text the array put there) |
 | seed 757171, 20 minutes (fresh) | 47,432 | 529 | 111.5 | 1 | sort-editors (the full editor's result empty, not pending: the face widened) |
 | seed 341566 again, 20 minutes | 46,878 | 518 | 110.5 | 0 | |
+| seed 664355, 3 minutes (the audit's, fix round 2) | 11,470 | 140 | 122.1 | 1 | insert-turns-dynamic, by a batch's cols insert (the face took only the rows and cols classes: f1.1) |
+| seed 664355 again, 3 minutes (fix round 2) | 10,590 | 131 | 123.7 | 0 | |
+| seeds 812207, 455903 and 290611, 3 minutes each, side by side (fix round 2) | 25,813 | 267 | 103.4 | 0 | |
+| seed 548657, 20 minutes (fresh, fix round 2) | 74,582 | 837 | 112.2 | 1 | insert-turns-dynamic, a plain `=MIN(C2:E2)` turned dynamic by a rows insert (the face took no range at all: widened to an aggregate's) |
+| seeds 173309, 926041, 384127, 519884 and 237760, 5 minutes each, two at a time beside a 20-minute run (fix round 2) | 56,285 | 690 | 122.6 | 0 | |
+| seed 702553, 5 minutes (fix round 2) | 10,765 | 143 | 132.8 | 1 | full-keeps-array-metadata (new) |
+| seed 915488, 20 minutes (fresh, fix round 2) | 50,025 | 582 | 116.3 | 2 | the reach model's own slip (two arrays whose results meet), intersection-kept (new) |
+| seeds 611573, 847201, 158843 and 433019, 10 minutes each, two at a time beside a 20-minute run (fix round 2) | 89,020 | 1,025 | 115.1 | 0 | |
+| seed 402252, 20 minutes (fresh, fix round 2) | 45,397 | 503 | 110.8 | 1 | spill-overwrites, a typed text with a quote in it (`say "hi"`: the face took none, widened) |
+| seeds 771942 and 290155, 10 minutes each, side by side beside a 20-minute run (fix round 2) | 44,221 | 554 | 125.3 | 1 | intersection-kept, moved to a row its range does not cross (`#VALUE!`: the face took a number only, widened) |
+| seeds 366284 and 905117, 10 minutes each, side by side beside a 20-minute run (fix round 2) | 43,849 | 512 | 116.8 | 1 | script-legacy-dynamic, by a script's column delete (the face took an insert only, widened) |
+| seed 718113, 20 minutes (fresh, fix round 2) | 45,052 | 522 | 115.9 | 1 | spill-overwrites, a number typed into an array's results, seen by the reach invariant as its format lost (a new face) |
 
 - **The rate** is about 115 findings per 10,000 edits, nearly all the
   escape (60 to 67% of each run's) and sort editors (32 to 36%), then map
@@ -750,9 +797,67 @@ named their bugs (or a new face of one), each with a repro:
   spill-overwrites 7, script-legacy-dynamic 4, replace-loses-kind 3,
   insert-turns-dynamic 3, map-order's editors face 2 (counted here), and
   table-header-renamed 1, counting each once, as named now.
+- **Two new bugs**, named in known.txt with a repro each, for follow-ups:
+  - **full-keeps-array-metadata** (seed 702553): where a dynamic array's
+    cell was written over and moved, the full editor keeps the array's cell
+    metadata on a plain formula typed there and stores it as a dynamic
+    array; the streaming editor stores it plain. A batch sets
+    `'Bob''s Plan'!F2` to a dynamic array and then 1,200 in one command, a
+    script inserts rows 2:3, and a write of a plain formula at F4 leaves F4 a
+    dynamic array in the full editor's file alone (`long write editors 70255300604`).
+  - **intersection-kept** (seed 915488): a plain formula whose range gives
+    it one value by its row (`R&D!C2`, `=IF(N("p")=0,'Data'!C2:C3*2)`,
+    reads `Data!C2`) keeps the result it had when an insert moves it to
+    another row, where it reads another (in C3, `Data!C3*2`, 0.58, not 6). A
+    set that computes it and a rows insert after it leave 6 in both editors'
+    files, which no invariant can see (the reach model does not know a
+    result depends on its row); a script shows it, since the full editor's
+    computes the sheet again at its end and the streaming editor's does not
+    (`long script editors 91548805029`). Moved to a row its range does not
+    cross, it is `#VALUE!` in the full editor's file (seed 771942: a script
+    deletes row 1 of Notes, and C1, from C2, `=IF(N("p")=0,'Data'!C2:C3*10)`,
+    is `#VALUE!` there and 637.4 in the streaming one's).
+
+  For their faces, the editors' differences say more: a value names the
+  formula both editors hold (`R&D!C3 (=IF(N("p")=0,'Data'!C2:C3*2)): stream holds number 6, full holds number 0.58`),
+  and the arrays end with those one editor has alone
+  (`dynamic arrays: stream has F5, full has F4 F5 (the full editor's alone: F4)`),
+  so a face can ask for a range read by its row, or an array the full editor
+  adds rather than one the streaming editor loses (`TestCompareRanges`).
+- **A slip of the reach model, fixed:** it took a cell in the results of
+  two dynamic arrays that meet as one array's, so a rows delete that took
+  the other array (`D6`'s `B2:B4*2` over D6:D8, `C8`'s `SEQUENCE(1,2)` over
+  C8:D8) read as D8 lost (`long rows-delete reach 91548806198`). A cell
+  changes with any array it is in now (Excel shows `#SPILL!` at one; sheets
+  lays them out in map order), and the sequence replays as map-order.
+- **A batch or a script shows a bug its single edits show** when it holds
+  one of them: sort-editors and insert-turns-dynamic each have a face for
+  `do` and `script` whose edit pattern asks for the edit in it (a sort; an
+  insert or a delete of rows or columns), so a batch that holds none still
+  reads as new. The audit's fresh seed, 664355, found insert-turns-dynamic
+  through a batch (a script that sets `'Bob''s Plan'!E2` to a plain formula
+  and deletes column A, then a batch's `cols insert 'Data 2!A' -n 2`: D2 is
+  stored as a dynamic array), which the face for rows and cols alone did not
+  take (f1.1). script-legacy-dynamic's face asks for an insert or a delete
+  (seed 366284: a script sets `Data!I3` to `=B2:B4*2` and deletes column C,
+  and the legacy array that moves into I3 is stored as a dynamic array); a
+  script that moves the array (`moveTo`) still reads as new.
+- **A bug seen by another invariant** gets a face for it. A number typed
+  into a dynamic array's results is lost to them as a text is
+  (spill-overwrites), but no invariant reads a number back; the cell keeps the
+  number's format, though, and once the array no longer covers it, sheets
+  drops the cell, format and all (seed 718113: set `Data!M3` 1,200 into the
+  array at M2, then set M2 to `=SEQUENCE(1,2)`: M3, shown as `#,##0` before,
+  is General now). The reach invariant says when a cell was in a dynamic
+  array's results, as the text and kinds invariants do
+  (`, in the results of the dynamic array at M2:M3`), and the face takes only
+  a format lost there, to General.
 - **Faces that must not hide a mutant:** the rows-insert mutant turns a
-  formula that reads a range dynamic, so insert-turns-dynamic takes only one
-  that reads none; WP-12's mutant loses a formula on a new sheet, in no
+  formula that reads a range where one value goes dynamic (`=B3:B4*2`), so
+  insert-turns-dynamic takes only one that reads no range but through an
+  aggregate (`SUM`, `MIN`, `MAX`, `COUNTIF`, `AVERAGE`: seed 548657's
+  `=MIN(C2:E2)`, which the first face, taking no colon at all, did not);
+  WP-12's mutant loses a formula on a new sheet, in no
   array's results, so spill-overwrites takes only one in an array's results.
   The seven mutants are found with every face in place (The mutants).
 - **The 20-minute runs** are `SHEETS_FUZZ=long SHEETS_FUZZ_TIME=20m go test ./internal/fuzz -count=1 -v -timeout 30m`
@@ -859,6 +964,16 @@ and formats cost no time a run can see (the default run's 2,000 edits in
 36 s, as before), and `TestBugRepros` replays three sequences on the
 committed pool in under a second.
 
+**After fix round 2** (defined names and a replace's numbers in the reach
+invariant, `TestBugRepros` reporting, `TestBugsFixedReported`),
+`time scripts/check.sh full` on the same MacBook, 2026-11-19, alone, at a
+load average of 2.3 to 4.2: **114.6 s** (1,400 tests), the fuzz package
+46.8 s in the plain step and 61.7 s in the race step, 20 s under the bar.
+The first try took 133.1 s: `TestBugsFixedReported` replayed a fixed bug's
+repro 10 times under `-race` too, 16 s there (1 s plain), and now checks that
+half in the plain run only. Names and the replace's display cost no time a
+run can see (the default run's 2,000 edits in 35.5 s).
+
 ## How the fuzzer was checked
 
 ### The mutants
@@ -924,8 +1039,11 @@ logs are in `~/sheets-evals/wave2/fuzz-mutants/first-round/`). Run again with
 the check against the tree without the mutant (fuzzer-long's fix round 1),
 it took 66 s, building the base's test binary included, and found the same
 seven findings, each one whose sequence the base makes with no finding; no
-finding was the code's. The logs are in `~/sheets-evals/wave2/fuzz-mutants/`.
-With the seed the audit used, 40016, `rewrite-loses-kind` is found as
+finding was the code's. Run once more after fix round 2 (the reach
+invariant's names and replace, insert-turns-dynamic's batch face), it took
+66 s and found the same seven findings again, each the base makes clean.
+The logs are in `~/sheets-evals/wave2/fuzz-mutants/` (fix round 1's in
+`fix1-logs/` there). With the seed the audit used, 40016, `rewrite-loses-kind` is found as
 `long move kinds 4001600026` after 3 s, which replays with no finding on the
 tree as it is (`seed40016-rewrite-loses-kind/` there); the first version
 took the known `long sort editors 4001600015` for it. Each finding of seed

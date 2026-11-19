@@ -189,7 +189,7 @@ func TestReach(t *testing.T) {
 		{name: "a dynamic array spills again", before: m{"Data!A1": "1", "Data!A2": "2", "Data!M2": "=A1:A2*2|2", "Data!M3": "4"}, extra: []string{"Data!M2:M3"}, edit: edit("set", "Data!A2", "5"),
 			after: m{"Data!A1": "1", "Data!A2": "5", "Data!M2": "=A1:A2*2|2", "Data!M3": "10"}},
 		{name: "a dynamic array's results change with nothing it reads changed", before: m{"Data!A1": "1", "Data!A2": "2", "Data!M2": "=A1:A2*2|2", "Data!M3": "4", "Data!Z1": "0"}, extra: []string{"Data!M2:M3"}, edit: edit("set", "Data!Z1", "5"),
-			after: m{"Data!A1": "1", "Data!A2": "2", "Data!M2": "=A1:A2*2|2", "Data!M3": "7", "Data!Z1": "5"}, wantErr: "Data!M3: outside the edit's reach, it held number 4, and holds number 7 now"},
+			after: m{"Data!A1": "1", "Data!A2": "2", "Data!M2": "=A1:A2*2|2", "Data!M3": "7", "Data!Z1": "5"}, wantErr: "Data!M3: outside the edit's reach, it held number 4, and holds number 7 now, in the results of the dynamic array at M2:M3"},
 		{name: "a set in a dynamic array's results", before: m{"Data!M2": "=SEQUENCE(2)|1", "Data!M3": "2"}, extra: []string{"Data!M2:M3"}, edit: edit("set", "Data!M3", "'x"),
 			afterExtra: []string{}, after: m{"Data!M2": "=SEQUENCE(2)|0", "Data!M3": "'x"}},
 		// Two arrays whose results meet share a cell, either's (seed 915488:

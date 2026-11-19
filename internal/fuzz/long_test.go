@@ -551,6 +551,8 @@ func TestKnownFaces(t *testing.T) {
 		{"copy", "repeat", `stream editor: the same edit on the same bytes saved two different workbooks: Data!M3: the first run holds number 86.06, the repeat holds nothing`, plain("copy"), "map-order"},
 		{"move", "repeat", `full editor: the same edit on the same bytes saved two different workbooks: Data!M3: the first run has =, the repeat has =IF(N("p")=0,IF(B7>1000,1,""))`, plain("move"), "map-order"},
 		{"script", "kinds", `stream editor: sheet1.xml U2: =IF(N("l")=0,UPPER(A2:A4)) is stored as a dynamic array, not a legacy array`, script(`ws.getRange("2:2").insert("Down");`), "script-legacy-dynamic"},
+		// A script's column delete (seed 366284).
+		{"script", "kinds", `stream editor: sheet1.xml I3: =IF(N("l")=0,SUM(B2:B9*#REF!)) is stored as a dynamic array, not a legacy array`, script(`ws.getRange("I3").setFormula("=IF(N(\"d\")=0,B2:B4*2)");` + "\n" + `ws.getRange("C:C").delete("Left");`), "script-legacy-dynamic"},
 		{"set", "xml", `stream editor: xl/tables/table1.xml: XML syntax error on line 2: illegal character code U+001F`, plain("set"), "table-header-control"},
 		{"write", "text", `Data!O3: typed the text "_x0041_", and the cell holds number 18, in the results of the dynamic array at O2:O3`, plain("write"), "spill-overwrites"},
 		{"do", "kinds", `Calc!E3: the edit should leave a dynamic array there, and it holds no formula (it was lost), in the results of the dynamic array at E2:E5`, batch("set 'Calc!E3' '=IF(N(\"d\")=0,SUM(IF(B2:B6>3,B2:B6)))' 'Calc!B7' '=IF(N(\"p\")=0,UPPER(A7))' 'Calc!E2' '=IF(N(\"d\")=0,B2:B5>3)'\n"), "spill-overwrites"},
@@ -563,6 +565,9 @@ func TestKnownFaces(t *testing.T) {
 		{"rows-insert", "kinds", `stream editor: sheet2.xml C2: =IF(N("p")=0,MIN(C2:E2)) is stored as a dynamic array, not a plain formula`, plain("rows-insert"), "insert-turns-dynamic"},
 		{"cols-delete", "kinds", `stream editor: sheet1.xml I2: =IF(N("p")=0,COUNTIF(B2:B9,">3")) is stored as a dynamic array, not a plain formula`, plain("cols-delete"), "insert-turns-dynamic"},
 		{"set", "text", `Data!U3: typed the text "N/A", and the cell holds text "R&D!", in the results of the dynamic array at U2:U4`, plain("set"), "spill-overwrites"},
+		{"set", "reach", `Data!M3: outside the edit's reach, it held number 2 shown as #,##0_);(#,##0), and is shown as General now, in the results of the dynamic array at M2:M3`, plain("set"), "spill-overwrites"},
+		{"set", "reach", `Data!M3: outside the edit's reach, it held number 2 shown as #,##0_);(#,##0), and is shown as General now`, plain("set"), ""},
+		{"set", "reach", `Data!M3: outside the edit's reach, it held number 2 shown as General, and is shown as 0.00 now, in the results of the dynamic array at M2:M3`, plain("set"), ""},
 		// A text with a quote in it, quoted as Go quotes it (seed 402252).
 		{"write", "text", `Data!U3: typed the text "say \"hi\"", and the cell holds text "Fig!", in the results of the dynamic array at U2:U4`, plain("write"), "spill-overwrites"},
 		{"write", "text", `Data!I2: typed the text "say \"_x005F_x0041_\"", and the cell holds text "say \"_x005FA\""`, plain("write"), "escape"},
@@ -574,13 +579,13 @@ func TestKnownFaces(t *testing.T) {
 		// A batch or a script holding an insert or a delete (the audit's seed
 		// 664355, fuzzer-long's audit f1.1).
 		{"do", "kinds", `stream editor: sheet3.xml D2: =IF(N("p")=0,OR(E2,C2>250)) is stored as a dynamic array, not a plain formula`, batch("set 'Data 2!E9' '=IF(N(\"p\")=0,IF(B9>1000,1,\"\"))'\ncols insert 'Data 2!A' -n 2\n"), "insert-turns-dynamic"},
-		{"script", "kinds", `stream editor: sheet3.xml D2: =IF(N("p")=0,OR(E2,C2>250)) is stored as a dynamic array, not a plain formula`, script(`ws.getRange("E2").setFormula("=IF(N(\"p\")=0,OR(F2,D2>250))");`+"\n"+`ws.getRange("A:A").delete("Left");`), "insert-turns-dynamic"},
+		{"script", "kinds", `stream editor: sheet3.xml D2: =IF(N("p")=0,OR(E2,C2>250)) is stored as a dynamic array, not a plain formula`, script(`ws.getRange("E2").setFormula("=IF(N(\"p\")=0,OR(F2,D2>250))");` + "\n" + `ws.getRange("A:A").delete("Left");`), "insert-turns-dynamic"},
 		// The full editor keeping a dynamic array's metadata on a plain formula
 		// typed where one stood (seed 702553).
 		{"write", "editors", `Bob's Plan!dynamic arrays: stream has F5, full has F4 F5 (the full editor's alone: F4)`, Edit{Class: "write", Args: []string{"write", FileArg, "Bob's Plan!F4", "--from", "tsv"}, Stdin: "=IF(N(\"p\")=0,SUM(B2:B6))\n"}, "full-keeps-array-metadata"},
 		{"set", "editors", `Data!dynamic arrays: stream has none, full has F7 (the full editor's alone: F7)`, Edit{Class: "set", Args: []string{"set", FileArg, "Data!F7", `=IF(N("p")=0,NOT(F7))`}}, "full-keeps-array-metadata"},
 		// A formula read by its row, moved by a script's insert (seed 915488).
-		{"script", "editors", `R&D!C3 (=IF(N("p")=0,'Data'!C2:C3*2)): stream holds number 6, full holds number 0.58`, script(`ws.getRange("H7").setFormula("=IF(N(\"p\")=0,NOT(F7))");`+"\n"+`ws.getRange("1:1").insert("Down");`), "intersection-kept"},
+		{"script", "editors", `R&D!C3 (=IF(N("p")=0,'Data'!C2:C3*2)): stream holds number 6, full holds number 0.58`, script(`ws.getRange("H7").setFormula("=IF(N(\"p\")=0,NOT(F7))");` + "\n" + `ws.getRange("1:1").insert("Down");`), "intersection-kept"},
 		{"script", "editors", `Notes!C1 (=IF(N("p")=0,'Data'!C2:C3*10)): stream holds number 637.4, full holds error "#VALUE!"`, script(`ws.getRange("1:1").delete("Up");`), "intersection-kept"},
 		// New: not a known bug's.
 		{"script", "editors", `Notes!C1 (=IF(N("p")=0,'Data'!C2:C3*10)): stream holds number 637.4, full holds error "#REF!"`, script(`ws.getRange("1:1").delete("Up");`), ""},

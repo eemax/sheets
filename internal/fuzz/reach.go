@@ -101,6 +101,8 @@ type region struct {
 	rg        grid.Range // its range, with its formula's cell first
 	disturbed bool       // the edit reached into it, or cut through it
 	gone      bool       // its formula's row or column was deleted
+	dynamic   bool       // a dynamic array's results (else a legacy array's range)
+	was       grid.Range // its range before the edit
 }
 
 func newReach(wb *grid.Workbook) *reach {
@@ -114,12 +116,12 @@ func newReach(wb *grid.Workbook) *reach {
 		}
 		rc.at[k] = cells
 		seen := map[[2]int]bool{}
-		for _, a := range append(append([]grid.Range{}, s.Spills...), s.Arrays...) {
+		for i, a := range append(append([]grid.Range{}, s.Spills...), s.Arrays...) {
 			if seen[[2]int{a.R1, a.C1}] {
 				continue
 			}
 			seen[[2]int{a.R1, a.C1}] = true
-			g := &region{sheet: k, rg: a}
+			g := &region{sheet: k, rg: a, dynamic: i < len(s.Spills), was: a}
 			rc.regions = append(rc.regions, g)
 			for r := a.R1; r <= a.R2; r++ {
 				for c := a.C1; c <= a.C2; c++ {
@@ -173,6 +175,19 @@ func (rc *reach) cell(o origin) grid.Cell {
 		return s.Get(o.r, o.c)
 	}
 	return grid.Cell{}
+}
+
+// resultsNote says that a cell was in the results of a dynamic array before
+// the edit, other than its first cell, as spillNote does for the kinds and
+// text invariants: ", in the results of the dynamic array at M2:M3" (a known
+// bug's face reads it: spill-overwrites), "" when it was in none.
+func (rc *reach) resultsNote(o origin) string {
+	for _, g := range rc.member[o] {
+		if g.dynamic {
+			return ", in the results of the dynamic array at " + g.was.String()
+		}
+	}
+	return ""
 }
 
 // shown are the texts a replace may read a value of the workbook before the
@@ -1016,10 +1031,10 @@ func (rc *reach) check(after *grid.Workbook, sheets map[string]bool, order []str
 			if b.Formula != "" {
 				why = ", and nothing it reads may have changed"
 			}
-			return fmt.Sprintf("%s: outside the edit's reach, it held %s, and holds %s now%s", name(t.k, t.p), describe(b), describe(a), why)
+			return fmt.Sprintf("%s: outside the edit's reach, it held %s, and holds %s now%s%s", name(t.k, t.p), describe(b), describe(a), why, rc.resultsNote(t.o))
 		}
 		if fb, fa := rc.before.FormatOf(&b), after.FormatOf(&a); !sameFormat(fb, fa) {
-			return fmt.Sprintf("%s: outside the edit's reach, it held %s shown as %s, and is shown as %s now", name(t.k, t.p), describe(b), formatName(fb), formatName(fa))
+			return fmt.Sprintf("%s: outside the edit's reach, it held %s shown as %s, and is shown as %s now%s", name(t.k, t.p), describe(b), formatName(fb), formatName(fa), rc.resultsNote(t.o))
 		}
 	}
 	// Cells empty before (or moved away) that hold something now.
