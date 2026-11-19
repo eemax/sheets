@@ -184,9 +184,10 @@ def unstarted(d):
         meta = json.load(open(os.path.join(d, "meta.json")))
     except (OSError, json.JSONDecodeError):
         return True
-    if not meta.get("turns"):
-        return True
     answer = open(os.path.join(d, "answer.txt")).read() if os.path.exists(os.path.join(d, "answer.txt")) else ""
+    if not meta.get("turns"):
+        # An agent killed at the timeout started, worked and hung: not a failed start.
+        return not re.search(r"stopped after \d+ s", answer)
     return bool(meta.get("error")) and bool(_NO_START.search(answer[:500]))
 
 
@@ -496,9 +497,11 @@ PAIRS = [("python+check", "python-hint"), ("python+check", "python"), ("python-h
 
 
 def report(out, results, arms):
-    # A task LibreOffice could not convert for any arm, after the retry, is
-    # UNGRADABLE for every arm alike: left out of every rate and test.
-    bad = sorted({r["id"] for r in results if LO_DROPPED in (r.get("problems") or [])})
+    # A task LibreOffice could not convert for any arm, after the retry (the
+    # golden file or every result alike), is UNGRADABLE for every arm. One arm's
+    # own unopenable file, where another arm's converts, is that arm's failure.
+    dropped = lambda r: LO_DROPPED in (r.get("problems") or [])
+    bad = sorted(i for i in {r["id"] for r in results} if all(dropped(r) for r in results if r["id"] == i))
     all_results = results
     results = [r for r in results if r["id"] not in bad]
     by = {(r["id"], r["arm"]): r for r in results}
