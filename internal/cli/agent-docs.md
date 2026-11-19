@@ -167,11 +167,17 @@ naming a table that does not exist is refused.
   showed before: an error the edit reached is counted and marked
   `no result stored before`); formulas whose result sheets cannot
   know now (`unknown:`, by reason); charts, validations, conditional
-  formats, shapes, pictures, names and tables lost (`lost:`); and the
-  lint findings that changed, by rule. A value you did not mean to move, a
-  new error or a feature lost is a mistake: fix it, or `sheets undo`
-  (whose own report leaves the cells uncompared and gives the features
-  lost and the lint). The results come from what the save computed
+  formats, shapes, pictures, names and tables lost (`lost:`); the
+  validations and conditional formats the command replaced on the same
+  cells with another of their kind, a dropdown's items or a bound edited
+  (`0 features lost (1 changed)`, and a `changed:` line: an edit, not a
+  loss); and the lint findings that changed, by rule. A feature that went
+  with its cells (`sheets move`, to another sheet too) or with its sheet
+  is not lost. A value you did not mean to move, a new error or a feature
+  lost is a mistake: fix it, or `sheets undo` (whose own report leaves the
+  cells uncompared and gives the features lost and the lint, the two
+  versions paired as `check --against` pairs them, so undoing a rename or
+  an insert loses nothing). The results come from what the save computed
   anyway; the features and lint are read off the file before and after.
   The lint only when the sheets hold up to 512 KB of XML (about 3,500 rows
   of four columns): on a larger workbook it says `lint not compared` and
@@ -433,21 +439,36 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     `insert_rows` and `delete_rows` rewrite no formula), a sheet it reads
     was renamed (openpyxl's `ws.title`), or the cells it reads were cut and
     pasted elsewhere (openpyxl's `move_range`), with what Excel would have
-    written. Inputs compare exactly: a barcode, an order number or an
-    amount in the millions changed in its last digit is a change, in a CSV
-    file too; computed results compare to Excel's 15 digits;
+    written. A defined name left as it was in the same way is flagged in
+    `structure` (`name not rewritten`, with what Excel writes), and the
+    values it moved name it as their cause. Inputs compare exactly: a
+    barcode, an order number or an amount in the millions changed in its
+    last digit is a change, in a CSV file too; computed results compare to
+    Excel's 15 digits;
   - `moved`: computed values that moved, each with its cause upstream (an
     input or formula change, rows added, removed or moved, a sheet or a
     name removed, a name changed), traced through what each formula reads.
     A value that several changed cells reach names each of them, the first
     five and then `and more` (`input Data!B2, input Data!B3`: a MAX that
     one of them moved is the work of the one that moved it, but both are
-    among its sources). A formula changed is listed too, with what it
-    computes now. A value that moved because rows added or removed moved
+    among its sources). An input that changed is always named, whatever
+    rows were added, removed or moved around it: a structure change that
+    reaches the value comes first, the inputs after it. Rows a sort moved
+    are a cause only of what reads them by position (a lookup, `=Data!B2`,
+    a sum of some of them): a total over all of them (SUM, MAX, COUNT, an
+    average, SUMIF or SUMPRODUCT over the same rows, a table's column)
+    did not move for the sort, and names the input that moved it. Rows
+    removed are a cause only of what they can move that way: a MAX that
+    rose, a COUNT that rose, or a SUM that fell though they held 0 or less,
+    moved for something else. A formula changed is listed too, with what
+    it computes now. A value that moved because rows added or removed moved
     its formula or what it reads (`=ROW()`, a range older Excel reads one
     cell of) has them as its cause;
   - `unexplained`: values that moved with nothing upstream changed, the
-    sign of a broken formula or a wrong stored result;
+    sign of a broken formula or a wrong stored result (a total whose rows
+    were sorted too: no sort moves it). What it moved is in `moved` with
+    it as its cause; the cells that read it and hold what they held are
+    listed with it (`held` in `--json`), not as unknown;
   - `features_lost`: charts (on a chart sheet too), validations,
     conditional formats, shapes, pictures, names and tables the old
     version had (openpyxl drops shapes, a chart grouped with a shape, and
@@ -458,9 +479,12 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     added or removed rewrite), a chart of the same type in the same place
     or on the same data, a shape or picture in the same place or by name,
     a name or table by its name. Another of its kind is no stand-in: a
-    chart added beside a dropped one, a validation beside one dropped, the
-    banding `sheets fmt` writes over a conditional format, and a rule whose
-    formula was edited, are the old one lost. A column deleted takes the
+    chart added beside a dropped one, a validation beside one dropped, and
+    the banding `sheets fmt` writes over a conditional format, are the old
+    one lost. A validation or conditional format whose cells hold another
+    of its kind now (a bound raised, a dropdown's items, a threshold) was
+    edited: it is in `features_changed`, with its rule before and after,
+    not lost, and sets no exit 1. A column deleted takes the
     validations on it, and the ones beside it move into its place. An
     Excel table renamed (the same columns, on the same sheet) is followed,
     not lost: the formulas that read it by name, which Excel rewrites, are
@@ -516,7 +540,9 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   unexplained, a feature is lost, or the check finds errors. On a CSV file
   it compares values only. On 150,000 rows it takes about 4 to 6 seconds
   (15,000 rows changed, or all of them sorted), and about 9 when openpyxl
-  left one version without results.
+  left one version without results. It compares the cells there are, not
+  the used range's rectangle: a sheet with A1:B1 and one value at
+  XFD1048576 takes under a second.
 - `--receipt receipt.md` (with `--against`) writes that report for a
   person, as Markdown to attach to a pull request or a message: what to
   look at first (values unexplained, features lost, formula changes
