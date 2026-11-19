@@ -1657,13 +1657,25 @@ func (r *report) record(j *job) []removal {
 	// another row's now). A formula reading the whole span as a set (a
 	// total over the rows sorted) does not follow: the rows moved among
 	// themselves.
-	moves := func(ms []diff.Moved, c1, c2, dc int) {
+	moves := func(ms []diff.Moved, c1, c2, dc int, pasted bool) {
+		// The span the rows moved within, as numbered now (formulas read it so).
+		// A sort's rows come from rows of the block as the old version numbers
+		// them, which rows added or removed above or inside it make another
+		// number: the rows they went to are the block. Cells cut and pasted went
+		// from one place to another, and the span takes in both.
 		lo, hi := 0, 0
 		for _, m := range ms {
-			if lo == 0 || min(m.From, m.To) < lo {
-				lo = min(m.From, m.To)
+			first := m.To
+			if pasted {
+				first = min(m.From, m.To)
 			}
-			hi = max(hi, m.From+m.Rows-1, m.To+m.Rows-1)
+			if lo == 0 || first < lo {
+				lo = first
+			}
+			hi = max(hi, m.To+m.Rows-1)
+			if pasted {
+				hi = max(hi, m.From+m.Rows-1)
+			}
 		}
 		if lo == 0 {
 			return
@@ -1697,13 +1709,21 @@ func (r *report) record(j *job) []removal {
 			moved(grid.Range{R1: m.To, C1: max(c1, 1), R2: m.To + m.Rows - 1, C2: map[bool]int{true: grid.MaxCols, false: c2}[c1 == 0]},
 				"rows moved: "+movedRange(sb.Name, m.To, m.To+m.Rows-1, c1, c2)+was, carried)
 		}
-		moved(span, "rows moved: "+movedRange(sb.Name, lo, hi, min(c1, c1-dc), max(c2, c2-dc)), []grid.Range{span})
+		// A sort's span holds the rows that stayed too, whose formulas read their
+		// own row: none of them follows the span. Cells cut and pasted leave
+		// the rows between where they were, a total among them reading cells the
+		// move emptied: only the cells that arrived are carried.
+		spanCarried := []grid.Range{span}
+		if pasted {
+			spanCarried = carried
+		}
+		moved(span, "rows moved: "+movedRange(sb.Name, lo, hi, min(c1, c1-dc), max(c2, c2-dc)), spanCarried)
 	}
-	moves(j.moved, 0, 0, 0)
+	moves(j.moved, 0, 0, 0, false)
 	for _, b := range j.blocks {
-		moves(b.moved, b.c1, b.c2, 0)
+		moves(b.moved, b.c1, b.c2, 0, false)
 	}
-	moves(j.pasted, j.pasteC1, j.pasteC2, j.pasteDC)
+	moves(j.pasted, j.pasteC1, j.pasteC2, j.pasteDC, true)
 	return removals
 }
 
@@ -2059,7 +2079,7 @@ func (r *report) align() (diff.Alignment, []*job) {
 // alignedFeatures compares two versions' features (fa, fb) with their sheets
 // and lines paired as check --against pairs them: a sheet renamed, rows and
 // columns added and removed, found by what the sheets hold.
-func alignedFeatures(before, after []byte, fa, fb []xlsx.Feature) ([]lostFeature, []changedFeature, bool) {
+func alignedFeatures(before, after []byte, fa, fb []xlsx.Feature, across bool) ([]lostFeature, []changedFeature, bool) {
 	wa, err := xlsx.ReadBytes(before)
 	if err != nil {
 		return nil, nil, false
@@ -2070,7 +2090,7 @@ func alignedFeatures(before, after []byte, fa, fb []xlsx.Feature) ([]lostFeature
 	}
 	r := &report{out: &againstResult{}, A: &sideOf{wb: wa}, B: &sideOf{wb: wb}, arrays: arrays{}, fa: fa, fb: fb}
 	r.align()
-	lost, changed := compareFeatures(fa, fb, r.renamed, r.tables, r.shiftRef)
+	lost, changed := compareFeaturesAcross(fa, fb, r.renamed, r.tables, r.shiftRef, across)
 	return lost, changed, true
 }
 
@@ -2162,6 +2182,14 @@ func (r *report) linesMove(removed bool, home *grid.Sheet, at xlsx.At, sheet str
 		return false
 	}
 	d, was := c.after.num-c.before.num, c.before.num
+	if call.Func == "MAX" || call.Func == "MIN" {
+		// Compared with what the lines held, as the file stores it: across two
+		// date systems that is not told.
+		if r.A.wb.Date1904 != r.B.wb.Date1904 {
+			return true
+		}
+		d, was = c.after.cell.Num-c.before.cell.Num, c.before.cell.Num
+	}
 	if removed {
 		switch call.Func {
 		case "MAX":
@@ -2263,6 +2291,9 @@ func (r *report) resultHeld(c *candidate) bool {
 		return true
 	}
 	got := c.after.num
+	if call.Func == "MAX" || call.Func == "MIN" {
+		got = c.after.cell.Num // the number the file stores, as hi and lo are
+	}
 	return math.Abs(got-want) <= 1e-9*math.Max(1, math.Max(math.Abs(got), math.Abs(want)))
 }
 
@@ -2272,7 +2303,8 @@ var aggregates = map[string]bool{"MAX": true, "MIN": true, "COUNT": true, "COUNT
 
 // held is what some lines of a sheet hold, of the cells a formula reads.
 type held struct {
-	sum, hi, lo     float64
+	sum             float64 // as the values compared count it (dates in the 1900 system)
+	hi, lo          float64 // the numbers the file stores: what a MAX or a MIN compares
 	numbers, filled int
 	unknown         bool // a value there is unknown
 	shifted         bool // a number there is a date counted in the 1900 system for a 1904 workbook
@@ -2285,13 +2317,15 @@ func (h *held) add(v valueOf) {
 		h.unknown = true
 		return
 	case v.cell.Kind == grid.Number:
-		n := v.num // as the values compared count it (dates in the 1900 system)
+		n := v.num
 		h.shifted = h.shifted || v.shift != 0
-		if h.numbers == 0 || n > h.hi {
-			h.hi = n
+		// A MAX or a MIN compares what the file stores (in a 1904 workbook, a
+		// date's serial is not the one the 1900 system counts).
+		if raw := v.cell.Num; h.numbers == 0 || raw > h.hi {
+			h.hi = raw
 		}
-		if h.numbers == 0 || n < h.lo {
-			h.lo = n
+		if raw := v.cell.Num; h.numbers == 0 || raw < h.lo {
+			h.lo = raw
 		}
 		h.sum += n
 		h.numbers++

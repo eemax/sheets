@@ -47,6 +47,7 @@ type Source struct {
 // Tracer follows a workbook's formulas forward from cells.
 type Tracer struct {
 	fs     []*formulaAt
+	keys   []cellKey // each formula's cell, by index
 	refs   [][]formula.Ref
 	opaque map[cellKey]string   // why what a formula reads cannot be told
 	at     map[cellKey]int      // formulas, by cell
@@ -82,6 +83,7 @@ func NewTracer(wb *grid.Workbook) *Tracer {
 			k := keyOf(s.Name, r, c)
 			t.at[k] = len(t.fs)
 			t.fs = append(t.fs, f)
+			t.keys = append(t.keys, k)
 			d := formula.DepsOf(f.calc)
 			for _, n := range formula.DepsOf(f.text).Names {
 				ln := strings.ToLower(n)
@@ -313,24 +315,87 @@ func (t *Tracer) SpreadBut(sources []Source, stop map[At]bool) map[At]int {
 			}
 		}
 	}
-	free := map[[2]int]bool{} // by formula and source: reads the source's block as a set
+	// A source Reordered belongs to a group: those with the same sheet, block
+	// and orientation (every run of rows a sort moved is a source of its own
+	// over the same block), for orderFree to be told once of a formula and a
+	// group, not once for each run.
+	type blockKey struct {
+		sheet  string
+		block  grid.Range
+		across bool
+	}
+	groups := map[blockKey]int{}
+	group := make([]int, len(sources))
+	sheetOf := make([]string, len(sources)) // lower-cased
+	for i, s := range sources {
+		if s.Reordered.R2 > 0 {
+			sheetOf[i] = strings.ToLower(s.Sheet)
+			k := blockKey{sheetOf[i], s.Reordered, s.Across}
+			g, ok := groups[k]
+			if !ok {
+				g = len(groups)
+				groups[k] = g
+			}
+			group[i] = g
+		}
+	}
+	free := map[[2]int]bool{} // by formula and group
+	// carried indexes each source's Carried by rows (the runs of one sort share
+	// them: looked up for every formula a run's cells reach, so not scanned).
+	type carriedKey struct {
+		first *grid.Range
+		n     int
+	}
+	type carriedRows struct {
+		rs   []grid.Range // by first row
+		last []int        // the largest last row among rs[:i+1]
+	}
+	carried := map[carriedKey]*carriedRows{}
+	carriedAt := func(rgs []grid.Range, row, col int) bool {
+		if len(rgs) <= 4 {
+			for _, rg := range rgs {
+				if rg.Contains(row, col) {
+					return true
+				}
+			}
+			return false
+		}
+		key := carriedKey{&rgs[0], len(rgs)}
+		c := carried[key]
+		if c == nil {
+			c = &carriedRows{rs: append([]grid.Range{}, rgs...)}
+			sort.SliceStable(c.rs, func(i, j int) bool { return c.rs[i].R1 < c.rs[j].R1 })
+			hi := 0
+			for _, rg := range c.rs {
+				hi = max(hi, rg.R2)
+				c.last = append(c.last, hi)
+			}
+			carried[key] = c
+		}
+		for i := sort.Search(len(c.rs), func(i int) bool { return c.rs[i].R1 > row }) - 1; i >= 0 && c.last[i] >= row; i-- {
+			if c.rs[i].Contains(row, col) {
+				return true
+			}
+		}
+		return false
+	}
 	// follows tells whether a formula reading a source's cells follows it.
 	follows := func(id, src int) bool {
-		s := sources[src]
+		s := &sources[src]
 		if s.Reordered.R2 == 0 {
 			return true
 		}
-		if f := t.fs[id]; strings.EqualFold(f.sheet, s.Sheet) {
-			for _, rg := range s.Carried {
-				if rg.Contains(f.row, f.col) {
-					return false
-				}
-			}
+		// A formula that moved with its row was rewritten for the move, as for a
+		// copy, and reads its own row: except an array's, whose result spans
+		// rows and reads others besides (a sort leaves its formula where it
+		// is, and what it reads moved).
+		if f := t.fs[id]; t.keys[id].sheet == sheetOf[src] && carriedAt(s.Carried, f.row, f.col) && t.arrays[t.keys[id]].rg.Rows() < 2 {
+			return false
 		}
-		key := [2]int{id, src}
+		key := [2]int{id, group[src]}
 		isFree, ok := free[key]
 		if !ok {
-			isFree = t.orderFree(id, s)
+			isFree = t.orderFree(id, *s)
 			free[key] = isFree
 		}
 		return !isFree
@@ -370,9 +435,10 @@ func (t *Tracer) SpreadBut(sources []Source, stop map[At]bool) map[At]int {
 			continue // reached another way too: followed as that
 		}
 		x.readersOf(it.k, func(id int) {
-			if follows(id, it.src) {
-				f := t.fs[id]
-				reach(keyOf(f.sheet, f.row, f.col), it.src)
+			// One already reached is not looked at again (a lookup over the whole
+			// table is a reader of every cell of it).
+			if k := t.keys[id]; !reached[k] && follows(id, it.src) {
+				reach(k, it.src)
 			}
 		})
 	}

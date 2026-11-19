@@ -1029,3 +1029,182 @@ func TestAgainstCausesAddedRunsFast(t *testing.T) {
 		t.Errorf("check --against with %d runs of rows added took %s, over %s", rows/every-1, took.Round(time.Millisecond), limit)
 	}
 }
+
+// A sort with rows inserted above the sorted rows (a title row) or deleted
+// inside them (f2.1): the block the sort moved is the rows as numbered now,
+// so a total over all of them is still no work of the sort, and a result
+// nothing accounts for stays unexplained.
+func TestAgainstCausesSortRowsShifted(t *testing.T) {
+	dir, before := causesFixture(t)
+	for _, c := range []struct {
+		name string
+		cmds [][]string
+	}{
+		{"a row inserted above", [][]string{{"rows", "insert", "Data!1"}, {"sort", "Data!A2:D7", "Units:desc"}}},
+		{"a row deleted inside", [][]string{{"rows", "delete", "Data!3"}, {"sort", "Data!A1:D5", "Units:desc"}}},
+	} {
+		shifted := edited(t, before, filepath.Join(dir, "s.xlsx"), c.cmds...)
+		r, code := against(t, shifted, before)
+		for _, m := range r.Moved {
+			if m.Cell != "Summary!B7" && strings.Contains(m.Cause, "rows moved") {
+				t.Errorf("%s: %s moved for the sort: %q", c.name, m.Cell, m.Cause)
+			}
+		}
+		if code != 0 || len(r.Unexplained) != 0 || r.Summary.MovedRows == 0 {
+			t.Errorf("%s: exit %d, %+v, unexplained %+v", c.name, code, r.Summary, r.Unexplained)
+		}
+		if m := causes(r)["Summary!B7"]; !strings.HasPrefix(m, "rows moved: Data!") {
+			t.Errorf("%s: Summary!B7 (=Data!B2): cause %q", c.name, m)
+		}
+		// The total stored wrong: nothing accounts for it, with the sort as
+		// without it.
+		after := filepath.Join(dir, "a.xlsx")
+		stored(t, shifted, after, "B2", "999")
+		r, code = against(t, after, before)
+		if !unexplainedAt(r, "Summary!B2") || code != 1 {
+			t.Errorf("%s: a total stored as 999: exit %d, unexplained %+v, moved %+v", c.name, code, r.Unexplained, r.Moved)
+		}
+	}
+	// An input changed among the rows sorted: the totals over all of them
+	// moved for it, and the sort is named only for the cell that reads a row.
+	set := edited(t, before, filepath.Join(dir, "set.xlsx"), []string{"rows", "insert", "Data!1"}, []string{"sort", "Data!A2:D7", "Units:desc"}, []string{"set", "Data!B4", "11"})
+	r, code := against(t, set, before)
+	m := causes(r)
+	for _, c := range []string{"Data!B8", "Data!D8", "Summary!B2", "Summary!B3", "Summary!B4", "Summary!B5", "Summary!B6"} {
+		if m[c] != "input Data!B4" {
+			t.Errorf("%s: cause %q, want input Data!B4", c, m[c])
+		}
+	}
+	if code != 0 || len(r.Unexplained) != 0 {
+		t.Errorf("exit %d, unexplained %+v", code, r.Unexplained)
+	}
+}
+
+// Cells cut and pasted past a total row (f2.2): the total did not move and
+// reads the cells that left, so it moved for the move (the rows moved name
+// the span they passed over), not with nothing to say why.
+func TestAgainstCausesMoveBelowTotal(t *testing.T) {
+	dir, before := causesFixture(t)
+	for _, mv := range [][]string{{"move", "Data!A3:D4", "Data!A20"}, {"move", "Data!B3:C4", "Data!B20"}} {
+		after := edited(t, before, filepath.Join(dir, "a.xlsx"), mv)
+		r, code := against(t, after, before)
+		if code != 0 || len(r.Unexplained) != 0 {
+			t.Errorf("%v: exit %d, unexplained %+v", mv, code, r.Unexplained)
+		}
+		m := causes(r)
+		for _, c := range []string{"Data!B7", "Summary!B2"} {
+			if !strings.HasPrefix(m[c], "rows moved: Data!") {
+				t.Errorf("%v: %s: cause %q (moved %+v)", mv, c, m[c], r.Moved)
+			}
+		}
+	}
+}
+
+// The calls over what a sort moved cost the sorted rows once each, not once
+// for every run of rows it moved (f2.3): 20,000 rows sorted, 200 lookups over
+// the table, each run of rows a source of its own over the same block.
+func TestAgainstCausesSortRunsFast(t *testing.T) {
+	rows, lookups, limit := 20000, 200, 5*time.Second
+	if raceSlow > 1 {
+		rows, lookups, limit = 3000, 40, 0 // the race detector: what it finds, not how fast
+	}
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	var b strings.Builder
+	b.WriteString("Item\tUnits\tPrice\tRevenue\n")
+	for i := 0; i < rows; i++ {
+		fmt.Fprintf(&b, "I%d\t%d\t10\t=B{r}*C{r}\n", i, i*37%101)
+	}
+	before := filepath.Join(dir, "b.xlsx")
+	if out, code := runCLI(b.String(), "write", before, "Data!A1"); code != 0 {
+		t.Fatalf("write: %s", out)
+	}
+	args := []string{"set", before}
+	for k := 0; k < lookups; k++ {
+		args = append(args, fmt.Sprintf("Summary!A%d", k+1), fmt.Sprintf("I%d", k*97%rows), fmt.Sprintf("Summary!B%d", k+1), fmt.Sprintf("=VLOOKUP(A%d,Data!$A:$D,2,FALSE)", k+1))
+	}
+	if out, code := runCLI("", args...); code != 0 {
+		t.Fatalf("set: %s", out)
+	}
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"sort", fmt.Sprintf("Data!A1:D%d", rows+1), "Units:desc"})
+	var r causesResult
+	var code int
+	took := runWithin(limit, func() { r, code = against(t, after, before) })
+	t.Logf("%d rows sorted, %d lookups: %s", rows, lookups, took.Round(time.Millisecond))
+	if limit > 0 && took > limit {
+		t.Errorf("check --against after a sort of %d rows with %d lookups over them took %s, over %s", rows, lookups, took.Round(time.Millisecond), limit)
+	}
+	if code != 0 || len(r.Unexplained) != 0 || r.Summary.MovedRows < rows*9/10 {
+		t.Errorf("exit %d, %+v, unexplained %+v", code, r.Summary, r.Unexplained)
+	}
+}
+
+// A MAX or a MIN over dates in a workbook that counts them from 1904 (a
+// Mac's), in a cell that is no date: the result is a serial of that system,
+// and the dates are as many days short of the 1900 system the values are
+// compared in. The row removed that held the latest (earliest) date moved it;
+// a result nothing accounts for does not become the row's work (f2.4).
+func TestAgainstCausesDatesMaxMin1904(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	plain := filepath.Join(dir, "p.xlsx")
+	if out, code := runCLI("Item\tDue\nI1\t2026-01-05\nI2\t2026-01-17\nI3\t2026-01-03\nI4\t2026-01-29\nI5\t2026-01-11\n", "write", plain, "Data!A1"); code != 0 {
+		t.Fatal(out)
+	}
+	if out, code := runCLI("", "set", plain, "Summary!A1", "Latest", "Summary!B1", "=MAX(Data!B2:B6)", "Summary!A2", "Earliest", "Summary!B2", "=MIN(Data!B2:B6)"); code != 0 {
+		t.Fatal(out)
+	}
+	before := filepath.Join(dir, "b.xlsx")
+	rewriteParts(t, plain, before, func(name string, b []byte) []byte {
+		if name == "xl/workbook.xml" {
+			b = bytes.Replace(b, []byte("<workbookPr "), []byte(`<workbookPr date1904="true" `), 1)
+		}
+		return b
+	})
+	for _, c := range []struct{ name, row, cell string }{
+		{"the latest date's row", "Data!5", "Summary!B1"},   // 2026-01-29
+		{"the earliest date's row", "Data!4", "Summary!B2"}, // 2026-01-03
+	} {
+		after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", c.row})
+		r, code := against(t, after, before)
+		if m := causes(r)[c.cell]; !strings.HasPrefix(m, "rows removed: "+c.row) || len(r.Unexplained) != 0 || code != 0 {
+			t.Errorf("%s: %s: exit %d, cause %q, unexplained %+v, moved %+v", c.name, c.cell, code, m, r.Unexplained, r.Moved)
+		}
+	}
+	// A row that held neither date removed, and the MAX stored as another
+	// date: no work of the row.
+	deleted := edited(t, before, filepath.Join(dir, "d.xlsx"), []string{"rows", "delete", "Data!2"})
+	after := filepath.Join(dir, "w.xlsx")
+	stored(t, deleted, after, "B1", "47000")
+	if r, code := against(t, after, before); !unexplainedAt(r, "Summary!B1") || code != 1 {
+		t.Errorf("a MAX stored as another date: exit %d, unexplained %+v, moved %+v", code, r.Unexplained, r.Moved)
+	}
+}
+
+// An array formula in rows a sort moved (the fuzz pool's XlsxWriter file, whose
+// side columns hold one over two rows): it reads another row besides its own,
+// so what the sort moved moved its result (f2.5), with rows inserted above
+// the table or none.
+func TestAgainstCausesArraySorted(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before := filepath.Join(dir, "b.xlsx")
+	if err := os.WriteFile(before, mustRead(t, filepath.Join("..", "fuzz", "testdata", "pool", "xlsxwriter-05.xlsx")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		cmds [][]string
+		cell string
+	}{
+		{"sorted", [][]string{{"sort", "Data!A1:F12", "B:desc"}}, "Data!K3"},
+		{"a row inserted above", [][]string{{"rows", "insert", "Data!1"}, {"sort", "Data!A2:F13", "B:desc"}}, "Data!K4"},
+	} {
+		after := edited(t, before, filepath.Join(dir, "a.xlsx"), c.cmds...)
+		r, code := against(t, after, before)
+		// (Exit 1 is check's own findings on the file: an error value in it.)
+		if m := causes(r)[c.cell]; !strings.HasPrefix(m, "rows moved: Data!") || len(r.Unexplained) != 0 || code != 1 {
+			t.Errorf("%s: %s: exit %d, cause %q, unexplained %+v", c.name, c.cell, code, m, r.Unexplained)
+		}
+	}
+}
