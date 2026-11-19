@@ -458,9 +458,12 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     one of them moved is the work of the one that moved it, but both are
     among its sources). An input that changed is always named, whatever
     rows were added, removed or moved around it: a structure change that
-    reaches the value comes first, the inputs after it. Rows a sort moved
+    reaches the value comes first, the inputs after it (a row inserted and
+    typed in, and an input in the same column changed:
+    `rows added: Data!4, input Data!B2`). Rows a sort moved
     are a cause only of what reads them by position (a lookup, `=Data!B2`,
-    a sum of some of them, an array formula over several rows of them): a
+    a sum of some of them, an array formula over several rows of them, a
+    weight beside them that stays: `SUMPRODUCT(B2:B9,{1;2;3;4;5;6;7;8})`): a
     total over all of them (SUM, MAX, COUNT, an
     average, SUMIF or SUMPRODUCT over the same rows, a table's column,
     ranges combined cell by cell inside them: `SUMPRODUCT((A2:A9="East")*B2:B9)`,
@@ -563,7 +566,13 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   removed or added beside it that differs from it in the fewest cells. So is
   the last row of a table deleted and a cell set in its place, where nothing
   moves up: one row removed and the cell typed in (from empty), not every
-  cell of the row changed.
+  cell of the row changed, when what reads the rows shows they were removed
+  (a formula, a defined name or an Excel table reading them as Excel rewrote
+  it for the removal, and none as it was). Otherwise its values are the
+  same as the row's cells cleared and typed over where they are, and that
+  is what is reported, each cell changed, the cleared ones too: the last row
+  edited in place, a CSV file, a sheet nothing reads, openpyxl's
+  `delete_rows` (which rewrites no formula).
   Formulas Excel rewrites for rows or columns added or removed (a column
   inserted between the columns a formula reads too, or a row inserted on
   the sheet it reads), cells cut and pasted, a sheet renamed, or a sheet
