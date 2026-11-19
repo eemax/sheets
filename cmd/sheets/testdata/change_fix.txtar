@@ -66,6 +66,38 @@ shortform 15
 exec sheets --json query d.xlsx 'select * from Data' --into Out
 stdout '"change":\{"cells":9,'
 
+# A sort or move carrying formulas that had no result is nothing new; a
+# rewrite that keeps an error is not a new error, and one that makes
+# one is.
+stdin info.tsv
+exec sheets write k.xlsx Data!A1
+exec sheets sort k.xlsx Data N
+stdout ', 0 new unknowns,'
+exec sheets sort k.xlsx Data N:desc
+stdout ', 0 new unknowns,'
+exec sheets move k.xlsx Data!B2:B3 Data!D2
+stdout ', 0 new unknowns,'
+stdin div.tsv
+exec sheets write e.xlsx Data!A1
+exec sheets replace e.xlsx '1/' '2/' Data --formulas
+stdout ', 0 new errors,'
+exec sheets set e.xlsx Data!B2 '=3/A2'
+stdout ', 0 new errors,'
+exec sheets set e.xlsx Data!B3 '=3/A2'
+stdout ', 1 new error,'
+exec sheets set e.xlsx Data!B3 '=INFO("osversion")'
+stdout ', 1 new unknown,'
+exec sheets set e.xlsx Data!B3 '=INFO("release")'
+stdout ', 0 new unknowns,'
+
+-- info.tsv --
+N	X
+b	=INFO("osversion")
+a	=INFO("osversion")
+-- div.tsv --
+A	B
+0	=1/A2
+2	5
 -- ratios.tsv --
 Name	Val	Ratio
 b	2	=1/B2

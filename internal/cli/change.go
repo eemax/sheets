@@ -105,6 +105,7 @@ type resultTrack struct {
 	sheet   string // as spelled
 	written bool
 	carried bool // written, an error it showed where it came from
+	blank   bool // written, over a formula that had no result
 	before  grid.Cell
 	was     bool
 	after   grid.Cell
@@ -202,12 +203,12 @@ func (s *session) effects(ef xlsx.Effects) {
 		if r := s.results[p]; r != nil {
 			r.after, r.now, r.why = rc.After, rc.Now, rc.Why
 			if rc.Written {
-				r.carried = rc.Carried
+				r.carried, r.blank = rc.Carried, rc.Blank
 			}
 			r.written = r.written || rc.Written
 			continue
 		}
-		s.results[p] = &resultTrack{sheet: rc.Sheet, written: rc.Written, carried: rc.Carried, before: rc.Before, was: rc.Was, after: rc.After, now: rc.Now, why: rc.Why}
+		s.results[p] = &resultTrack{sheet: rc.Sheet, written: rc.Written, carried: rc.Carried, blank: rc.Blank, before: rc.Before, was: rc.Was, after: rc.After, now: rc.Now, why: rc.Why}
 	}
 	for _, w := range ef.Written {
 		p := cellPos{strings.ToLower(w.Sheet), w.Row, w.Col}
@@ -380,7 +381,9 @@ func (s *session) report() *changeReport {
 		cv := changeValue{Cell: ref, Before: before, After: showCell(t.after)}
 		switch {
 		case !t.now:
-			if !w && !t.was {
+			if !w && !t.was || w && t.blank {
+				// Nothing known before, or a formula that had no result
+				// and still has none: nothing new.
 				continue
 			}
 			r.Unknown++
@@ -402,7 +405,9 @@ func (s *session) report() *changeReport {
 				r.MovedList = append(r.MovedList, cv)
 			}
 		}
-		if t.after.Kind == grid.Error && (w && !t.carried || !w && t.was && t.before.Kind != grid.Error) {
+		// An error is new unless the formula showed one before: where it
+		// came from (a sort or move), or the result it had before a rewrite.
+		if t.after.Kind == grid.Error && !t.carried && (w || t.was) && !(t.was && t.before.Kind == grid.Error) {
 			r.Errors++
 			if len(r.ErrorList) < changeListed {
 				r.ErrorList = append(r.ErrorList, cv)

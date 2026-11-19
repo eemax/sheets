@@ -177,7 +177,7 @@ func (e *Editor) SortRange(sheet string, r grid.Range, keys []SortKey) (SortResu
 		if err := e.put(sheet, row, r.C1+k[1], h, text, pasteAll); err != nil {
 			return res, err
 		}
-		e.carryError(keyOf(sheet, row, r.C1+k[1]), h, text)
+		e.carry(keyOf(sheet, row, r.C1+k[1]), h, text)
 	}
 	// Comment threads follow their rows when saved.
 	e.patches.threadMoves = append(e.patches.threadMoves, threadMove{sheet: sheet, move: func(row, col int) (int, int, bool) {

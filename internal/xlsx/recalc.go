@@ -39,6 +39,12 @@ type formulaAt struct {
 	text     string
 	pending  bool      // its stored result was missing or stale when opened
 	stored   grid.Cell // its stored result when opened, if any (Empty if none)
+	// written: the formula is one this session wrote. prior is the stored
+	// result of the formula it replaced (priorKnown), or priorBlank: that
+	// one had none; for the change report (see effects.go).
+	written                bool
+	prior                  grid.Cell
+	priorKnown, priorBlank bool
 	// unprefixed: it calls a function stored without its prefix, which
 	// Excel shows as #NAME? (see grid.Cell.Unprefixed).
 	unprefixed bool
@@ -138,7 +144,9 @@ func (e *Editor) formulasNow() (map[cellKey]*formulaAt, error) {
 		if text == "" {
 			delete(all, k)
 		} else {
-			all[k] = &formulaAt{sheet: sheet, row: k.row, col: k.col, text: formula.FromFile(text), unprefixed: len(formula.Unprefixed(text)) > 0}
+			nf := &formulaAt{sheet: sheet, row: k.row, col: k.col, text: formula.FromFile(text), unprefixed: len(formula.Unprefixed(text)) > 0, written: true}
+			nf.notePrior(all[k])
+			all[k] = nf
 		}
 	}
 	return all, nil
@@ -424,10 +432,10 @@ func (rs *resolver) tableRanges(f *formulaAt, d formula.Deps) ([]formula.Ref, bo
 type calcState struct {
 	formulas  map[cellKey]*formulaAt // the workbook's formulas as they stand
 	rs        *resolver
-	changed   map[cellKey]string // cells written, by sheet name
-	carried   map[cellKey]bool   // formulas moved that showed an error already
-	recompute map[cellKey]bool   // formulas an edit of rows, columns or sheets reached
-	edited    bool               // rows, columns or sheets changed
+	changed   map[cellKey]string    // cells written, by sheet name
+	carried   map[cellKey]carryKind // formulas moved that showed an error, or had no result, already
+	recompute map[cellKey]bool      // formulas an edit of rows, columns or sheets reached
+	edited    bool                  // rows, columns or sheets changed
 	// restore stores again the results of formulas not recomputed: an
 	// edit of rows took them off with their formulas (see relines).
 	restore bool

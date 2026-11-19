@@ -31,6 +31,9 @@ type ResultChange struct {
 	// Carried: written, and the formula showed an error where it came from
 	// (a sort or move): an error already there, not a new one.
 	Carried bool
+	// Blank: written, over a formula that had no result (a sort or move
+	// carrying it, or a rewrite of it): no result now is nothing new.
+	Blank bool
 	// Before is the result stored when the session began; Was says it was
 	// known (a result stored and current).
 	Before grid.Cell
@@ -87,13 +90,16 @@ func SameResult(a, b grid.Cell) bool { return sameResult(a, b) }
 // effectOf is what computing f did to its stored result, or false when
 // the report has nothing to learn from it: a result recomputed to what it
 // was, or a written formula's plain value (the command reports those).
-func effectOf(f *formulaAt, written, carried, must bool, v grid.Cell, ok bool, why string) (ResultChange, bool) {
-	rc := ResultChange{Sheet: f.sheet, Row: f.row, Col: f.col, Written: written, Carried: written && carried, After: valueOnly(v), Now: ok, Why: why}
+func effectOf(f *formulaAt, written bool, carried carryKind, must bool, v grid.Cell, ok bool, why string) (ResultChange, bool) {
+	rc := ResultChange{Sheet: f.sheet, Row: f.row, Col: f.col, Written: written, Carried: written && carried == carryError, Blank: written && (carried == carryNone || f.priorBlank), After: valueOnly(v), Now: ok, Why: why}
 	if !ok {
 		rc.After = grid.Cell{}
 	}
 	if !written && f.stored.Kind != grid.Empty && !f.pending {
 		rc.Before, rc.Was = valueOnly(f.stored), true
+	}
+	if written && f.priorKnown {
+		rc.Before, rc.Was = f.prior, true
 	}
 	switch {
 	case !must:
@@ -143,10 +149,10 @@ func spillEffects(spilled map[cellKey]*spillCell) []ResultChange {
 // columns or sheets puts them (false: it took them).
 func (e *Editor) remapNotes(move func(cellKey) (cellKey, bool)) {
 	if len(e.carried) > 0 {
-		m := map[cellKey]bool{}
-		for k := range e.carried {
+		m := map[cellKey]carryKind{}
+		for k, kind := range e.carried {
 			if k2, ok := move(k); ok {
-				m[k2] = true
+				m[k2] = kind
 			}
 		}
 		e.carried = m
@@ -226,14 +232,44 @@ func (a *Auto) After() []byte {
 // recordOp notes a change of rows, columns or sheets.
 func (e *Editor) recordOp(op LineOp) { e.lineOps = append(e.lineOps, op) }
 
-// carryError notes a formula put where it stands by a sort or move that
-// showed an error where it came from.
-func (e *Editor) carryError(k cellKey, h *taken, text string) {
-	if text == "" || h.cell.Kind != grid.Error || h.cell.Pending {
+// carryKind is what a formula a sort or move carried showed where it came
+// from: an error, or no result.
+type carryKind uint8
+
+const (
+	carryNothing carryKind = iota
+	carryError
+	carryNone
+)
+
+// notePrior notes what the formula a write replaced held (old is the
+// formula as the session found it; nil if the cell held none).
+func (f *formulaAt) notePrior(old *formulaAt) {
+	switch {
+	case old == nil:
+	case old.written:
+		f.prior, f.priorKnown, f.priorBlank = old.prior, old.priorKnown, old.priorBlank
+	case old.pending || old.stored.Kind == grid.Empty:
+		f.priorBlank = true
+	default:
+		f.prior, f.priorKnown = valueOnly(old.stored), true
+	}
+}
+
+// carry notes a formula put where it stands by a sort or move that
+// showed an error, or no result, where it came from.
+func (e *Editor) carry(k cellKey, h *taken, text string) {
+	if text == "" {
+		return
+	}
+	kind := carryNone
+	if h.cell.Kind == grid.Error && !h.cell.Pending {
+		kind = carryError
+	} else if h.cell.Kind != grid.Empty && !h.cell.Pending {
 		return
 	}
 	if e.carried == nil {
-		e.carried = map[cellKey]bool{}
+		e.carried = map[cellKey]carryKind{}
 	}
-	e.carried[k] = true
+	e.carried[k] = kind
 }
