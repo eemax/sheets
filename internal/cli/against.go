@@ -1652,33 +1652,41 @@ func (r *report) record(j *job) []removal {
 	if len(j.colsRemoved) > 0 {
 		removals = append(removals, removalOf(j.colsRemoved, true))
 	}
+	// where gives the row now at an old row's place, as the lines added and
+	// removed put it (the rows it held moved elsewhere, perhaps: it is the
+	// place the rows moved from, as the rows between a row and where it went
+	// shifted into it).
+	added, removed := append([]int{}, j.rowsAdded...), append([]int{}, j.rowsRemoved...)
+	sort.Ints(added)
+	sort.Ints(removed)
+	where := func(old int) int {
+		n := old - sort.SearchInts(removed, old)
+		for _, a := range added {
+			if a > n {
+				break
+			}
+			n++
+		}
+		return n
+	}
 	// Rows moved, whole or in a block of columns, as causes: what reads
 	// them by position, and what a sort spans (every cell there may hold
 	// another row's now). A formula reading the whole span as a set (a
 	// total over the rows sorted) does not follow: the rows moved among
 	// themselves.
 	moves := func(ms []diff.Moved, c1, c2, dc int, pasted bool) {
-		// The span the rows moved within, as numbered now (formulas read it so).
-		// A sort's rows come from rows of the block as the old version numbers
-		// them, which rows added or removed above or inside it make another
-		// number: the rows they went to are the block. Cells cut and pasted went
-		// from one place to another, and the span takes in both.
+		// The span the rows moved within, as numbered now (formulas read it so):
+		// from where they were to where they went, every row between them
+		// holding another's now. Rows added above or removed inside the sorted
+		// rows number the old places otherwise than the old version did, so they
+		// are placed by where().
 		lo, hi := 0, 0
 		for _, m := range ms {
-			first := m.To
-			if pasted {
-				first = min(m.From, m.To)
-			}
+			first, last := min(m.To, where(m.From)), max(m.To+m.Rows-1, where(m.From+m.Rows-1))
 			if lo == 0 || first < lo {
 				lo = first
 			}
-			hi = max(hi, m.To+m.Rows-1)
-			if pasted {
-				hi = max(hi, m.From+m.Rows-1)
-			}
-		}
-		if lo == 0 {
-			return
+			hi = max(hi, last)
 		}
 		span := grid.Range{R1: lo, C1: max(min(c1, c1-dc), 1), R2: hi, C2: map[bool]int{true: grid.MaxCols, false: max(c2, c2-dc)}[c1 == 0]}
 		var carried []grid.Range

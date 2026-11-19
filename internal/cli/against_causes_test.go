@@ -1208,3 +1208,30 @@ func TestAgainstCausesArraySorted(t *testing.T) {
 		}
 	}
 }
+
+// The span a sort moved takes in the rows between where each moved row was
+// and where it went, which hold another row's now though they did not move,
+// as numbered now: with rows inserted above or deleted inside as without (the
+// fuzz pool's openpyxl file, whose side column reads each row's own cell).
+func TestAgainstCausesSortSpanBetween(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
+	before := filepath.Join(dir, "b.xlsx")
+	if err := os.WriteFile(before, mustRead(t, filepath.Join("..", "fuzz", "testdata", "pool", "openpyxl-24.xlsx")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		cmds [][]string
+	}{
+		{"sorted, one value set", [][]string{{"sort", "Data!A1:F12", "B:desc"}, {"set", "Data!B4", "55"}}},
+		{"a row inserted above, sorted", [][]string{{"rows", "insert", "Data!1"}, {"sort", "Data!A2:F13", "B:desc"}}},
+		{"a row deleted inside, sorted", [][]string{{"rows", "delete", "Data!5"}, {"sort", "Data!A1:F11", "B:desc"}}},
+	} {
+		after := edited(t, before, filepath.Join(dir, "a.xlsx"), c.cmds...)
+		r, _ := against(t, after, before)
+		if len(r.Unexplained) != 0 {
+			t.Errorf("%s: unexplained %+v", c.name, r.Unexplained)
+		}
+	}
+}
