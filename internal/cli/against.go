@@ -466,6 +466,10 @@ type report struct {
 	// did not, whose results the sheets calculator disagrees with.
 	candidates []candidate
 	held       []heldValue
+	// heldAt are the formulas (as now placed) whose values held: what they read
+	// may have changed, but nothing downstream moved because of them, so the
+	// tracing stops there.
+	heldAt map[xlsx.At]bool
 	// unknownSrc are formulas whose values are unknown, and why.
 	unknownSrc []xlsx.Source
 	unknownWhy []string
@@ -2659,6 +2663,9 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 			out.Unknown = append(out.Unknown, unknownValue{Cell: here, Was: was, Before: va.text, After: vb.text, Why: unknownWhy()})
 		case xe || !sameResults(va, vb):
 			r.candidates = append(r.candidates, candidate{at: at, before: va, after: vb, was: was, note: note(), cause: "formula " + here})
+		default:
+			// It holds the value it held: what follows it did not move for it.
+			r.holding(at, sb, rb, cb)
 		}
 	}
 	var via *xlsx.At
@@ -2738,7 +2745,11 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 				// It holds what it held, a result the sheets calculator
 				// disagrees with: out of date, if what it reads changed.
 				r.held = append(r.held, heldValue{at: at, was: was, old: strings.ToLower(cellAt(sa.Name, ra, ca)), value: va, calc: calcValue(B.wb, y, d.Calc)})
+				return
 			}
+		}
+		if fa && fb {
+			r.holding(at, sb, rb, cb)
 		}
 		return
 	}
@@ -2755,6 +2766,27 @@ func (r *report) cell(sa *grid.Sheet, ra, ca int, sb *grid.Sheet, rb, cb int) {
 		return
 	}
 	r.candidates = append(r.candidates, candidate{at: at, before: va, after: vb, was: was, note: note(), via: via, shift: shift})
+}
+
+// holding notes that a formula of the new version holds the value it held
+// (what follows it did not move for it): not when the sheets calculator gets
+// another result from what it reads, which is out of date then (see held), nor
+// when it is an array formula or a result of one, whose cells hold or move
+// apart.
+func (r *report) holding(at xlsx.At, sb *grid.Sheet, rb, cb int) {
+	if _, ok := r.B.differ[strings.ToLower(cellAt(sb.Name, rb, cb))]; ok {
+		return
+	}
+	r.arrays.anchor(sb, rb, cb) // reads the sheet's arrays
+	for _, rg := range r.arrays[sb] {
+		if rg.Contains(rb, cb) {
+			return
+		}
+	}
+	if r.heldAt == nil {
+		r.heldAt = map[xlsx.At]bool{}
+	}
+	r.heldAt[at] = true
 }
 
 // calculators says why a value that moved may have moved only because one
@@ -3004,7 +3036,10 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	lineBase := len(r.sources) // where the lines added, removed and moved begin among the sources
 	r.sources = append(r.sources, r.lineSources...)
 	r.causes = append(r.causes, r.lineCauses...)
-	causeOf := tr.Spread(r.sources)
+	// A formula whose value held stops the tracing: what reads it did not move
+	// for what changed upstream of it.
+	holds := func(at xlsx.At) bool { return r.heldAt[at] }
+	causeOf := tr.SpreadUnless(r.sources, holds)
 	// A value that cells changed moved is the work of all of them that reach
 	// it, not only the nearest.
 	var allOf map[xlsx.At]xlsx.Reach
@@ -3040,7 +3075,7 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	// inputsOf gives the cells changed that reach a value (the first few).
 	inputsOf := func(c candidate) xlsx.Reach {
 		if allOf == nil && r.cells > 0 {
-			allOf = tr.SpreadAll(r.sources[:r.cells], causeListed)
+			allOf = tr.SpreadAllUnless(r.sources[:r.cells], causeListed, holds)
 		}
 		for _, at := range places(c) {
 			if g, ok := allOf[at]; ok {
@@ -3079,7 +3114,7 @@ func (r *report) trace(tr *xlsx.Tracer) {
 						stop[at] = true
 					}
 				}
-				lineOf = tr.SpreadBut(srcs, stop)
+				lineOf = tr.SpreadUnless(srcs, func(at xlsx.At) bool { return stop[at] || holds(at) })
 			}
 			if n, ok := cause(lineOf, c); ok {
 				labels = append(labels, r.causes[sorted[n]])
@@ -3117,12 +3152,77 @@ func (r *report) trace(tr *xlsx.Tracer) {
 				}
 			}
 		}
-		spreads[key] = tr.Spread(srcs)
+		spreads[key] = tr.SpreadUnless(srcs, holds)
 		return spreads[key]
+	}
+	// leaving adds rows or columns to those left out of a tracing, in an order
+	// that is the same for the same set.
+	leaving := func(left []addedLines, a addedLines) []addedLines {
+		left = append(left, a)
+		sort.Slice(left, func(i, j int) bool {
+			if left[i].sheet != left[j].sheet {
+				return left[i].sheet < left[j].sheet
+			}
+			return !left[i].cols && left[j].cols
+		})
+		return left
 	}
 	kinds := map[addedLines]bool{} // the sheets and orientations rows and columns were added on
 	for _, a := range r.lineAdded {
 		kinds[a] = true
+	}
+	// addMoves tells whether lines added can move a candidate (see
+	// additionMoves), once for each.
+	type movedBy struct {
+		a  addedLines
+		at xlsx.At
+	}
+	addMoved := map[movedBy]bool{}
+	addMoves := func(a addedLines, c candidate) bool {
+		at := anchorOf(c)
+		if moves, ok := addMoved[movedBy{a, at}]; ok {
+			return moves
+		}
+		moves := true
+		for _, e := range r.edits {
+			if strings.EqualFold(e.sheet, a.sheet) {
+				runs := e.rowsAdded
+				if a.cols {
+					runs = e.colsAdded
+				}
+				moves = r.additionMoves(r.B.wb.Sheet(at.Sheet), at, a.sheet, runs, a.cols, &c)
+				break
+			}
+		}
+		addMoved[movedBy{a, at}] = moves
+		return moves
+	}
+	// What lines added reach, through formulas they could move only: a total
+	// stored wrong after an empty row was added (the row could not move it) is
+	// no way for the row to reach what reads it, which moved with the total.
+	candAt := map[xlsx.At]*candidate{}
+	for i := range r.candidates {
+		candAt[r.candidates[i].at] = &r.candidates[i]
+	}
+	reachedBy := map[addedLines]map[xlsx.At]int{}
+	linesReach := func(a addedLines) map[xlsx.At]int {
+		if m, ok := reachedBy[a]; ok {
+			return m
+		}
+		srcs := append([]xlsx.Source{}, r.sources...)
+		for n := range srcs {
+			if got, ok := r.lineAdded[n-lineBase]; n < lineBase || !ok || got != a {
+				srcs[n].Range = grid.Range{R1: 1, C1: 1, R2: 0, C2: 0}
+			}
+		}
+		reachedBy[a] = tr.SpreadUnless(srcs, func(at xlsx.At) bool {
+			if holds(at) {
+				return true
+			}
+			c := candAt[at]
+			return c != nil && (c.cause != "" || !addMoves(a, *c))
+		})
+		return reachedBy[a]
 	}
 	direct := func(c candidate) (int, bool) {
 		var left []addedLines
@@ -3139,28 +3239,39 @@ func (r *report) trace(tr *xlsx.Tracer) {
 			if !added {
 				return k, true
 			}
-			at := anchorOf(c)
-			moves := true
-			for _, e := range r.edits {
-				if strings.EqualFold(e.sheet, a.sheet) {
-					runs := e.rowsAdded
-					if a.cols {
-						runs = e.colsAdded
-					}
-					moves = r.additionMoves(r.B.wb.Sheet(at.Sheet), at, a.sheet, runs, a.cols, &c)
-					break
-				}
+			moves := addMoves(a, c)
+			if moves {
+				_, moves = cause(linesReach(a), c)
 			}
 			if moves {
 				return k, true
 			}
-			left = append(left, a)
-			sort.Slice(left, func(i, j int) bool {
-				if left[i].sheet != left[j].sheet {
-					return left[i].sheet < left[j].sheet
-				}
-				return !left[i].cols && left[j].cols
-			})
+			left = leaving(left, a)
+		}
+		return 0, false
+	}
+	// heldCause is direct for a formula that held: the nearest cause that
+	// reaches it, rows added counting only when they reach it through formulas
+	// they could move.
+	heldCause := func(at xlsx.At) (int, bool) {
+		var left []addedLines
+		for len(left) <= len(kinds) {
+			m := causeOf
+			if len(left) > 0 {
+				m = without(left)
+			}
+			k, ok := m[at]
+			if !ok || k < lineBase {
+				return k, ok
+			}
+			a, added := r.lineAdded[k-lineBase]
+			if !added {
+				return k, true
+			}
+			if _, reached := linesReach(a)[at]; reached {
+				return k, true
+			}
+			left = leaving(left, a)
 		}
 		return 0, false
 	}
@@ -3188,7 +3299,7 @@ func (r *report) trace(tr *xlsx.Tracer) {
 		}
 	}
 	if len(shiftSrc) > 0 {
-		shiftReach = tr.Spread(shiftSrc)
+		shiftReach = tr.SpreadUnless(shiftSrc, holds)
 	}
 	// Each value moved with its cause, or unexplained (nil: unknown, listed
 	// as it is found), in the candidates' order.
@@ -3256,7 +3367,7 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	// left as they were (written without recalculating, or by Excel
 	// calculating by hand), unless the calculator disagreed as much before.
 	for _, h := range r.held {
-		k, ok := causeOf[h.at]
+		k, ok := heldCause(h.at)
 		if !ok {
 			if k, ok := rootOf[h.at]; ok {
 				held[roots[k]] = append(held[roots[k]], cellAt(h.at.Sheet, h.at.Row, h.at.Col))
@@ -3301,7 +3412,8 @@ func (r *report) followers(tr *xlsx.Tracer, unexplained []int, anchorOf func(can
 		}
 		return false
 	}
-	all := tr.Spread(sources(unexplained))
+	holds := func(at xlsx.At) bool { return r.heldAt[at] }
+	all := tr.SpreadUnless(sources(unexplained), holds)
 	var roots []int
 	for _, i := range unexplained {
 		if !reached(all, unexplained, i) {
@@ -3314,7 +3426,7 @@ func (r *report) followers(tr *xlsx.Tracer, unexplained []int, anchorOf func(can
 	if len(roots) == len(unexplained) {
 		return all, roots
 	}
-	return tr.Spread(sources(roots)), roots
+	return tr.SpreadUnless(sources(roots), holds), roots
 }
 
 // positional finds the calls that give where a formula stands.

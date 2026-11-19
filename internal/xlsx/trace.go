@@ -233,6 +233,16 @@ func (t *Tracer) Spread(sources []Source) map[At]int { return t.SpreadBut(source
 // SpreadBut is Spread, the formulas in stop neither reached nor followed
 // through: what moves them is their own (a formula changed).
 func (t *Tracer) SpreadBut(sources []Source, stop map[At]bool) map[At]int {
+	if stop == nil {
+		return t.SpreadUnless(sources, nil)
+	}
+	return t.SpreadUnless(sources, func(at At) bool { return stop[at] })
+}
+
+// SpreadUnless is Spread, the formulas that blocked tells of (nil: none)
+// neither reached nor followed through: what moves them is not what reaches
+// them (a formula whose value held, a formula another change moved).
+func (t *Tracer) SpreadUnless(sources []Source, blocked func(At) bool) map[At]int {
 	x := &depIndex{cells: map[cellKey][]int{}, columns: map[cellKey]*rowTree{}, wide: map[string]map[grid.Range][]int{}}
 	for id, refs := range t.refs {
 		for _, r := range refs {
@@ -270,7 +280,7 @@ func (t *Tracer) SpreadBut(sources []Source, stop map[At]bool) map[At]int {
 		}
 		reached[k] = true
 		at := t.atOf(k)
-		if stop[at] {
+		if blocked != nil && blocked(at) {
 			return
 		}
 		out[at] = src
@@ -598,6 +608,12 @@ type Reach struct {
 // moved is the work of both. It stops where a cell has all it can hold, so
 // the cost is bounded by limit and not by the sources.
 func (t *Tracer) SpreadAll(sources []Source, limit int) map[At]Reach {
+	return t.SpreadAllUnless(sources, limit, nil)
+}
+
+// SpreadAllUnless is SpreadAll, the formulas that blocked tells of (nil: none)
+// neither reached nor followed through (see SpreadUnless).
+func (t *Tracer) SpreadAllUnless(sources []Source, limit int, blocked func(At) bool) map[At]Reach {
 	if t.idx == nil {
 		t.idx = &depIndex{cells: map[cellKey][]int{}, columns: map[cellKey]*rowTree{}, wide: map[string]map[grid.Range][]int{}}
 		for id, refs := range t.refs {
@@ -616,6 +632,9 @@ func (t *Tracer) SpreadAll(sources []Source, limit int) map[At]Reach {
 			return
 		}
 		visited[k] = src + 1
+		if blocked != nil && blocked(t.atOf(k)) {
+			return
+		}
 		if len(labels[k]) > limit {
 			return // it has all it can hold, and so have those after it
 		}

@@ -1732,3 +1732,82 @@ func TestAgainstCausesFeaturesClosestRule(t *testing.T) {
 		t.Errorf("text:\n%s", text)
 	}
 }
+
+// A value reached by a structure change only through a formula the change did
+// not move is no work of the change (f4.3): the tracing stops at a formula
+// whose value held, and passes only the formulas the lines could move. An
+// empty row inserted or removed moves no total, so the tax on the total,
+// stored as another number, is unexplained, and what reads it follows it; so
+// is a MAX that held after an input changed, and what reads it. A row with
+// numbers in it still moves the total, and the tax with it.
+func TestAgainstCausesChainHeld(t *testing.T) {
+	dir, fixture := causesFixture(t)
+	// An empty row inserted: Summary!B3 (=SUM(Data!D2:D7)) holds 630.
+	inserted := edited(t, fixture, filepath.Join(dir, "i.xlsx"), []string{"rows", "insert", "Data!4"})
+	after := filepath.Join(dir, "a.xlsx")
+	stored(t, inserted, after, "B4", "999")
+	r, code := against(t, after, fixture)
+	if !unexplainedAt(r, "Summary!B4") || code != 1 || len(r.Moved) != 0 || len(r.Unknown) != 0 {
+		t.Errorf("an empty row inserted, the tax stored as 999: exit %d, unexplained %+v, moved %+v, unknown %+v", code, r.Unexplained, r.Moved, r.Unknown)
+	}
+	if len(r.Unexplained) == 1 && strings.Join(r.Unexplained[0].Held, " ") != "Summary!B5" {
+		t.Errorf("the cell that reads it and held: %+v", r.Unexplained[0])
+	}
+	text, _ := runCLI("", "check", after, "--against", fixture)
+	if !strings.Contains(text, "Summary!B4  157.5 → 999  read by Summary!B5, which holds what it held") {
+		t.Errorf("text:\n%s", text)
+	}
+	// The total itself stored wrong, and the tax following it: the total is
+	// unexplained, and the tax follows it, not the row.
+	mid := filepath.Join(dir, "m.xlsx")
+	stored(t, inserted, mid, "B3", "999")
+	stored(t, mid, after, "B4", "249.75")
+	r, code = against(t, after, fixture)
+	if len(r.Unexplained) != 1 || r.Unexplained[0].Cell != "Summary!B3" || code != 1 {
+		t.Fatalf("the total stored as 999: exit %d, unexplained %+v, moved %+v", code, r.Unexplained, r.Moved)
+	}
+	if got := causes(r)["Summary!B4"]; got != "Summary!B3, which moved with nothing upstream changed" {
+		t.Errorf("the tax that followed the total: cause %q", got)
+	}
+	for _, u := range r.Unknown {
+		t.Errorf("unknown %+v", u)
+	}
+	// An empty row removed, as the file had one: the same.
+	gap := edited(t, fixture, filepath.Join(dir, "gap.xlsx"), []string{"rows", "insert", "Data!4"})
+	removed := edited(t, gap, filepath.Join(dir, "r.xlsx"), []string{"rows", "delete", "Data!4"})
+	stored(t, removed, after, "B4", "999")
+	if r, code := against(t, after, gap); !unexplainedAt(r, "Summary!B4") || code != 1 || len(r.Moved) != 0 || len(r.Unknown) != 0 {
+		t.Errorf("an empty row removed, the tax stored as 999: exit %d, unexplained %+v, moved %+v, unknown %+v", code, r.Unexplained, r.Moved, r.Unknown)
+	}
+	stored(t, removed, mid, "B3", "999")
+	stored(t, mid, after, "B4", "249.75")
+	r, code = against(t, after, gap)
+	if len(r.Unexplained) != 1 || r.Unexplained[0].Cell != "Summary!B3" || causes(r)["Summary!B4"] != "Summary!B3, which moved with nothing upstream changed" || code != 1 {
+		t.Errorf("an empty row removed, the total stored as 999: exit %d, unexplained %+v, moved %+v", code, r.Unexplained, r.Moved)
+	}
+	// An input that leaves a MAX as it was: what reads the MAX did not move for it.
+	base := edited(t, fixture, filepath.Join(dir, "base.xlsx"), []string{"set", "Summary!F1", "=B6*2"})
+	set := edited(t, base, filepath.Join(dir, "set.xlsx"), []string{"set", "Data!B2", "6"})
+	stored(t, set, after, "F1", "999")
+	r, code = against(t, after, base)
+	if !unexplainedAt(r, "Summary!F1") || code != 1 || causes(r)["Summary!F1"] != "" {
+		t.Errorf("an input that left the MAX as it was, what reads it stored as 999: exit %d, unexplained %+v, moved %+v", code, r.Unexplained, r.Moved)
+	}
+	if got := causes(r)["Summary!B2"]; got != "input Data!B2" {
+		t.Errorf("the total the input moved: cause %q", got)
+	}
+	if r, code := against(t, set, base); len(r.Unexplained) != 0 || code != 0 || len(causes(r)) == 0 {
+		t.Errorf("the input alone: exit %d, unexplained %+v", code, r.Unexplained)
+	}
+	// A row with numbers moves the total, and the tax that reads it with it.
+	filled := edited(t, fixture, filepath.Join(dir, "f.xlsx"), []string{"rows", "insert", "Data!4"}, []string{"set", "Data!B4", "11", "Data!C4", "10", "Data!D4", "=B4*C4"})
+	r, code = against(t, filled, fixture)
+	for _, c := range []string{"Summary!B3", "Summary!B4"} {
+		if m := causes(r)[c]; !strings.HasPrefix(m, "rows added: Data!4") {
+			t.Errorf("a row with numbers: %s cause %q", c, m)
+		}
+	}
+	if len(r.Unexplained) != 0 || code != 0 {
+		t.Errorf("a row with numbers: exit %d, unexplained %+v", code, r.Unexplained)
+	}
+}
