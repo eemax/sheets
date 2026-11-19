@@ -56,21 +56,38 @@
     `insert_rows` and `delete_rows` rewrite no formula), a sheet it reads
     was renamed (openpyxl's `ws.title`), or the cells it reads were cut and
     pasted elsewhere (openpyxl's `move_range`), with what Excel would have
-    written;
+    written. Inputs compare exactly: a barcode, an order number or an
+    amount in the millions changed in its last digit is a change, in a CSV
+    file too; computed results compare to Excel's 15 digits;
   - `moved`: computed values that moved, each with its cause upstream (an
     input or formula change, rows added, removed or moved, a sheet or a
     name removed, a name changed), traced through what each formula reads.
-    A formula changed is listed too, with what it computes now. A value
-    that moved because rows added or removed moved its formula or what it
-    reads (`=ROW()`, a range older Excel reads one cell of) has them as its
-    cause;
+    A value that several changed cells reach names each of them, the first
+    three and then `and more` (`input Data!B2, input Data!B3`: a MAX that
+    one of them moved is the work of the one that moved it, but both are
+    among its sources). A formula changed is listed too, with what it
+    computes now. A value that moved because rows added or removed moved
+    its formula or what it reads (`=ROW()`, a range older Excel reads one
+    cell of) has them as its cause;
   - `unexplained`: values that moved with nothing upstream changed, the
     sign of a broken formula or a wrong stored result;
   - `features_lost`: charts (on a chart sheet too), validations,
     conditional formats, shapes, pictures, names and tables the old
     version had (openpyxl drops shapes, a chart grouped with a shape, and
     validations in Excel 2010's extension list, such as a list read from
-    another sheet);
+    another sheet). A feature is kept only by one of its kind and identity
+    in the new version: a validation or conditional format of the same
+    type and formula (the cells it reads aside, which rows and columns
+    added or removed rewrite), a chart of the same type in the same place
+    or on the same data, a shape or picture in the same place or by name,
+    a name or table by its name. Another of its kind is no stand-in: a
+    chart added beside a dropped one, a validation beside one dropped, the
+    banding `sheets fmt` writes over a conditional format, and a rule whose
+    formula was edited, are the old one lost. A column deleted takes the
+    validations on it, and the ones beside it move into its place. An
+    Excel table renamed (the same columns, on the same sheet) is followed,
+    not lost: the formulas that read it by name, which Excel rewrites, are
+    no changes (`structure` says `table renamed`);
   - `unknown`: values sheets cannot compare, with why (a function the
     calculator lacks, INDIRECT or OFFSET, a link to another workbook, a
     value from outside the workbook such as RTD, WEBSERVICE, STOCKHISTORY
@@ -91,7 +108,15 @@
     values swapped in a column, is inputs changed where they are, each the
     cause of what it moves. Rows cut and pasted where nothing was
     (`sheets move`, Excel's cut and paste) are rows moved too, with the rows
-    they passed where they were, not rows added or removed;
+    they passed where they were, not rows added or removed. So is a block of
+    cells cut from beside a table and pasted below it or into other columns
+    (`sheets move book.xlsx Sales!H1:J20 Sales!A30`, listed as
+    `Sales!A30:C49, were H1:J20`, with `columns` and `was_columns` in
+    `--json`): cells that left one rectangle and filled another of its size,
+    holding what they held, formulas as Excel rewrites them, while the
+    cells around stayed (a few others may have changed). Moved straight
+    down or up with nothing beside it, that is as well rows added or
+    removed above, and is told as that;
   - then the check of book.xlsx, as above.
 
   Formulas Excel rewrites for rows or columns added or removed (a column
