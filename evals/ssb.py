@@ -40,6 +40,7 @@ run again once by run --more; its first meta.json is kept as meta.prev.json.
 """
 import argparse
 import concurrent.futures
+import threading
 import datetime
 import json
 import os
@@ -175,6 +176,9 @@ def done(out, t, arm):
 
 
 _NO_START = re.compile(r"rate.?limit|usage limit|limit reached|overloaded|API Error|authenticat|credit balance", re.I)
+
+
+_LIMIT = re.compile(r"rate.?limit|usage limit|limit reached|credit balance", re.I)
 
 
 def unstarted(d):
@@ -497,13 +501,17 @@ PAIRS = [("python+check", "python-hint"), ("python+check", "python"), ("python-h
 
 
 def report(out, results, arms):
-    # A task LibreOffice could not convert for any arm, after the retry (the
-    # golden file or every result alike), is UNGRADABLE for every arm. One arm's
-    # own unopenable file, where another arm's converts, is that arm's failure.
+    # A task LibreOffice could not convert for any arm, after the retry, is
+    # UNGRADABLE for every arm alike: one arm's drop must not tilt a paired test.
     dropped = lambda r: LO_DROPPED in (r.get("problems") or [])
-    bad = sorted(i for i in {r["id"] for r in results} if all(dropped(r) for r in results if r["id"] == i))
+    bad = sorted({r["id"] for r in results if dropped(r)})
     all_results = results
-    results = [r for r in results if r["id"] not in bad]
+    # A run that never started (usage limit, API error) is missing, not a fail;
+    # python+check follows python's run.
+    missing = sorted({(r["id"], DERIVED.get(r["arm"], r["arm"])) for r in results
+                      if unstarted(os.path.join(out, r["id"], DERIVED.get(r["arm"], r["arm"])))})
+    results = [r for r in results if r["id"] not in bad
+               and (r["id"], DERIVED.get(r["arm"], r["arm"])) not in missing]
     by = {(r["id"], r["arm"]): r for r in results}
     ids = sorted({r["id"] for r in results})
     lines = ["# SpreadsheetBench Verified", "",
@@ -543,6 +551,10 @@ def report(out, results, arms):
         if rows:
             lines += ["", f"Paired, {name}: exact one-sided McNemar, the first arm better.", "",
                       "| pair | tasks | both pass | first only | second only | neither | p |", "|---|---|---|---|---|---|---|"] + rows
+    if missing:
+        lines.insert(1, "")
+        lines.insert(2, "**PARTIAL RESULT:** these runs never started and are left out, not counted as fails (run --more "
+                        "to run those not yet rerun): " + " ".join(f"{i}/{a}" for i, a in missing))
     if bad:
         lines += ["", "UNGRADABLE for every arm (LibreOffice could not open a result): " + ", ".join(bad)]
     lines += ["", "| task | kind | " + " | ".join(f"{a} lo/stored" for a in arms) + " |", "|---|---|" + "---|" * len(arms)]
@@ -644,16 +656,26 @@ def main():
         bindir = prepare(out, data, tasks, ran, keep=a.more)
         runs = [(t, arm) for t in tasks for arm in ran if not (a.more and done(out, t, arm))]
 
+        stop = threading.Event()
+
         def one(r):
             t, arm = r
+            if stop.is_set():
+                return
             meta = run.run_agent(os.path.join(out, t["id"], arm), arm, bindir, a.model, a.budget)
             print(f"{t['id']} / {arm}: {meta['turns']} turns, ${meta['cost_usd'] or 0:.2f}, {meta['seconds']} s", file=sys.stderr)
+            d = os.path.join(out, t["id"], arm)
+            if unstarted(d) and _LIMIT.search(open(os.path.join(d, "answer.txt")).read()[:500] if os.path.exists(os.path.join(d, "answer.txt")) else ""):
+                if not stop.is_set():
+                    print("plan usage or rate limit: stopping; finished runs are kept, resume with --more", file=sys.stderr)
+                stop.set()
 
         with concurrent.futures.ThreadPoolExecutor(a.jobs) as pool:
             list(pool.map(one, runs))
-        missed = [f"{t['id']}/{arm}" for t in tasks for arm in ran if unstarted(os.path.join(out, t["id"], arm))]
+        missed = [f"{t['id']}/{arm}" for t in tasks for arm in ran
+                  if unstarted(os.path.join(out, t["id"], arm)) and not done(out, t, arm)]
         if missed:
-            print("failed to start (run --more to run them again once): " + " ".join(missed), file=sys.stderr)
+            print("failed to start or not run (run --more to run them, once): " + " ".join(missed), file=sys.stderr)
         check(out, data, tasks, arms, a.jobs)
 
 
