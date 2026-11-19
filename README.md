@@ -126,7 +126,12 @@ instructions, and `sheets agent-docs TOPIC` for a topic.
 | `skill` | Prints the agent skill's `SKILL.md`, or installs the skill folder (`--install`; see [The agent skill](#the-agent-skill)) |
 
 Every command takes `--json`, and every command that changes a file takes
-`--dry-run`.
+`--dry-run`. Every command that changes a file ends with a short change
+report, in under 15 lines (`change` in `--json`): cells written, values
+moved downstream, new errors and unknown values, features lost (charts,
+validations, conditional formats, shapes, names, tables), and how the lint
+findings changed. A batch (`do`, `script`) reports once, for all of it.
+`check --against` gives the whole report.
 
 `style`, `cond` and `validate` take a range, a sheet, or a table reference
 in Excel's syntax, named by a sheet holding one table or by an Excel table:

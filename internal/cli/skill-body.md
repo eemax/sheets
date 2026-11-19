@@ -58,6 +58,10 @@ reads give computed values, and it saves once, as one undo step.
 
 1. Read each command's output. It lists formula errors with their cells,
    and formulas only Excel can compute (shown as `?`), with the reason.
+   A command that changes the file ends with a `change:` report: cells
+   written, values moved downstream, new errors and unknowns, features
+   lost, how the lint changed. A value you did not mean to move, a new
+   error or a feature lost is a mistake to fix (or `sheets undo`).
 2. Run `sheets check book.xlsx` (`sheets lint` without the results):
    errors, `#REF!`, formulas that break their column's pattern or are
    missing from rows, totals that leave out rows or count a total twice,

@@ -152,6 +152,26 @@ naming a table that does not exist is refused.
 - Formulas are evaluated right away. The output shows a few values, every
   formula error (with the cell), and formulas the calculator cannot
   evaluate. Check it.
+- Every command that changes a file ends with its change report, in under
+  15 lines (before the `next:` line; in `--json`, the field `change`):
+
+      change: 1 cell written, 3 values moved, 1 new error, 0 new unknowns, 0 features lost, lint +1 error
+      moved: Data!D2 6 → 0, Summary!A1 33 → 27, Summary!A2 0.5 → #DIV/0!
+      new errors: Summary!A2 #DIV/0! (was 0.5)
+      lint: error-value 0 → 1: Summary!A2: 1 cell shows #DIV/0!
+
+  It counts the cells the command wrote; the computed values it did not
+  write whose results moved (the first five listed); formulas that show
+  an error they did not show before; formulas whose result sheets cannot
+  know now (`unknown:`, by reason); charts, validations, conditional
+  formats, shapes, pictures, names and tables lost (`lost:`); and the
+  lint findings that changed, by rule. A value you did not mean to move, a
+  new error or a feature lost is a mistake: fix it, or `sheets undo`. It
+  comes from the results the save computed anyway, so it costs next to
+  nothing. The lint is compared when the sheets hold up to 2 MB of XML
+  (about 20,000 rows of a few columns); on a larger workbook it says
+  `lint not compared` and `sheets lint` does it. `sheets check --against`
+  gives the whole report.
 - All Excel functions work, including XLOOKUP, IFS, TEXTJOIN, LET and
   LAMBDA. Functions that return several values (FILTER, UNIQUE, SORT,
   SEQUENCE, ...) are stored as dynamic arrays and spill: the file holds the
@@ -188,6 +208,9 @@ naming a table that does not exist is refused.
   changes before it (`read` and `peek` in a batch show them).
 - Data for `write` comes from `-i file`, `< file`, or a here-document in
   the script (`write Sales!A1 <<END`, the rows, `END`).
+- The batch ends with one change report (see the writing topic) for all
+  its commands, from the file as the batch began: a value moved and moved
+  back is not moved. A script reports the same way.
 - Use it whenever a change takes more than two or three commands.
 
 ## Scripts: Office Scripts
@@ -332,7 +355,8 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   `cols` work on it directly. Its delimiter (also `;` with decimal commas), encoding
   and line breaks are kept, and rows no edit touched stay byte for byte.
 - A CSV file holds values only: formulas are saved as their results, and
-  formatting, charts or more sheets need `convert` to .xlsx first.
+  formatting, charts or more sheets need `convert` to .xlsx first. Its
+  change report counts the cells written, and nothing more.
 - So `set` on a CSV computes from the values as they were, and a column
   can change in place: `sheets set prices.csv 'D2:D41' '=ROUND(D{r}*1.05,2)'`
   raises every price by 5%. New values take the style of their column

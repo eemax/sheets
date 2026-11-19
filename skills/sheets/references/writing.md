@@ -48,6 +48,26 @@
 - Formulas are evaluated right away. The output shows a few values, every
   formula error (with the cell), and formulas the calculator cannot
   evaluate. Check it.
+- Every command that changes a file ends with its change report, in under
+  15 lines (before the `next:` line; in `--json`, the field `change`):
+
+      change: 1 cell written, 3 values moved, 1 new error, 0 new unknowns, 0 features lost, lint +1 error
+      moved: Data!D2 6 → 0, Summary!A1 33 → 27, Summary!A2 0.5 → #DIV/0!
+      new errors: Summary!A2 #DIV/0! (was 0.5)
+      lint: error-value 0 → 1: Summary!A2: 1 cell shows #DIV/0!
+
+  It counts the cells the command wrote; the computed values it did not
+  write whose results moved (the first five listed); formulas that show
+  an error they did not show before; formulas whose result sheets cannot
+  know now (`unknown:`, by reason); charts, validations, conditional
+  formats, shapes, pictures, names and tables lost (`lost:`); and the
+  lint findings that changed, by rule. A value you did not mean to move, a
+  new error or a feature lost is a mistake: fix it, or `sheets undo`. It
+  comes from the results the save computed anyway, so it costs next to
+  nothing. The lint is compared when the sheets hold up to 2 MB of XML
+  (about 20,000 rows of a few columns); on a larger workbook it says
+  `lint not compared` and `sheets lint` does it. `sheets check --against`
+  gives the whole report.
 - All Excel functions work, including XLOOKUP, IFS, TEXTJOIN, LET and
   LAMBDA. Functions that return several values (FILTER, UNIQUE, SORT,
   SEQUENCE, ...) are stored as dynamic arrays and spill: the file holds the
