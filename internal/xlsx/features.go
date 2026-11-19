@@ -252,17 +252,18 @@ func sheetRules(sheet string, outside []byte) []Feature {
 	return out
 }
 
-var ruleStarts = [][]byte{[]byte("<dataValidation "), []byte("<x:dataValidation "), []byte("<x14:dataValidation "),
-	[]byte("<cfRule "), []byte("<x:cfRule "), []byte("<x14:cfRule ")}
+var (
+	validationStart = []byte("dataValidation ")
+	cfRuleStart     = []byte("cfRule ")
+)
 
 // countRules counts the validations and conditional format rules in a
-// sheet's XML (without its cells): a count, with no reading of them.
+// sheet's XML (without its cells): a count, with no reading of them. The
+// name of an element with attributes, in any namespace: not the list of
+// validations (dataValidations), nor an end tag. One with its attributes
+// on lines of their own is not counted: it is read, not skipped.
 func countRules(outside []byte) int {
-	n := 0
-	for _, tag := range ruleStarts {
-		n += bytes.Count(outside, tag)
-	}
-	return n
+	return bytes.Count(outside, validationStart) + bytes.Count(outside, cfRuleStart)
 }
 
 // outsideCells is a sheet's XML without its cells: what comes before them
