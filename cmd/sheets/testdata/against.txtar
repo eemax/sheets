@@ -501,6 +501,41 @@ stdout '^  name removed: TaxRate = Summary!\$B\$1$'
 stdout '^  Summary!B2  =SUM\(Data!B2:B6\) → =SUM\(Data!B2:B6\)  \(its text is as it was, though a sheet it reads was renamed: Excel writes =SUM\(Facts!B2:B6\)\)$'
 ! stdout 'rows or columns added or removed'
 
+# Rows cut and pasted where nothing was (sheets move, Excel's cut and paste):
+# the rows moved, the total they passed stayed, its formula rewritten to
+# follow them; no rows added or removed, no formula changed. Moved back, the
+# same. Rows inserted above a table, which move all of it down, are rows
+# added.
+cp against_before.xlsx cut.xlsx
+exec sheets move cut.xlsx Data!A2:D6 Data!A12
+exec sheets check cut.xlsx --against against_before.xlsx
+stdout '^cut.xlsx against against_before.xlsx: 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown, 5 rows moved$'
+stdout '^  Data!12:16, were 2:6$'
+! stdout 'structure:'
+exec sheets --json check cut.xlsx --against against_before.xlsx
+stdout '"moved_rows":\[\{"sheet":"Data","from":2,"to":12,"rows":5\}\]'
+stdout '"structure":\[\]'
+cp cut.xlsx back.xlsx
+exec sheets move back.xlsx Data!A12:D16 Data!A2
+exec sheets check back.xlsx --against cut.xlsx
+stdout ': 0 inputs changed, 0 formulas changed, 0 computed values moved, 0 unexplained, 0 features lost, 0 unknown, 5 rows moved$'
+stdout '^  Data!2:6, were 12:16$'
+! stdout 'structure:'
+cp against_before.xlsx down.xlsx
+exec sheets rows insert down.xlsx Data!2 -n 10
+exec sheets check down.xlsx --against against_before.xlsx
+stdout '^  rows added: Data!2:11$'
+! stdout 'rows moved'
+# openpyxl's move_range leaves the formulas reading the rows as they were:
+# each is flagged, with what Excel writes.
+fixture against_cut.xlsx
+! exec sheets check against_cut.xlsx --against against_before.xlsx
+stdout ': 0 inputs changed, 6 formulas changed, 8 computed values moved \(each with its cause\), 0 unexplained,'
+stdout '^  Data!B7  =SUM\(B2:B6\) → =SUM\(B2:B6\)  \(its text is as it was, though the cells it reads were cut and pasted elsewhere: Excel writes =SUM\(B12:B16\)\)$'
+stdout '^  Summary!B7  =Data!B2 → =Data!B2  \(.*: Excel writes =Data!B12\)$'
+stdout '^  Data!12:16, were 2:6$'
+! stdout 'structure:'
+
 # A value that comes from outside the workbook (RTD: a server's) moves with
 # nothing in the workbook changed: unknown, with why, not unexplained, and
 # so is what reads it.

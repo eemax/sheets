@@ -53,8 +53,10 @@
     mistake: one row of a formula column changed unlike the rows around it,
     or made a typed-in value; and a formula left as it was when rows or
     columns were inserted or deleted in what it reads (openpyxl's
-    `insert_rows` and `delete_rows` rewrite no formula), or a sheet it reads
-    was renamed (openpyxl's `ws.title`), with what Excel would have written;
+    `insert_rows` and `delete_rows` rewrite no formula), a sheet it reads
+    was renamed (openpyxl's `ws.title`), or the cells it reads were cut and
+    pasted elsewhere (openpyxl's `move_range`), with what Excel would have
+    written;
   - `moved`: computed values that moved, each with its cause upstream (an
     input or formula change, rows added, removed or moved, a sheet or a
     name removed, a name changed), traced through what each formula reads.
@@ -87,7 +89,9 @@
     sort that left some of a table's columns behind (its labels, or a
     column next to it: Excel warns of data next to the selection), or two
     values swapped in a column, is inputs changed where they are, each the
-    cause of what it moves;
+    cause of what it moves. Rows cut and pasted where nothing was
+    (`sheets move`, Excel's cut and paste) are rows moved too, with the rows
+    they passed where they were, not rows added or removed;
   - then the check of book.xlsx, as above.
 
   Formulas Excel rewrites for rows or columns added or removed (a column

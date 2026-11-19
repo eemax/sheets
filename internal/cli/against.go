@@ -380,8 +380,9 @@ type report struct {
 	edits   []lineEdit
 	renames [][2]string
 	arrays  arrays
-	// anyLines: some sheet had lines added or removed.
-	anyLines bool
+	// anyLines: some sheet had lines added or removed; anyCut: cells cut and
+	// pasted.
+	anyLines, anyCut bool
 	// removedSheets are the sheets removed, as the old version names them;
 	// removedRefs find what DeleteLines leaves of a reference to each.
 	removedSheets []string
@@ -402,6 +403,10 @@ type lineMap struct {
 	moved map[int]bool
 	// blocks are columns whose rows a sort moved on its own.
 	blocks []blockMap
+	// pasted are the old rows cut and pasted (job.pasted), in the columns
+	// pasteC1 to pasteC2 (0 for whole rows).
+	pasted           map[int]bool
+	pasteC1, pasteC2 int
 }
 
 // blockMap is lineMap's for the columns of a block (diff.Block): the old
@@ -460,6 +465,8 @@ type lineEdit struct {
 	// them. Where rows were added or removed within them cannot be told: the
 	// sort took them elsewhere.
 	movedOld, movedNew [2]int
+	// cut is cells cut and pasted on the sheet (job.cut).
+	cut []formula.Move
 }
 
 type candidate struct {
@@ -870,6 +877,153 @@ func empty(s *grid.Sheet, row, col int) bool {
 	return c == nil || c.IsEmpty()
 }
 
+// pasted pairs again rows cut and pasted where nothing was (sheets move,
+// Excel's cut and paste): a run of rows that pairs in order elsewhere,
+// leaving nothing where it was and finding nothing where it went, while the
+// rows around it stayed (a total reading it, its formula rewritten to follow
+// it). Pairing rows as they align, such a sheet has rows added where the run
+// was and removed where the total was. The run pairs as it moved, every
+// other row in place, when each row paired otherwise than before holds what
+// it held, its formulas as Excel rewrites them for the move; it gives the
+// rows, and records the run in j.
+func (r *report) pasted(j *job, rows []diff.Pair) []diff.Pair {
+	sa, sb := j.sa, j.sb
+	added := false
+	for _, q := range rows {
+		added = added || q.Old == 0 || q.New == 0
+	}
+	if !added {
+		return rows
+	}
+	// The one run of rows with something in them paired in order elsewhere.
+	ua, ub := sa.Used(), sb.Used()
+	var paired []diff.Pair
+	for _, q := range rows {
+		if q.Old > 0 && q.New > 0 && q.Old != q.New && !rowEmpty(sa, ua, q.Old) {
+			paired = append(paired, q)
+		}
+	}
+	if len(paired) == 0 {
+		return rows
+	}
+	sort.Slice(paired, func(x, y int) bool { return paired[x].Old < paired[y].Old })
+	o1, d := paired[0].Old, paired[0].New-paired[0].Old
+	for k, q := range paired {
+		if q.Old != o1+k || q.New-q.Old != d {
+			return rows // more than one run
+		}
+	}
+	o2 := o1 + len(paired) - 1
+	inSrc := func(row int) bool { return row >= o1 && row <= o2 }
+	inDst := func(row int) bool { return row >= o1+d && row <= o2+d }
+	// The columns it spans, and where it was and went empty there.
+	c1, c2 := 0, 0
+	for row := o1; row <= o2; row++ {
+		for c := ua.C1; c <= ua.C2; c++ {
+			if !empty(sa, row, c) {
+				if c1 == 0 || c < c1 {
+					c1 = c
+				}
+				c2 = max(c2, c)
+			}
+		}
+	}
+	cols := func(s *grid.Sheet, row int) bool {
+		for c := c1; c <= c2; c++ {
+			if !empty(s, row, c) {
+				return false
+			}
+		}
+		return true
+	}
+	var vacated, filled []int // new rows it left, old rows it took
+	for row := o1; row <= o2; row++ {
+		if !inDst(row) {
+			if !cols(sb, row) {
+				return rows
+			}
+			vacated = append(vacated, row)
+		}
+		if !inSrc(row + d) {
+			if !cols(sa, row+d) {
+				return rows
+			}
+			filled = append(filled, row+d)
+		}
+	}
+	// Every other row in place; the rows it left and took pair, empty.
+	was := make(map[int]int, len(rows)) // old row → new, as aligned
+	for _, q := range rows {
+		if q.Old > 0 {
+			was[q.Old] = q.New
+		}
+	}
+	move := formula.Move{From: sb.Name, Src: grid.Range{R1: o1, C1: c1, R2: o2, C2: c2}, To: sb.Name, DR: d}
+	n := max(ua.R2, ub.R2, o2+d)
+	out := make([]diff.Pair, 0, n)
+	other := map[int]int{}
+	for k, row := range filled {
+		other[row] = vacated[k]
+	}
+	// A row with something in it that it passed, which stayed: else rows
+	// added or removed above it moved it, as aligned.
+	stayed := false
+	for row := min(o1, o1+d); row <= max(o2, o2+d) && !stayed; row++ {
+		stayed = !inSrc(row) && !rowEmpty(sa, ua, row)
+	}
+	if !stayed {
+		return rows
+	}
+	for row := 1; row <= n; row++ {
+		q := diff.Pair{Old: row, New: row}
+		switch {
+		case inSrc(row):
+			q.New = row + d
+		case other[row] > 0:
+			q.New = other[row]
+		}
+		if was[row] != q.New && !r.holds(sa, q.Old, sb, q.New, j.cols, move) {
+			return rows
+		}
+		out = append(out, q)
+	}
+	sort.Slice(out, func(x, y int) bool { return out[x].New < out[y].New })
+	j.pasted = []diff.Moved{{From: o1, To: o1 + d, Rows: o2 - o1 + 1}}
+	j.cut = []formula.Move{move}
+	if c1 > max(ua.C1, ub.C1, 1) || c2 < max(ua.C2, ub.C2) {
+		j.pasteC1, j.pasteC2 = c1, c2 // the columns of the rows, not whole rows
+	}
+	return out
+}
+
+// holds tells whether a row holds what it held, its formulas as Excel
+// rewrites them for a move, or as they were.
+func (r *report) holds(sa *grid.Sheet, ra int, sb *grid.Sheet, rb int, cols [][2]int, m formula.Move) bool {
+	for _, c := range cols {
+		x, y := sa.At(ra, c[0]), sb.At(rb, c[1])
+		xe, ye := x == nil || x.IsEmpty(), y == nil || y.IsEmpty()
+		switch {
+		case xe && ye:
+		case xe != ye:
+			return false
+		case x.Formula != "" && y.Formula != "":
+			// As Excel rewrites it, or as it was (openpyxl's move_range: the
+			// check of its formula flags that).
+			f := formula.MoveRefs(r.renamedIn(x.Formula), sb.Name, sb.Name, m)
+			pa, _ := formula.Pattern(folded(f), rb, c[1])
+			pb, _ := formula.Pattern(folded(y.Formula), rb, c[1])
+			if pa != pb && folded(x.Formula) != folded(y.Formula) {
+				return false
+			}
+		case x.Formula != "" || y.Formula != "":
+			return false
+		case !sameValues(value(r.A.wb, sa, ra, c[0]), value(r.B.wb, sb, rb, c[1])):
+			return false
+		}
+	}
+	return true
+}
+
 // runs joins line numbers into runs.
 func runs(lines []int) [][2]int {
 	sort.Ints(lines)
@@ -894,6 +1048,13 @@ type job struct {
 	rowsAdded, rowsRemoved, colsAdded, colsRemoved []int
 	moved                                          []diff.Moved
 	blocks                                         []blockJob
+	// pasted is rows cut and pasted where nothing was (sheets move, Excel's
+	// cut and paste), the rows around them where they were: the run, the
+	// columns it spans (0 for whole rows), and the move as formulas follow
+	// it (on the sheet as now named).
+	pasted           []diff.Moved
+	pasteC1, pasteC2 int
+	cut              []formula.Move
 }
 
 // blockJob is columns whose rows a sort moved on its own (diff.Block): its
@@ -953,6 +1114,11 @@ func (r *report) prepare(p diff.SheetPair) *job {
 		p.Moved = diff.MovedRows(p.Rows, func(q diff.Pair) bool { return rowEmpty(sa, ua, q.Old) && rowEmpty(sb, ub, q.New) })
 	}
 	p.Rows = r.pairSpilled(sa, sb, p.Rows)
+	if len(p.Blocks) == 0 && len(j.colsAdded)+len(j.colsRemoved) == 0 {
+		if p.Rows = r.pasted(j, p.Rows); len(j.pasted) > 0 {
+			p.Moved = nil // the rows cut and pasted, not sorted
+		}
+	}
 	j.rows, j.moved = p.Rows, p.Moved
 	for _, b := range p.Blocks {
 		bj := blockJob{}
@@ -994,7 +1160,7 @@ func (j *job) edit() lineEdit {
 	}
 	spanOld, spanNew = spanWith(spanOld, j.rowsRemoved), spanWith(spanNew, j.rowsAdded)
 	return lineEdit{sheet: j.sb.Name, rowsRemoved: runs(j.rowsRemoved), rowsAdded: runs(j.rowsAdded),
-		colsRemoved: runs(j.colsRemoved), colsAdded: runs(j.colsAdded), movedOld: spanOld, movedNew: spanNew}
+		colsRemoved: runs(j.colsRemoved), colsAdded: runs(j.colsAdded), movedOld: spanOld, movedNew: spanNew, cut: j.cut}
 }
 
 // movedRange names rows that moved: whole rows, or the columns c1..c2 of
@@ -1072,6 +1238,7 @@ func (r *report) record(j *job) []removal {
 	for _, b := range j.blocks {
 		moves(b.moved, b.c1, b.c2)
 	}
+	moves(j.pasted, j.pasteC1, j.pasteC2)
 	return removals
 }
 
@@ -1142,7 +1309,7 @@ func (r *report) compare() {
 		return es
 	}
 	r.setEdits(edits())
-	if !out.ValuesOnly && (r.anyLines || len(r.renames) > 0) {
+	if !out.ValuesOnly && (r.anyLines || r.anyCut || len(r.renames) > 0) {
 		// A sheet whose formulas read another that lines were added to or
 		// removed from, or that was renamed: its rows are keyed by their
 		// formulas, which Excel rewrote, so they pair again with the old
@@ -1150,7 +1317,7 @@ func (r *report) compare() {
 		// fewer lines added and removed.
 		touched := map[string]bool{}
 		for _, j := range jobs {
-			if j != nil && (j.lineCount() > 0 || !strings.EqualFold(j.sa.Name, j.sb.Name)) {
+			if j != nil && (j.lineCount() > 0 || len(j.cut) > 0 || !strings.EqualFold(j.sa.Name, j.sb.Name)) {
 				touched[strings.ToLower(j.sa.Name)] = true
 			}
 		}
@@ -1194,10 +1361,16 @@ func (r *report) compare() {
 		if j == nil {
 			continue
 		}
-		m := &lineMap{sheet: j.sb.Name, row: map[int]int{}, col: map[int]int{}, moved: map[int]bool{}}
+		m := &lineMap{sheet: j.sb.Name, row: map[int]int{}, col: map[int]int{}, moved: map[int]bool{}, pasted: map[int]bool{},
+			pasteC1: j.pasteC1, pasteC2: j.pasteC2}
 		for _, mv := range j.moved {
 			for k := 0; k < mv.Rows; k++ {
 				m.moved[mv.From+k] = true
+			}
+		}
+		for _, mv := range j.pasted {
+			for k := 0; k < mv.Rows; k++ {
+				m.pasted[mv.From+k] = true
 			}
 		}
 		for _, q := range j.rows {
@@ -1605,21 +1778,22 @@ func within(run, span [2]int) bool {
 
 // setEdits takes the lines added and removed on each sheet.
 func (r *report) setEdits(edits []lineEdit) {
-	r.edits, r.anyLines = edits, false
+	r.edits, r.anyLines, r.anyCut = edits, false, false
 	for _, e := range edits {
 		if len(e.rowsRemoved)+len(e.rowsAdded)+len(e.colsRemoved)+len(e.colsAdded) > 0 {
 			r.anyLines = true
 		}
+		r.anyCut = r.anyCut || len(e.cut) > 0
 	}
 }
 
 // replay rewrites a formula, or a name's reference (home ""), as Excel does
-// for the sheets renamed and the rows and columns added and removed. It
-// says false when there is nothing to replay. With sure set, the rows added
-// or removed within what a sort moved are left out: where they were cannot
-// be told, as the sort took the rows elsewhere.
+// for the sheets renamed, the rows and columns added and removed, and the
+// cells cut and pasted. It says false when there is nothing to replay. With
+// sure set, the rows added or removed within what a sort moved are left
+// out: where they were cannot be told, as the sort took the rows elsewhere.
 func (r *report) replay(old, home string, sure bool) (string, bool) {
-	if !r.anyLines && len(r.renames) == 0 {
+	if !r.anyLines && !r.anyCut && len(r.renames) == 0 {
 		return "", false
 	}
 	return r.shifted(r.renamedIn(old), home, sure, ""), true
@@ -1634,8 +1808,14 @@ func (r *report) renamedIn(f string) string {
 }
 
 // shifted rewrites a formula (its sheets' names as now) for the lines added
-// and removed on every sheet but skip ("" for none).
+// and removed, then the cells cut and pasted, on every sheet but skip (""
+// for none).
 func (r *report) shifted(f, home string, sure bool, skip string) string {
+	return r.cutIn(r.lined(f, home, sure, skip), home, skip)
+}
+
+// lined rewrites a formula for the lines added and removed, as shifted.
+func (r *report) lined(f, home string, sure bool, skip string) string {
 	for _, e := range r.edits {
 		if skip != "" && strings.EqualFold(e.sheet, skip) {
 			continue
@@ -1646,6 +1826,22 @@ func (r *report) shifted(f, home string, sure bool, skip string) string {
 		}
 		f = shiftLines(f, home, e.sheet, false, removed, added)
 		f = shiftLines(f, home, e.sheet, true, e.colsRemoved, e.colsAdded)
+	}
+	return f
+}
+
+// cutIn rewrites a formula for the cells cut and pasted, as shifted.
+func (r *report) cutIn(f, home, skip string) string {
+	if !r.anyCut {
+		return f
+	}
+	for _, e := range r.edits {
+		if skip != "" && strings.EqualFold(e.sheet, skip) {
+			continue
+		}
+		for _, m := range e.cut {
+			f = formula.MoveRefs(f, home, home, m)
+		}
 	}
 	return f
 }
@@ -1715,14 +1911,21 @@ func (r *report) stale(old, home string) (string, bool) {
 // removed, a sheet renamed, or both.
 func (r *report) staleWhy(old, home string) string {
 	named := r.renamedIn(old)
-	lines := folded(r.shifted(named, home, true, "")) != folded(named)
-	switch renamed := folded(named) != folded(old); {
-	case renamed && lines:
-		return "rows or columns added or removed moved what it reads, and a sheet it reads was renamed"
-	case renamed:
-		return "a sheet it reads was renamed"
+	lined := r.lined(named, home, true, "")
+	var why []string
+	if lines := folded(lined) != folded(named); lines {
+		why = append(why, "rows or columns added or removed moved what it reads")
 	}
-	return "rows or columns added or removed moved what it reads"
+	if folded(r.cutIn(lined, home, "")) != folded(lined) {
+		why = append(why, "the cells it reads were cut and pasted elsewhere")
+	}
+	if folded(named) != folded(old) {
+		why = append(why, "a sheet it reads was renamed")
+	}
+	if len(why) == 0 {
+		return "rows or columns added or removed moved what it reads"
+	}
+	return strings.Join(why, ", and ")
 }
 
 // brokenRow flags one row of a formula column changed unlike the rows
@@ -1863,10 +2066,12 @@ func (r *report) trace(tr *xlsx.Tracer) {
 // moved, or whose references Excel rewrote for them.
 func (r *report) shiftCause(c candidate) string {
 	s := c.shift
-	if m := r.lines[strings.ToLower(s.sheet)]; m != nil && m.movedAt(s.row, s.col) {
+	if m := r.lines[strings.ToLower(s.sheet)]; m != nil && (m.movedAt(s.row, s.col) || m.pasted[s.row]) {
 		c1, c2 := 0, 0
 		if b := m.block(s.col); b != nil {
 			c1, c2 = b.c1, b.c2
+		} else if m.pasted[s.row] {
+			c1, c2 = m.pasteC1, m.pasteC2
 		}
 		was := ""
 		if s.row != c.at.Row {

@@ -619,6 +619,13 @@ wb = openpyxl.load_workbook(path)
 wb["Data"].title = "Facts"
 wb.save(f"{out}/against_facts.xlsx")
 
+# against_cut.xlsx: openpyxl cuts the regions' rows Data!A2:D6 and pastes
+# them at A12 (move_range, its own formulas translated), and leaves the
+# formulas reading them as they were (Excel rewrites them to follow).
+wb = openpyxl.load_workbook(path)
+wb["Data"].move_range("A2:D6", rows=10, translate=True)
+wb.save(f"{out}/against_cut.xlsx")
+
 # against_rtd.xlsx and against_rtd2.xlsx: a rate a server sends (RTD), as
 # Excel stored it at two times, 1.08 and then 1.09, and a formula reading
 # it. Nothing in the workbook changed.
