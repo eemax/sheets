@@ -3068,10 +3068,6 @@ func (r *report) trace(tr *xlsx.Tracer) {
 		}
 		return 0, false
 	}
-	// causeText says what moved a value whose nearest cause is source k: the
-	// structure change k is, when it is one, then each of the cells changed
-	// that reach it (the first few): an input that changed is always named,
-	// whatever rows were removed or moved around it.
 	// inputsOf gives the cells changed that reach a value (the first few).
 	inputsOf := func(c candidate) xlsx.Reach {
 		if allOf == nil && r.cells > 0 {
@@ -3084,43 +3080,20 @@ func (r *report) trace(tr *xlsx.Tracer) {
 		}
 		return xlsx.Reach{}
 	}
-	causeText := func(c candidate, k int) string {
-		got := inputsOf(c)
-		var labels []string
-		if k >= r.cells {
-			labels = append(labels, r.causes[k])
-		}
-		for _, n := range got.Sources {
-			labels = append(labels, r.causes[n])
-		}
-		if got.More {
-			labels = append(labels, "and more")
-		}
-		if len(labels) == 0 {
-			labels = append(labels, r.causes[k])
-		}
-		if k < r.cells && len(sorted) > 0 {
-			// A cell changed is nearest; rows a sort moved may reach it too,
-			// read by position (a lookup, a cell of a sorted row).
-			if lineOf == nil {
-				srcs := make([]xlsx.Source, len(sorted))
-				for i, n := range sorted {
-					srcs[i] = r.sources[n]
+	// changedFormula tells of the formulas among the cells changed: a structure
+	// change upstream of one is not followed through it (what it moved, it
+	// moved).
+	var changedAt map[xlsx.At]bool
+	changedFormula := func(at xlsx.At) bool {
+		if changedAt == nil {
+			changedAt = map[xlsx.At]bool{}
+			for _, src := range r.sources[:r.cells] {
+				if at := (xlsx.At{Sheet: src.Sheet, Row: src.Range.R1, Col: src.Range.C1}); tr.Formula(at.Sheet, at.Row, at.Col) {
+					changedAt[at] = true
 				}
-				// Not through a formula changed: what it moved, it moved.
-				stop := map[xlsx.At]bool{}
-				for _, src := range r.sources[:r.cells] {
-					if at := (xlsx.At{Sheet: src.Sheet, Row: src.Range.R1, Col: src.Range.C1}); tr.Formula(at.Sheet, at.Row, at.Col) {
-						stop[at] = true
-					}
-				}
-				lineOf = tr.SpreadUnless(srcs, func(at xlsx.At) bool { return stop[at] || holds(at) })
-			}
-			if n, ok := cause(lineOf, c); ok {
-				labels = append(labels, r.causes[sorted[n]])
 			}
 		}
-		return strings.Join(labels, ", ")
+		return changedAt[at]
 	}
 	anchorOf := func(c candidate) xlsx.At {
 		at := c.at
@@ -3249,6 +3222,98 @@ func (r *report) trace(tr *xlsx.Tracer) {
 			left = leaving(left, a)
 		}
 		return 0, false
+	}
+	// structureOf gives the structure changes that reach a value whose nearest
+	// cause is a cell changed, by their index among the sources: rows or
+	// columns added, as direct counts them (they could move it, through
+	// formulas they could move), and the others but rows a sort moved (rows
+	// removed across what a formula reads, a name changed or removed, a sheet
+	// removed or added), not through a formula changed or one whose value held.
+	var addedKinds []addedLines
+	for a := range kinds {
+		addedKinds = append(addedKinds, a)
+	}
+	sort.Slice(addedKinds, func(i, j int) bool {
+		if addedKinds[i].sheet != addedKinds[j].sheet {
+			return addedKinds[i].sheet < addedKinds[j].sheet
+		}
+		return !addedKinds[i].cols && addedKinds[j].cols
+	})
+	var otherOf map[xlsx.At]xlsx.Reach
+	structureOf := func(c candidate) []int {
+		if otherOf == nil {
+			srcs := append([]xlsx.Source{}, r.sources...)
+			for n := range srcs {
+				_, added := r.lineAdded[n-lineBase]
+				if n < r.cells || n >= lineBase && (added || srcs[n].Reordered.R2 > 0) {
+					srcs[n].Range = grid.Range{R1: 1, C1: 1, R2: 0, C2: 0}
+				}
+			}
+			otherOf = tr.SpreadAllUnless(srcs, causeListed, func(at xlsx.At) bool { return holds(at) || changedFormula(at) })
+		}
+		seen := map[int]bool{}
+		var out []int
+		for _, at := range places(c) {
+			for _, n := range otherOf[at].Sources {
+				if !seen[n] {
+					seen[n] = true
+					out = append(out, n)
+				}
+			}
+		}
+		for _, a := range addedKinds {
+			if !addMoves(a, c) {
+				continue
+			}
+			if n, ok := cause(linesReach(a), c); ok && !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
+		}
+		sort.Ints(out)
+		return out
+	}
+	// causeText says what moved a value whose nearest cause is source k: the
+	// structure changes that reach it first (k, when it is one), then each of
+	// the cells changed that reach it (the first few), then rows a sort moved
+	// that reach it beside a cell changed: an input that changed is always
+	// named, whatever rows were added, removed or moved around it, and so is a
+	// structure change that moved the value beside it.
+	causeText := func(c candidate, k int) string {
+		got := inputsOf(c)
+		var labels []string
+		if k >= r.cells {
+			labels = append(labels, r.causes[k])
+		} else {
+			for _, n := range structureOf(c) {
+				labels = append(labels, r.causes[n])
+			}
+		}
+		for _, n := range got.Sources {
+			labels = append(labels, r.causes[n])
+		}
+		if got.More {
+			labels = append(labels, "and more")
+		}
+		if k < r.cells && len(got.Sources) == 0 || len(labels) == 0 {
+			labels = append(labels, r.causes[k])
+		}
+		if k < r.cells && len(sorted) > 0 {
+			// A cell changed is nearest; rows a sort moved may reach it too,
+			// read by position (a lookup, a cell of a sorted row).
+			if lineOf == nil {
+				srcs := make([]xlsx.Source, len(sorted))
+				for i, n := range sorted {
+					srcs[i] = r.sources[n]
+				}
+				// Not through a formula changed: what it moved, it moved.
+				lineOf = tr.SpreadUnless(srcs, func(at xlsx.At) bool { return changedFormula(at) || holds(at) })
+			}
+			if n, ok := cause(lineOf, c); ok {
+				labels = append(labels, r.causes[sorted[n]])
+			}
+		}
+		return strings.Join(labels, ", ")
 	}
 	// heldCause is direct for a formula that held: the nearest cause that
 	// reaches it, rows added counting only when they reach it through formulas
