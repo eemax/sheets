@@ -65,7 +65,7 @@
   new error or a feature lost is a mistake: fix it, or `sheets undo`. It
   comes from the results the save computed anyway, so it costs next to
   nothing. The lint is compared when the sheets hold up to 2 MB of XML
-  (about 20,000 rows of a few columns); on a larger workbook it says
+  (about 13,000 rows of four columns); on a larger workbook it says
   `lint not compared` and `sheets lint` does it. `sheets check --against`
   gives the whole report.
 - All Excel functions work, including XLOOKUP, IFS, TEXTJOIN, LET and

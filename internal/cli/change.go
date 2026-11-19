@@ -88,9 +88,10 @@ const (
 	changeWhys   = 3 // reasons for unknown values
 	changeRules  = 3 // lint rules
 	// lintBytes bounds the sheets' XML linted before and after an edit:
-	// reading and linting take about 60 ns a byte, so linting both sides
-	// of 2 MB (about 20,000 rows of a few columns) adds a tenth of a
-	// second. Larger workbooks say so, and sheets lint does it.
+	// both sides, read and linted side by side, add about 75 ms to an
+	// edit of 1.5 MB (10,000 rows of four columns, on an M4), and 2 MB is
+	// about 13,000 such rows. Larger workbooks say so, and sheets lint
+	// does it.
 	lintBytes = 2 << 20
 )
 
