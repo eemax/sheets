@@ -3,7 +3,6 @@ package fuzz
 import (
 	"fmt"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -252,8 +251,26 @@ func (m *model) command(w []string, stdin string) {
 			fail("clear %s: %v", w[1], err)
 			return
 		}
+		// Without --all a clear takes the values and formulas and leaves the
+		// formatting, notes, links and merges (the Delete key): they are not in
+		// its reach (f4.2). --format, --notes and --links clear those instead,
+		// and are not modelled.
+		all := false
+		for _, a := range w[2:] {
+			switch a {
+			case "--all":
+				all = true
+			case "--format", "--notes", "--links":
+				fail("clear %s: not modelled", a)
+				return
+			}
+		}
 		m.clearRect(k, rg)
-		m.r.touch(k, rg)
+		if all {
+			m.r.touch(k, rg)
+		} else {
+			m.r.touchContents(k, rg, false)
+		}
 	case "copy", "move":
 		if len(w) < 3 {
 			fail("%s: %v", w[0], w)
@@ -297,7 +314,14 @@ func (m *model) command(w []string, stdin string) {
 			m.r.vacate(src, from)
 			m.r.move(src, dst, from, to.R1-from.R1, to.C1-from.C1) // what reads the cells follows them
 		}
-		m.r.touch(dst, grid.Range{R1: to.R1, C1: to.C1, R2: to.R1 + from.Rows() - 1, C2: to.C1 + from.Cols() - 1})
+		landed := grid.Range{R1: to.R1, C1: to.C1, R2: to.R1 + from.Rows() - 1, C2: to.C1 + from.Cols() - 1}
+		if values {
+			// Paste values: the cells take values and number formats; the
+			// target's notes, links and merges stay (f4.2).
+			m.r.touchContents(dst, landed, true)
+		} else {
+			m.r.touch(dst, landed)
+		}
 	case "sort":
 		if len(w) < 2 {
 			fail("sort: %v", w)
@@ -446,35 +470,74 @@ func lineSpan(spec string, cols bool) (sheet string, lo, hi int, err error) {
 
 // replace puts the cells a replace may change in the reach: in its target
 // (a sheet, or every sheet: a range or a table's column is taken as every
-// sheet), the values that hold what it finds as sheets shows them, ignoring
-// case, and with --formulas the formulas whose text holds it. A value is
-// matched as sheets' replace reads it (grid.Display: a date as 2026-07-01,
-// 12%), and a number also as it reads with no format, so the whole find must
-// be in one of them. (The first version put every number in the reach for a
-// find holding a digit, a space, an e or a dot, seven of the generator's 15
-// finds among them: a slip that wiped numbers it cannot match was no finding,
-// fuzzer-long's audit, f1.4.)
+// sheet), the values that hold what it finds as sheets shows them, and with
+// --formulas the formulas whose text holds it (the values too: the command
+// reads them as it does without). It finds as the command does
+// (replacer in internal/cli/ranges.go): ignoring case unless --case, in the
+// whole text with --exact (the first version read every replace as a search
+// for a substring, so one that ignored --exact and rewrote cells it must not
+// touch went by: fuzzer-long's audit, f4.1), and as a regular expression with
+// --regex. A value is matched as sheets' replace reads it (grid.Display: a
+// date as 2026-07-01, 12%), and a number also as it reads with no format, so
+// the whole find must be in one of them. (The first version put every number
+// in the reach for a find holding a digit, a space, an e or a dot, seven of
+// the generator's 15 finds among them: a slip that wiped numbers it cannot
+// match was no finding, f1.4.)
 func (m *model) replace(w []string) {
 	if m.r == nil || len(w) < 2 {
 		return
 	}
-	find := strings.ToLower(w[0])
-	formulas := slices.Contains(w, "--formulas")
+	var args []string
+	formulas, exact, caseSens, useRegex := false, false, false, false
+	for i := 0; i < len(w); i++ {
+		switch a := w[i]; {
+		case a == "--formulas":
+			formulas = true
+		case a == "--exact":
+			exact = true
+		case a == "--case":
+			caseSens = true
+		case a == "--regex":
+			useRegex = true
+		case a == "-n" || a == "--limit":
+			i++ // the number of changes listed: no part of the reach
+		case strings.HasPrefix(a, "--limit="):
+		default:
+			args = append(args, a)
+		}
+	}
+	if len(args) < 2 {
+		return
+	}
+	pattern := args[0]
+	if !useRegex {
+		pattern = regexp.QuoteMeta(pattern)
+	}
+	if exact {
+		pattern = "^(?:" + pattern + ")$"
+	}
+	if !caseSens {
+		pattern = "(?i)" + pattern
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		m.why = "replace: " + err.Error()
+		return
+	}
 	scope := m.order
-	if len(w) > 2 && !strings.HasPrefix(w[2], "--") && m.isSheet(w[2]) {
-		scope = []string{strings.ToLower(w[2])}
+	if len(args) > 2 && m.isSheet(args[2]) {
+		scope = []string{strings.ToLower(args[2])}
 	}
 	for _, k := range scope {
 		m.r.touchCells(k, func(o origin) bool {
 			c := m.r.cell(o)
-			switch {
-			case formulas:
-				return strings.Contains(strings.ToLower(c.Formula), find)
-			case c.Formula != "":
-				return false
+			if c.Formula != "" {
+				// A formula is matched by its text with --formulas, and left
+				// alone without; a value is matched as it is shown either way.
+				return formulas && re.MatchString("="+c.Formula)
 			}
 			for _, shown := range m.r.shown(c) {
-				if strings.Contains(strings.ToLower(shown), find) {
+				if re.MatchString(shown) {
 					return true
 				}
 			}

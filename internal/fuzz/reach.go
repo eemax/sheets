@@ -82,6 +82,12 @@ type reach struct {
 	// sits wholly in the reach, so no other judgement would see it (fuzzer-long's
 	// audit, f3.2).
 	vacated map[string][]grid.Range
+	// kept are the cells of a contents-only reach (touchContents) whose look
+	// stays: non-empty before the edit, by sheet and where they stand now. Their
+	// values and formulas are in the reach, and their look (number format
+	// included) is not: checkFile judges it from the file, since the reader
+	// keeps no empty cell, and a cleared cell is one (f4.2).
+	kept map[string]map[[2]int]origin
 }
 
 // xform is one rewrite of references an edit makes, as Excel makes it:
@@ -124,7 +130,7 @@ type region struct {
 }
 
 func newReach(wb *grid.Workbook) *reach {
-	rc := &reach{before: wb, sheets: map[string]*grid.Sheet{}, at: map[string]map[[2]int]origin{}, rects: map[string][]grid.Range{}, solid: map[string][]grid.Range{}, fresh: map[string][]grid.Range{}, member: map[origin][]*region{}, copies: map[string]bool{}, vacated: map[string][]grid.Range{}}
+	rc := &reach{before: wb, sheets: map[string]*grid.Sheet{}, at: map[string]map[[2]int]origin{}, rects: map[string][]grid.Range{}, solid: map[string][]grid.Range{}, fresh: map[string][]grid.Range{}, member: map[origin][]*region{}, copies: map[string]bool{}, vacated: map[string][]grid.Range{}, kept: map[string]map[[2]int]origin{}}
 	for _, s := range wb.Sheets {
 		k := strings.ToLower(s.Name)
 		rc.sheets[k] = s
@@ -182,6 +188,50 @@ func (rc *reach) touchLines(k string, rg grid.Range, solid bool) {
 	for p := range rc.at[k] {
 		if rg.Contains(p[0], p[1]) {
 			delete(rc.at[k], p)
+		}
+	}
+	for p := range rc.kept[k] {
+		if rg.Contains(p[0], p[1]) {
+			delete(rc.kept[k], p)
+		}
+	}
+	for _, g := range rc.regions {
+		if g.sheet == k && !g.gone && !g.rg.Intersect(rg).Empty() {
+			g.disturbed = true
+		}
+	}
+}
+
+// touchContents puts a range of a sheet, as it stands now, in the reach of an
+// edit that changes what the cells hold (their values and formulas) and no
+// more: a clear without --all (the Delete key keeps formatting, notes, links
+// and merges), and the target of copy --values (the values and the number
+// format go; notes, links, merges and the rest of the look stay). Notes,
+// links, merges, validations, conditional formats and hidden lines in it are
+// judged as outside the reach (they are not in solid), and so is the look of
+// its cells: a clear keeps it whole, and a paste of values only changes the
+// number format, so look says it may change (copy --values).
+func (rc *reach) touchContents(k string, rg grid.Range, look bool) {
+	if rc == nil || rg.Empty() {
+		return
+	}
+	rc.rects[k] = append(rc.rects[k], rg)
+	for p, o := range rc.at[k] {
+		if rg.Contains(p[0], p[1]) {
+			delete(rc.at[k], p)
+			if !look {
+				if rc.kept[k] == nil {
+					rc.kept[k] = map[[2]int]origin{}
+				}
+				rc.kept[k][p] = o
+			}
+		}
+	}
+	if look {
+		for p := range rc.kept[k] {
+			if rg.Contains(p[0], p[1]) {
+				delete(rc.kept[k], p)
+			}
 		}
 	}
 	for _, g := range rc.regions {
@@ -300,6 +350,16 @@ func (rc *reach) shift(k string, cols bool, at, to, n int) {
 		next[p] = o
 	}
 	rc.at[k] = next
+	keptNext := map[[2]int]origin{}
+	for p, o := range rc.kept[k] {
+		q, ok := shiftLine(p[i], at, to, n)
+		if !ok {
+			continue
+		}
+		p[i] = q
+		keptNext[p] = o
+	}
+	rc.kept[k] = keptNext
 	span := func(rg grid.Range) (grid.Range, bool) {
 		lo, hi := rg.R1, rg.R2
 		if cols {
@@ -356,7 +416,8 @@ func (rc *reach) rename(from, to string) {
 		return
 	}
 	rc.xforms = append(rc.xforms, xform{kind: 'r', sheet: from, to: to})
-	rc.at[to], rc.rects[to], rc.solid[to], rc.fresh[to], rc.vacated[to] = rc.at[from], rc.rects[from], rc.solid[from], rc.fresh[from], rc.vacated[from]
+	rc.at[to], rc.rects[to], rc.solid[to], rc.fresh[to], rc.vacated[to], rc.kept[to] = rc.at[from], rc.rects[from], rc.solid[from], rc.fresh[from], rc.vacated[from], rc.kept[from]
+	delete(rc.kept, from)
 	delete(rc.at, from)
 	delete(rc.rects, from)
 	delete(rc.solid, from)

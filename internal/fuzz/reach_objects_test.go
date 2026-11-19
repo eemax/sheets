@@ -114,10 +114,37 @@ func TestReachObjects(t *testing.T) {
 
 		// Edits that reach an object may change it; one that does not name it may not.
 		{name: "a set into a merge may unmerge it", edit: edit("set", "Data!A8", "x"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Merges = nil }},
-		{name: "a clear over a note may drop it", edit: edit("clear", "Data!B3"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Notes = nil }},
-		{name: "a clear over a note may not drop a link", edit: edit("clear", "Data!B3"), slip: func(wb *grid.Workbook) {
+		{name: "a clear --all over a note may drop it", edit: edit("clear", "Data!B3", "--all"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Notes = nil }},
+		{name: "a clear --all over a note may not drop a link", edit: edit("clear", "Data!B3", "--all"), slip: func(wb *grid.Workbook) {
 			wb.Sheet("Data").Notes, wb.Sheet("Data").Links = nil, nil
 		}, wantErr: "the link https://example.com/a on A2 is not there as it was"},
+		{name: "a clear --all over a merge may unmerge it", edit: edit("clear", "Data!A8:C8", "--all"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Merges = nil }},
+
+		// A clear without --all takes values and formulas, and keeps notes, links
+		// and merges (the Delete key): a clear that acts as --all is a finding
+		// (fuzzer-long's audit, f4.2: `if all {` made `if true || all {`).
+		{name: "a clear keeps the note it covers", edit: edit("clear", "Data!B3"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Notes = nil },
+			wantErr: `the note "check" on B3 is not there as it was`},
+		{name: "a clear keeps the link it covers", edit: edit("clear", "Data!A2"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Links = nil },
+			wantErr: "the link https://example.com/a on A2 is not there as it was"},
+		{name: "a clear keeps the merge it covers", edit: edit("clear", "Data!A8:C8"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Merges = nil },
+			wantErr: "the merge at A8:C8 is not there as it was"},
+		{name: "a clear of a range keeps the note in it", edit: edit("clear", "Data!A1:C5"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Notes = nil },
+			wantErr: `the note "check" on B3 is not there as it was`},
+		{name: "a clear keeps the note and the link as they are", edit: edit("clear", "Data!A2:B3")},
+		{name: "a clear keeps a hidden row", edit: edit("clear", "Data!7:7"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").HiddenRows = nil },
+			wantErr: "row 7 was hidden, and is shown now"},
+		{name: "a clear of other cells may not drop a note", edit: edit("clear", "Data!C5"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Notes = nil },
+			wantErr: `the note "check" on B3 is not there as it was`},
+		// copy --values pastes values (and number formats) onto the target: its
+		// notes, links and merges stay; a plain copy replaces them.
+		{name: "a paste of values keeps the note on the target", edit: edit("copy", "Data!B2", "Data!B3", "--values"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Notes = nil },
+			wantErr: `the note "check" on B3 is not there as it was`},
+		{name: "a paste of values keeps the link on the target", edit: edit("copy", "Data!B2", "Data!A2", "--values"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Links = nil },
+			wantErr: "the link https://example.com/a on A2 is not there as it was"},
+		{name: "a paste of values keeps the merge on the target", edit: edit("copy", "Data!A2", "Data!A8", "--values"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Merges = nil },
+			wantErr: "the merge at A8:C8 is not there as it was"},
+		{name: "a copy of everything may replace the note on the target", edit: edit("copy", "Data!B2", "Data!B3"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Notes = nil }},
 		{name: "a set in a table does not reshape it", edit: edit("set", "Data!B2", "9"), slip: func(wb *grid.Workbook) { wb.Sheet("Data").Tables[0].Range.R2++ },
 			wantErr: "the table Sales1 at A1:C5 is not there as it was"},
 		{name: "a set in a table's header renames its column", edit: edit("set", "Data!B1", "Qty"), slip: func(wb *grid.Workbook) {
@@ -328,12 +355,45 @@ func TestReachFile(t *testing.T) {
 			f.looks["data"][[2]int{1, 1}] = ""
 			return f
 		}},
-		{name: "a validation under a clear may go", edit: Edit{Class: "clear", Args: []string{"clear", FileArg, "Data!B2:B5"}}, after: func() *fileObjects {
+		{name: "a validation under a clear --all may go", edit: Edit{Class: "clear", Args: []string{"clear", FileArg, "Data!B2:B5", "--all"}}, after: func() *fileObjects {
 			f := fileBook(0)
 			f.objects["data"] = f.objects["data"][1:]
 			return f
 		}},
-		{name: "a validation cut by a clear leaves its remainder", edit: Edit{Class: "clear", Args: []string{"clear", FileArg, "Data!B3"}}, after: func() *fileObjects {
+		// A clear without --all reaches values and formulas only (f4.2): the
+		// validations, the conditional formats and the look of its cells stay.
+		{name: "a validation under a clear stays", edit: Edit{Class: "clear", Args: []string{"clear", FileArg, "Data!B2:B5"}}, after: func() *fileObjects {
+			f := fileBook(0)
+			f.objects["data"] = f.objects["data"][1:]
+			return f
+		}, wantErr: "the validation list is not there as it was"},
+		{name: "a conditional format under a clear stays", edit: Edit{Class: "clear", Args: []string{"clear", FileArg, "Data!B2:C5"}}, after: func() *fileObjects {
+			f := fileBook(0)
+			f.objects["data"] = f.objects["data"][:1]
+			return f
+		}, wantErr: "the conditional format is not there as it was"},
+		{name: "a clear keeps the look of the cells it empties", edit: Edit{Class: "clear", Args: []string{"clear", FileArg, "Data!A1"}}, after: func() *fileObjects {
+			f := fileBook(0)
+			f.looks["data"][[2]int{1, 1}] = ""
+			return f
+		}, wantErr: "Data!A1: outside the edit's reach, its look was [bold], and is [] now"},
+		{name: "a clear --all may change the look of the cells it empties", edit: Edit{Class: "clear", Args: []string{"clear", FileArg, "Data!A1", "--all"}}, after: func() *fileObjects {
+			f := fileBook(0)
+			f.looks["data"][[2]int{1, 1}] = ""
+			return f
+		}},
+		{name: "a clear keeps the look as it is", edit: Edit{Class: "clear", Args: []string{"clear", FileArg, "Data!A1"}}, after: func() *fileObjects { return fileBook(0) }},
+		{name: "a paste of values may change the look of its target (the number format)", edit: Edit{Class: "copy", Args: []string{"copy", FileArg, "Data!B2", "Data!A1", "--values"}}, after: func() *fileObjects {
+			f := fileBook(0)
+			f.looks["data"][[2]int{1, 1}] = "format=0.0%"
+			return f
+		}},
+		{name: "a paste of values keeps a validation on its target", edit: Edit{Class: "copy", Args: []string{"copy", FileArg, "Data!A2", "Data!B2", "--values"}}, after: func() *fileObjects {
+			f := fileBook(0)
+			f.objects["data"] = f.objects["data"][1:]
+			return f
+		}, wantErr: "the validation list is not there as it was"},
+		{name: "a validation cut by a clear --all leaves its remainder", edit: Edit{Class: "clear", Args: []string{"clear", FileArg, "Data!B3", "--all"}}, after: func() *fileObjects {
 			f := fileBook(0)
 			f.objects["data"][0].rg = grid.Range{R1: 2, C1: 2, R2: 2, C2: 2}
 			f.objects["data"] = append(f.objects["data"], object{kind: "validation", rg: grid.Range{R1: 4, C1: 2, R2: 5, C2: 2}, free: true, relative: true, cover: true, label: "list", refs: "list a,b"})

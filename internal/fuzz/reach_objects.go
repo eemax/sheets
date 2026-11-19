@@ -457,6 +457,10 @@ func (rc *reach) checkFile(after *grid.Workbook, before, afterObjs *fileObjects,
 		for p := range rc.at[k] {
 			ps = append(ps, p)
 		}
+		// A contents-only reach keeps the look of its cells (f4.2).
+		for p := range rc.kept[k] {
+			ps = append(ps, p)
+		}
 		sort.Slice(ps, func(i, j int) bool {
 			if ps[i][0] != ps[j][0] {
 				return ps[i][0] < ps[j][0]
@@ -464,7 +468,10 @@ func (rc *reach) checkFile(after *grid.Workbook, before, afterObjs *fileObjects,
 			return ps[i][1] < ps[j][1]
 		})
 		for _, p := range ps {
-			o := rc.at[k][p]
+			o, ok := rc.at[k][p]
+			if !ok {
+				o = rc.kept[k][p]
+			}
 			was, ok1 := before.looks[o.sheet][[2]int{o.r, o.c}]
 			is, ok2 := afterObjs.looks[k][p]
 			if !ok1 || !ok2 || was == is {
