@@ -743,7 +743,8 @@ bug other: sort repeat; repro 100047; detail no face of this
 	}
 	pool := loadPool(t)
 	ps := &Pools{Root: repoRoot, Dir: t.TempDir(), Committed: pool}
-	// One replay for each sorts line, up to 10 for other's (two under -race).
+	// One replay for each sorts line, and 10 for other's, which never shows:
+	// under -race, the sorts lines alone.
 	if raceOn {
 		kn.Bugs = kn.Bugs[:2]
 	}
