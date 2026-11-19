@@ -104,3 +104,25 @@ func TestFeedbackFeaturesMoveAcross(t *testing.T) {
 		}
 	}
 }
+
+// A move of a table to a new sheet, then its undo: the chart that stayed on
+// its sheet, still there, is not lost (f0.4). The pairing of the versions by
+// what the sheets hold takes the cells cut and pasted across sheets for a
+// sheet renamed, which moves the chart that stayed; the session's own way
+// finds it where it was. Undoing a rename or an insert still loses nothing.
+func TestFeedbackFeaturesUndoMoveAcross(t *testing.T) {
+	for _, stream := range []string{"never", "always"} {
+		t.Setenv("SHEETS_STREAM", stream)
+		_, path := causesFixture(t)
+		if out, code := runCLI("", "move", path, "Data!A1:D7", "Other!A1"); code != 0 || !strings.Contains(head(t, out), ", 0 features lost") {
+			t.Fatalf("%s: move: exit %d:\n%s", stream, code, out)
+		}
+		out, code := runCLI("", "undo", path)
+		if code != 0 || strings.Contains(out, "chart") {
+			t.Errorf("%s: undo of the move: exit %d:\n%s", stream, code, out)
+		}
+		if info, _ := runCLI("", "info", path); !strings.Contains(info, "F2  column") {
+			t.Errorf("%s: the chart is not back:\n%s", stream, info)
+		}
+	}
+}

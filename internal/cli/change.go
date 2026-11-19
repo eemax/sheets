@@ -591,8 +591,11 @@ func (s *session) compare(r *changeReport) {
 			// An undo: what the edit it undid renamed or moved (a sheet, the
 			// lines a chart stands on) is not the session's to follow, so the
 			// two versions are paired as check --against pairs them.
+			// What either way finds is there: the pairing by what the sheets
+			// hold takes cells cut and pasted to another sheet for a sheet
+			// renamed and a column inserted, which moves a chart that stayed.
 			if l, c, ok := alignedFeatures(s.before, s.after, fa, fb); ok {
-				lost, changed = l, c
+				lost, changed = foundByEither(lost, changed, l, c)
 			}
 		}
 		r.FeaturesLost = len(lost)
@@ -610,6 +613,34 @@ func (s *session) compare(r *changeReport) {
 	default:
 		r.Lint = lintDelta(lintA, lintB)
 	}
+}
+
+// foundByEither combines two comparisons of the same two versions' features
+// (the session's, with the lines and sheets it knows moved, and the pairing
+// of the versions as check --against does): a feature is lost only when
+// neither finds it, and a rule one finds edited is changed. The second's
+// changed list is the one given; the first's has what the second lost.
+func foundByEither(lost1 []lostFeature, changed1 []changedFeature, lost2 []lostFeature, changed2 []changedFeature) ([]lostFeature, []changedFeature) {
+	key := func(f lostFeature) string { return f.Kind + "\x00" + f.Where + "\x00" + f.What }
+	both := map[string]bool{}
+	for _, f := range lost1 {
+		both[key(f)] = true
+	}
+	lost := []lostFeature{}
+	changed := changed2
+	for _, f := range lost2 {
+		if both[key(f)] {
+			lost = append(lost, f)
+			continue
+		}
+		for _, c := range changed1 {
+			if c.Kind == f.Kind && c.Where == f.Where {
+				changed = append(changed, c)
+				break
+			}
+		}
+	}
+	return lost, changed
 }
 
 // withoutRules is the features less the validations and conditional formats.
