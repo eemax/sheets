@@ -72,8 +72,9 @@
   is not lost. A value you did not mean to move, a new error or a feature
   lost is a mistake: fix it, or `sheets undo` (whose own report leaves the
   cells uncompared and gives the features lost and the lint, the two
-  versions paired as `check --against` pairs them, so undoing a rename or
-  an insert loses nothing). The results come from what the save computed
+  versions paired as `check --against` pairs them, and a feature found
+  either that way or by the lines it knows moved is not lost, so undoing
+  a rename, an insert or a move loses no chart). The results come from what the save computed
   anyway; the features and lint are read off the file before and after.
   The lint only when the sheets hold up to 512 KB of XML (about 3,500 rows
   of four columns): on a larger workbook it says `lint not compared` and
