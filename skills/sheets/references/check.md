@@ -75,8 +75,13 @@
     are a cause only of what reads them by position (a lookup, `=Data!B2`,
     a sum of some of them, an array formula over several rows of them): a
     total over all of them (SUM, MAX, COUNT, an
-    average, SUMIF or SUMPRODUCT over the same rows, a table's column)
-    did not move for the sort, and names the input that moved it. Rows
+    average, SUMIF or SUMPRODUCT over the same rows, a table's column,
+    ranges combined cell by cell inside them: `SUMPRODUCT((A2:A9="East")*B2:B9)`,
+    `SUM(B2:B9*C2:C9)`)
+    did not move for the sort, and names the input that moved it. Two
+    tables on a sheet sorted apart are each a block of their own: a total over
+    one is a total over all the rows moved, and one stored wrong stays
+    `unexplained`. Rows
     removed or added are a cause only of what they can move that way, a
     formula Excel rewrote for them included, over a range, a table's
     column or a defined name alike: a MAX that rose for a row removed, a
@@ -86,7 +91,12 @@
     something else moved it. Nor did a formula that moved with its row, or
     that rows added or removed above it moved, and reads the cells it read
     (`=B2*C2` in a sorted row): a wrong result stored for it stays
-    `unexplained`, and so does a total over it. A formula changed is listed too, with what
+    `unexplained`, and so does a total over it. A structure change is a
+    cause only of what it reaches through formulas it moved: a formula
+    whose value held (a MAX an input change left as it was, a total an empty
+    row inserted did not move) stops the tracing, so a wrong result stored
+    for what reads it stays `unexplained`, and what reads that follows it
+    (`which moved with nothing upstream changed`), or holds what it held. A formula changed is listed too, with what
     it computes now. A value that moved because rows added or removed moved
     its formula or what it reads (`=ROW()`, a range older Excel reads one
     cell of) has them as its cause;
@@ -111,7 +121,11 @@
     of its kind now (a bound raised, a dropdown's items or the range it
     reads, a threshold or the cell it is in) was edited: it is in
     `features_changed`, with its rule before and after, not lost, and sets
-    no exit 1. A rule a tool left as it was where rows moved what it reads
+    no exit 1. Only on the cells it was on: a dropdown cleared from one range
+    and another added on other cells is the first one lost. A lost rule is
+    named with its type, operator and values (`what`), so that one of several
+    on the same cells is told; of several of a kind there, an edit pairs with
+    the one whose text is the closest to it. A rule a tool left as it was where rows moved what it reads
     (openpyxl's `insert_rows`) is changed too, with what Excel writes. Only a rule of the same type is an edit
     of it (a whole-number validation made a decimal one, or one that
     allows any value, too), and a formula rule or custom validation only
