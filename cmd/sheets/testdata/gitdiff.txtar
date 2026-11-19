@@ -53,6 +53,12 @@ stdout '^Data: removed \(A1:D7\)$'
 ! exec sheets diff a b c d e f g
 stderr 'accepts between 1 and 2 arg\(s\), received 7'
 
+# An unmerged path git gives alone (it sets GIT_DIFF_PATH_TOTAL for a
+# driver): said, as git says it.
+env GIT_DIFF_PATH_TOTAL=1
+exec sheets diff book.xlsx
+stdout '^\* Unmerged path book.xlsx$'
+
 -- gitconfig --
 -- attributes --
 *.xlsx diff=sheets
