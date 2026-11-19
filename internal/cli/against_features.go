@@ -3,6 +3,7 @@ package cli
 import (
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/eemax/sheets/internal/grid"
@@ -34,6 +35,79 @@ type changedFeature struct {
 	What   string `json:"what,omitempty"` // as it is now
 	Before string `json:"before"`         // its rule, as it was
 	After  string `json:"after"`
+}
+
+// dollars gives where a reference is absolute: its text with the letters and
+// numbers of each cell left out (as $.$. for $B$2, . for B2).
+func dollars(ref string) string {
+	if i := strings.LastIndex(ref, "!"); i >= 0 {
+		ref = ref[i+1:]
+	}
+	var b strings.Builder
+	in := false
+	for i := 0; i < len(ref); i++ {
+		if c := ref[i]; c == '$' || c == ':' {
+			b.WriteByte(c)
+			in = false
+		} else if !in {
+			b.WriteByte('.')
+			in = true
+		}
+	}
+	return b.String()
+}
+
+// cellPart finds a cell of a reference: its column and row, each with a $
+// when absolute.
+var cellPart = regexp.MustCompile(`(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)`)
+
+// offsetRef moves the relative parts of a reference's cells dr rows and dc
+// columns on (a sheet's name before the ! is left as it is).
+func offsetRef(ref string, dr, dc int) string {
+	if dr == 0 && dc == 0 {
+		return ref
+	}
+	head, body := "", ref
+	if i := strings.LastIndex(ref, "!"); i >= 0 {
+		head, body = ref[:i+1], ref[i+1:]
+	}
+	return head + cellPart.ReplaceAllStringFunc(body, func(m string) string {
+		p := cellPart.FindStringSubmatch(m)
+		col, row := p[2], p[4]
+		if p[1] == "" {
+			if n, ok := grid.ColIndex(col); ok && n+dc > 0 {
+				col = grid.ColName(n + dc)
+			}
+		}
+		if p[3] == "" {
+			if n, err := strconv.Atoi(row); err == nil && n+dr > 0 {
+				row = strconv.Itoa(n + dr)
+			}
+		}
+		return p[1] + col + p[3] + row
+	})
+}
+
+// firstLeft gives how many rows and columns on the first cell of a feature's
+// cells that the lines removed left is from where its first cell was (zero
+// when that is still there).
+func firstLeft(f xlsx.Feature, home string, shift shiftFunc) (int, int) {
+	first := strings.Fields(strings.ReplaceAll(f.Where, "$", ""))
+	if len(first) == 0 {
+		return 0, 0
+	}
+	rg, err := grid.ParseRange(first[0])
+	if err != nil {
+		return 0, 0
+	}
+	dr, dc := 0, 0
+	// Whole rows and columns, so that what happened to the other axis is not
+	// asked of.
+	for ; dr < rg.Rows()-1 && shift(home, strconv.Itoa(rg.R1+dr)+":"+strconv.Itoa(rg.R1+dr)) == ""; dr++ {
+	}
+	for ; dc < rg.Cols()-1 && shift(home, grid.ColName(rg.C1+dc)+":"+grid.ColName(rg.C1+dc)) == ""; dc++ {
+	}
+	return dr, dc
 }
 
 // ruleReads tells of a rule of the new version (g) that is an old one (f)
@@ -206,12 +280,19 @@ func compareFeaturesAcross(before, after []xlsx.Feature, renamed, tables map[str
 		return k
 	}
 	readsAfter := func(g xlsx.Feature) string {
-		return scanRule(g.Rule, true, func(ref string) string { return cellKey(ref, g.Sheet) }, strings.ToLower)
+		return scanRule(g.Rule, true, func(ref string) string { return cellKey(ref, g.Sheet) + dollars(ref) }, strings.ToLower)
 	}
+	// A rule's formula is written for the first cell of its cells: what it reads
+	// by a relative reference is where that cell stands. When the lines removed
+	// took the first cell (the first row of the cells deleted), the rule is the
+	// one of the first cell left, a row or a column on: the old rule is read as
+	// written for that cell, with what it reads relative to it moved as far.
 	readsBefore := func(f xlsx.Feature, home string) string {
+		dr, dc := firstLeft(f, home, shift)
 		return scanRule(f.Rule, true, func(ref string) string {
-			if s := shift(home, ref); s != "" && !strings.Contains(s, "#REF!") {
-				return cellKey(s, home)
+			at := offsetRef(ref, dr, dc)
+			if s := shift(home, at); s != "" && !strings.Contains(s, "#REF!") {
+				return cellKey(s, home) + dollars(ref)
 			}
 			return "#ref!"
 		}, func(t string) string {

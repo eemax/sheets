@@ -705,6 +705,39 @@ func TestAgainstCausesFeaturesRepointed(t *testing.T) {
 	}
 }
 
+// A rule is written for the first cell of its cells: rows or columns deleted
+// or inserted at its first row or column, or before it, leave it the same rule
+// (f3.3: the cells it reads are compared as Excel rewrites them, a relative
+// reference by where the first cell left stands). A rule whose first cell
+// was deleted is the one of the next cell. (One whose own column was deleted
+// reads #REF! now, and is lost, as the validation on it is.)
+func TestAgainstCausesRuleFirstCell(t *testing.T) {
+	dir, fixture := causesFixture(t)
+	before := filepath.Join(dir, "highlight.xlsx")
+	rewriteSheet(t, fixture, before, func(b []byte) []byte {
+		return bytes.Replace(b, []byte("</conditionalFormatting>"), []byte(`</conditionalFormatting><conditionalFormatting sqref="B2:D6"><cfRule type="expression" dxfId="0" priority="2"><formula>$B2&gt;6</formula></cfRule></conditionalFormatting>`), 1)
+	})
+	for _, c := range []struct {
+		name string
+		cmd  []string
+	}{
+		{"first row deleted", []string{"rows", "delete", "Data!2"}},
+		{"row above deleted", []string{"rows", "delete", "Data!1"}},
+		{"first two rows deleted", []string{"rows", "delete", "Data!2:3"}},
+		{"row inserted at the first", []string{"rows", "insert", "Data!2"}},
+		{"row inserted above", []string{"rows", "insert", "Data!1"}},
+		{"column before deleted", []string{"cols", "delete", "Data!A"}},
+		{"column before inserted", []string{"cols", "insert", "Data!A"}},
+		{"column inserted at the first", []string{"cols", "insert", "Data!B"}},
+	} {
+		after := edited(t, before, filepath.Join(dir, "a.xlsx"), c.cmd)
+		r, _ := against(t, after, before) // the exit code counts the file's own errors too
+		if len(r.FeaturesLost) != 0 || len(r.FeaturesChanged) != 0 {
+			t.Errorf("%s: lost %+v, changed %+v", c.name, r.FeaturesLost, r.FeaturesChanged)
+		}
+	}
+}
+
 // A rule another replaced on the same cells is the old one lost, not an edit
 // of it (f0.2): the banding sheets fmt writes over a highlight of another
 // tool, a list a move pasted a whole-number rule over, a highlight cleared
