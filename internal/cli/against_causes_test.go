@@ -971,7 +971,10 @@ func TestAgainstCausesRemovedSize(t *testing.T) {
 // are looked through together, not one run at a time (each used to cost a
 // whole pass over the sheet: minutes at 150,000 rows).
 func TestAgainstCausesAddedRunsFast(t *testing.T) {
-	const rows, every = 20000, 10
+	rows, every, limit := 12000, 6, 3*time.Second
+	if raceSlow > 1 {
+		rows, every, limit = 3000, 3, 0 // the race detector: what it finds, not how fast
+	}
 	dir := t.TempDir()
 	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
 	build := func(path string, gaps bool) {
@@ -984,7 +987,7 @@ func TestAgainstCausesAddedRunsFast(t *testing.T) {
 				n++
 			}
 			units := i%7 + 1
-			if gaps && i == 3 {
+			if gaps && i == 1 {
 				units = 100
 			}
 			n++
@@ -1003,10 +1006,10 @@ func TestAgainstCausesAddedRunsFast(t *testing.T) {
 	start := time.Now()
 	r, code := against(t, after, before)
 	took := time.Since(start)
-	if m := causes(r)["Summary!B1"]; m != "input Data!B5" || r.Summary.Inputs != 1 || len(r.Unexplained) != 0 || code != 0 {
+	if m := causes(r)["Summary!B1"]; m != "input Data!B3" || r.Summary.Inputs != 1 || len(r.Unexplained) != 0 || code != 0 {
 		t.Errorf("exit %d, %+v, Summary!B1 cause %q, unexplained %+v", code, r.Summary, m, r.Unexplained)
 	}
-	if limit := 5 * time.Second * raceSlow; took > limit {
+	if limit > 0 && took > limit {
 		t.Errorf("check --against with %d runs of rows added took %s, over %s", rows/every-1, took.Round(time.Millisecond), limit)
 	}
 }
