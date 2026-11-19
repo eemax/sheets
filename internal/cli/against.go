@@ -2228,7 +2228,7 @@ func (r *report) resultHeld(c *candidate) bool {
 		}
 		unknown := false
 		ws.Each(grid.Range{R1: ref.Area.R1, C1: ref.Area.C1, R2: ref.Area.R2, C2: ref.Area.C2}, func(row, col int, cell *grid.Cell) {
-			if cell.Formula != "" {
+			if cell.Formula != "" && len(r.B.differ) > 0 {
 				if _, differs := r.B.differ[strings.ToLower(cellAt(ws.Name, row, col))]; differs {
 					unknown = true
 				}
@@ -2238,6 +2238,9 @@ func (r *report) resultHeld(c *candidate) bool {
 		if unknown || h.unknown {
 			return true
 		}
+	}
+	if h.shifted && (call.Func == "SUM" || call.Func == "AVERAGE") {
+		return true // dates summed in a 1904 workbook: not what the file stores
 	}
 	var want float64
 	switch call.Func {
@@ -2272,6 +2275,7 @@ type held struct {
 	sum, hi, lo     float64
 	numbers, filled int
 	unknown         bool // a value there is unknown
+	shifted         bool // a number there is a date counted in the 1900 system for a 1904 workbook
 }
 
 // add counts a cell's value.
@@ -2282,6 +2286,7 @@ func (h *held) add(v valueOf) {
 		return
 	case v.cell.Kind == grid.Number:
 		n := v.num // as the values compared count it (dates in the 1900 system)
+		h.shifted = h.shifted || v.shift != 0
 		if h.numbers == 0 || n > h.hi {
 			h.hi = n
 		}
