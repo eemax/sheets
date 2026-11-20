@@ -106,13 +106,16 @@ run silent.
 | 16-debug-budget | finding five planted errors in a budget (a short total, a broken row, text for a number, a wrong reference, double counting) |
 | 17-large-dedupe | removing a repeated import from 150,000 rows and reporting the corrected totals |
 | 18-csv-dialect | a price change in a German ERP export (semicolons, decimal commas, Windows-1252, CRLF), kept in its format |
+| 19-living-workbook | twenty ordered edits in one prompt to a workbook of five sheets (two Excel tables, named cells, a chart, conditional formats, validations, cross-sheet formulas, dynamic arrays), graded on the end state |
+| 20-feature-loss | six edits, one of them a row inserted mid-table, to a budget holding a chart, a shape, validations, conditional formats and a note, each feature checked on the end state |
 
 Each task folder has `prompt.md` (the request, the same for both arms),
 `setup.py` (writes the inputs, and the true answers to a file the agent
 does not see) and `check.py` (grades the result with `evals/lib/evalkit.py`).
 
-Checks judge values by computing formulas (with `sheets read`), so a
-correct formula counts whoever wrote it. A separate kind of check, *stored
+Checks judge values by computing formulas (with `sheets read`, or for the
+claim tasks 19 and 20 with `lo_values`, below), so a correct formula counts
+whoever wrote it. A separate kind of check, *stored
 results*, asks whether the file stores formula results, as pandas and
 previews read them; it is reported apart from the task's pass or fail.
 
@@ -133,6 +136,34 @@ It prints a line per task and solution, and exits 0 only when every right
 solution passes and every wrong one fails (a solution that exits non-zero
 counts as a failure of `validate`). Tasks without `solutions/` are
 skipped; `10-downstream-values` has the first pair.
+
+### The claim tasks (19 and 20)
+
+Tasks 19 and 20 test the claim that sheets keeps a workbook whole across
+many edits, so their grading must not depend on sheets. Their checks read a
+formula's value only through `evalkit.lo_values(path, ref)`: a copy of the
+file recalculated by LibreOffice headless (the profile that recomputes every
+formula on load, as `ssb.py` grades), read with openpyxl `data_only`.
+`ref` is `Sheet!A1:C5`, `'My sheet'!B2` or a sheet name; the result has the
+shape of `evalkit.values` (rows by number, and the column letters). Neither
+`check.py` uses `SHEETS_BIN` or `evalkit.values`. Each computes the
+expected values itself, in Python, from the inputs `setup.py` saved to the
+truth file, applying the edits to them. Features (tables, names, the chart,
+the shape, validations, conditional formats, spills, the note, panes,
+number formats) are read from the package's XML or with openpyxl.
+Stored-result checks keep kind `stored`.
+
+Both tasks use only functions LibreOffice computes as Excel does (SUMIFS,
+INDEX, MATCH, COUNTIFS, SUMPRODUCT, AVERAGE, LARGE, and SORT, SORTBY and
+UNIQUE as dynamic arrays whose size does not change), no language-dependent
+TEXT formats. A function that LibreOffice computes unlike Excel is dropped
+from the task, never the expected value changed. Each task's items count
+as defects when they fail (task 19 has 43 task items and 3 stored, task 20
+has 24 and 2); one slip can fail an edit's item and its sheet's item.
+Both have `solutions/right.py` (the sheets CLI, with direct package edits
+where it has no command) and `wrong.py` (openpyxl, which drops the shape
+and the dynamic arrays' metadata and cannot follow a rename). The
+pre-registration of how they are used is `results/wave2-claims.md`.
 
 ## Does the skill trigger?
 
