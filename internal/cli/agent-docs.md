@@ -344,6 +344,7 @@ cells. Excel 365 comment threads are listed but cannot be changed.
 
     sheets check book.xlsx                # formula results, unknowns, errors, and lint
     sheets check --fix book.xlsx          # store every result sheets can compute, add prefixes
+    sheets check book.xlsx --against before.xlsx  # what changed since before.xlsx, and why
     sheets lint book.xlsx                 # errors, broken patterns, totals that miss rows
     sheets lint book.xlsx --rules         # what it checks
     sheets diff book.xlsx                 # what the last sheets command changed
@@ -386,6 +387,101 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   file, `check` runs lint.
 - On 150,000 rows (300,000 formulas openpyxl left without results),
   `check --fix` takes about 15 seconds, and a second run about 4.
+- `check book.xlsx --against before.xlsx` says what a change did, whoever
+  made it (a script, openpyxl, LibreOffice, Excel, sheets). Keep a copy
+  before you change a workbook, then run it before handing the workbook
+  over. It reports:
+  - `changed`: inputs and formulas that changed. Flagged, as a likely
+    mistake: one row of a formula column changed unlike the rows around it,
+    or made a typed-in value; and a formula left as it was when rows or
+    columns were inserted or deleted in what it reads (openpyxl's
+    `insert_rows` and `delete_rows` rewrite no formula), a sheet it reads
+    was renamed (openpyxl's `ws.title`), or the cells it reads were cut and
+    pasted elsewhere (openpyxl's `move_range`), with what Excel would have
+    written. Inputs compare exactly: a barcode, an order number or an
+    amount in the millions changed in its last digit is a change, in a CSV
+    file too; computed results compare to Excel's 15 digits;
+  - `moved`: computed values that moved, each with its cause upstream (an
+    input or formula change, rows added, removed or moved, a sheet or a
+    name removed, a name changed), traced through what each formula reads.
+    A value that several changed cells reach names each of them, the first
+    five and then `and more` (`input Data!B2, input Data!B3`: a MAX that
+    one of them moved is the work of the one that moved it, but both are
+    among its sources). A formula changed is listed too, with what it
+    computes now. A value that moved because rows added or removed moved
+    its formula or what it reads (`=ROW()`, a range older Excel reads one
+    cell of) has them as its cause;
+  - `unexplained`: values that moved with nothing upstream changed, the
+    sign of a broken formula or a wrong stored result;
+  - `features_lost`: charts (on a chart sheet too), validations,
+    conditional formats, shapes, pictures, names and tables the old
+    version had (openpyxl drops shapes, a chart grouped with a shape, and
+    validations in Excel 2010's extension list, such as a list read from
+    another sheet). A feature is kept only by one of its kind and identity
+    in the new version: a validation or conditional format of the same
+    type and formula (the cells it reads aside, which rows and columns
+    added or removed rewrite), a chart of the same type in the same place
+    or on the same data, a shape or picture in the same place or by name,
+    a name or table by its name. Another of its kind is no stand-in: a
+    chart added beside a dropped one, a validation beside one dropped, the
+    banding `sheets fmt` writes over a conditional format, and a rule whose
+    formula was edited, are the old one lost. A column deleted takes the
+    validations on it, and the ones beside it move into its place. An
+    Excel table renamed (the same columns, on the same sheet) is followed,
+    not lost: the formulas that read it by name, which Excel rewrites, are
+    no changes (`structure` says `table renamed`);
+  - `unknown`: values sheets cannot compare, with why (a function the
+    calculator lacks, INDIRECT or OFFSET, a link to another workbook, a
+    value from outside the workbook such as RTD, WEBSERVICE, STOCKHISTORY
+    or the CUBE functions, or a formula reading one of them): never called
+    unexplained. Also a value that moved only because one version stores
+    Excel's result and sheets computed the other's, where the sheets
+    calculator disagrees with Excel (the difference is the calculator's),
+    and a stored result that held though what it reads changed, which the
+    calculator gets otherwise now: likely out of date (written without
+    recalculating, or Excel calculating by hand);
+  - `moved_rows`: rows moved as by a sort, which are not changes: each row
+    whole, every column of its table (the columns between empty ones)
+    together. A sort of a table with cells past an empty column that stay
+    (a note, a list, a formula reading the table) is rows moved in its
+    columns, as `Data!A2:D2, were A4:D4`, with `columns` in `--json`. A
+    sort that left some of a table's columns behind (its labels, or a
+    column next to it: Excel warns of data next to the selection), or two
+    values swapped in a column, is inputs changed where they are, each the
+    cause of what it moves. Rows cut and pasted where nothing was
+    (`sheets move`, Excel's cut and paste) are rows moved too, with the rows
+    they passed where they were, not rows added or removed. So is a block of
+    cells cut from beside a table and pasted below it or into other columns
+    (`sheets move book.xlsx Sales!H1:J20 Sales!A30`, listed as
+    `Sales!A30:C49, were H1:J20`, with `columns` and `was_columns` in
+    `--json`): cells that left one rectangle and filled another of its size,
+    holding what they held, formulas as Excel rewrites them, while the
+    cells around stayed (a few others may have changed, but not in the
+    rows it left or went to, nor in its columns when it moved straight
+    down or up: that is not told from a sort of some columns, and is
+    changes). Moved straight down or up with nothing beside it, that is
+    as well rows added or removed above, and is told as that;
+  - then the check of book.xlsx, as above.
+
+  Formulas Excel rewrites for rows or columns added or removed (a column
+  inserted between the columns a formula reads too, or a row inserted on
+  the sheet it reads), cells cut and pasted, a sheet renamed, or a sheet
+  deleted (`#REF!`), are not changes, nor is LibreOffice's `TRUE()` for
+  `TRUE`. An array
+  formula's result (a FILTER, SORT or SEQUENCE spilling) is where its
+  formula puts it: one that lost a row or was sorted again moved its
+  values in place, each with its cause, and rows inserted or deleted
+  through it are those rows, its values as they were. Dates compare as
+  dates, whether a workbook counts them from 1900 or from 1904 (a Mac's).
+  Rows a sort moved are moved rows, though rows were inserted or deleted
+  above or inside them. Text lists ten of each section, the check's
+  findings too, with counts, and cuts long values and formulas at 120
+  characters; `--json` lists everything, whole (each moved value with
+  `cell`, `before`, `after` and `cause`). It exits 1 when a value is
+  unexplained, a feature is lost, or the check finds errors. On a CSV file
+  it compares values only. On 150,000 rows it takes about 4 to 6 seconds
+  (15,000 rows changed, or all of them sorted), and about 9 when openpyxl
+  left one version without results.
 - `lint` finds error values, `#REF!` from deleted cells, unknown functions,
   cells that break their column's formula pattern, rows a formula column
   misses, totals that leave out rows, sums that add a total together with
@@ -561,5 +657,6 @@ results.
 
 0 on success. 1 on errors (a message goes to stderr, or `{"error": ...}`
 with `--json`), when `fmt --check` finds changes, when `check` or `lint`
-finds problems at `--fail-on` level, and when `diff --exit-code` finds
+finds problems at `--fail-on` level, when `check --against` finds values
+unexplained or features lost, and when `diff --exit-code` finds
 differences.

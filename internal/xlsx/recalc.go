@@ -171,6 +171,25 @@ func (x *depIndex) readers(k cellKey, fn func(id int)) {
 	}
 }
 
+// readersOf calls fn with every formula that reads cell k, leaving them in
+// the index (readers drops them), for tracing from one cell after another.
+// A formula may be given more than once.
+func (x *depIndex) readersOf(k cellKey, fn func(id int)) {
+	for _, id := range x.cells[k] {
+		fn(id)
+	}
+	if t := x.columns[cellKey{k.sheet, 0, k.col}]; t != nil {
+		t.find(k.row, fn)
+	}
+	for rg, ids := range x.wide[k.sheet] {
+		if rg.Contains(k.row, k.col) {
+			for _, id := range ids {
+				fn(id)
+			}
+		}
+	}
+}
+
 // rowTree holds row ranges in a segment tree over a sheet's rows: a range
 // lies in the few nodes that cover it, and the nodes on the way down to a
 // row hold exactly the ranges taking it in. So finding them costs the
@@ -208,6 +227,25 @@ func (t *rowTree) take(r int, fn func(id int)) {
 			fn(id)
 		}
 		delete(t.nodes, node)
+		if nlo == nhi {
+			return
+		}
+		mid := (nlo + nhi) / 2
+		if r <= mid {
+			node, nhi = 2*node, mid
+		} else {
+			node, nlo = 2*node+1, mid+1
+		}
+	}
+}
+
+// find calls fn with the ranges holding row r, and keeps them.
+func (t *rowTree) find(r int, fn func(id int)) {
+	node, nlo, nhi := 1, 1, rowSpan
+	for {
+		for _, id := range t.nodes[node] {
+			fn(id)
+		}
 		if nlo == nhi {
 			return
 		}
