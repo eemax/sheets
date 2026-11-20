@@ -52,6 +52,11 @@ type changeReport struct {
 	// pictures, names and tables the file had and no longer has.
 	FeaturesLost     int           `json:"features_lost"`
 	FeaturesLostList []lostFeature `json:"features_lost_list,omitempty"`
+	// FeaturesChanged: validations and conditional formats the command
+	// replaced on the same cells with another of their kind (a dropdown's
+	// items, a bound, a threshold): edited, not lost.
+	FeaturesChanged     int              `json:"features_changed,omitempty"`
+	FeaturesChangedList []changedFeature `json:"features_changed_list,omitempty"`
 	// RulesNotCompared: the validations and conditional formats were too
 	// many to compare after every edit (that many, at most, on the larger
 	// side); the other features were.
@@ -66,12 +71,14 @@ func (r changeReport) MarshalJSON() ([]byte, error) {
 		return marshalPlain(plain(r))
 	}
 	return marshalPlain(struct {
-		Uncounted        bool          `json:"counts_omitted"`
-		FeaturesLost     int           `json:"features_lost"`
-		FeaturesLostList []lostFeature `json:"features_lost_list,omitempty"`
-		RulesNotCompared int           `json:"rules_not_compared,omitempty"`
-		Lint             *changeLint   `json:"lint,omitempty"`
-	}{true, r.FeaturesLost, r.FeaturesLostList, r.RulesNotCompared, r.Lint})
+		Uncounted           bool             `json:"counts_omitted"`
+		FeaturesLost        int              `json:"features_lost"`
+		FeaturesLostList    []lostFeature    `json:"features_lost_list,omitempty"`
+		FeaturesChanged     int              `json:"features_changed,omitempty"`
+		FeaturesChangedList []changedFeature `json:"features_changed_list,omitempty"`
+		RulesNotCompared    int              `json:"rules_not_compared,omitempty"`
+		Lint                *changeLint      `json:"lint,omitempty"`
+	}{true, r.FeaturesLost, r.FeaturesLostList, r.FeaturesChanged, r.FeaturesChangedList, r.RulesNotCompared, r.Lint})
 }
 
 type changeValue struct {
@@ -292,6 +299,17 @@ func (s *session) follows(sheet string, row, col int) bool {
 
 // opMove is where a change of lines puts a cell (false: it took it).
 func opMove(op xlsx.LineOp, p cellPos, sheet string) (cellPos, string, bool) {
+	if op.Move {
+		// Cut and pasted: the cells of the source go with it; those it was
+		// pasted over are gone.
+		switch {
+		case p.sheet == strings.ToLower(op.Sheet) && op.Src.Contains(p.row, p.col):
+			return cellPos{strings.ToLower(op.To), p.row + op.DR, p.col + op.DC}, op.To, true
+		case p.sheet == strings.ToLower(op.To) && movedTo(op).Contains(p.row, p.col):
+			return p, sheet, false
+		}
+		return p, sheet, true
+	}
 	if p.sheet != strings.ToLower(op.Sheet) {
 		return p, sheet, true
 	}
@@ -309,6 +327,21 @@ func opMove(op xlsx.LineOp, p cellPos, sheet string) (cellPos, string, bool) {
 	n, ok := lineMove(op, *at)
 	*at = n
 	return p, sheet, ok
+}
+
+// movedTo is where cells cut and pasted went.
+func movedTo(op xlsx.LineOp) grid.Range {
+	return grid.Range{R1: op.Src.R1 + op.DR, C1: op.Src.C1 + op.DC, R2: op.Src.R2 + op.DR, C2: op.Src.C2 + op.DC}
+}
+
+// movedCells tells the command's session of cells cut and pasted (sheets
+// move): what an earlier step found in them is where they went, and the
+// features they carried are found there.
+func (a *app) movedCells(path, from string, src grid.Range, to string, dr, dc int) {
+	if a.session == nil {
+		a.session = newSession(path)
+	}
+	a.session.effects(xlsx.Effects{Ops: []xlsx.LineOp{{Sheet: from, Move: true, Src: src, To: to, DR: dr, DC: dc}}})
 }
 
 // lineMove is where a change of lines puts line n.
@@ -337,12 +370,21 @@ func (s *session) shiftRef(home, ref string) string {
 	if err != nil {
 		return ref
 	}
-	was, renamed := rg, false
+	was, renamed, across := rg, false, false
 	for _, op := range s.ops {
 		if !strings.EqualFold(op.Sheet, sheet) {
 			continue
 		}
 		switch {
+		case op.Move:
+			// Cut and pasted whole, it went with the cells; else it stays.
+			if op.Src.Contains(rg.R1, rg.C1) && op.Src.Contains(rg.R2, rg.C2) {
+				rg.R1, rg.C1, rg.R2, rg.C2 = rg.R1+op.DR, rg.C1+op.DC, rg.R2+op.DR, rg.C2+op.DC
+				if !strings.EqualFold(op.To, sheet) {
+					sheet, renamed, across = op.To, true, true
+				}
+			}
+			continue
 		case op.Gone:
 			return ""
 		case op.Rename != "":
@@ -378,7 +420,7 @@ func (s *session) shiftRef(home, ref string) string {
 	} else if rg.R1 == rg.R2 && rg.C1 == rg.C2 && !strings.Contains(body, ":") {
 		out = grid.CellName(rg.R1, rg.C1)
 	}
-	if qualified {
+	if qualified || across {
 		return grid.QuoteSheet(sheet) + "!" + out
 	}
 	return out
@@ -390,6 +432,9 @@ func (s *session) renamed() map[string]string {
 	out := map[string]string{}
 	now := map[string]string{} // name now (lower-cased) → first name, lower-cased
 	for _, op := range s.ops {
+		if op.Move {
+			continue
+		}
 		k := strings.ToLower(op.Sheet)
 		first, ok := now[k]
 		if !ok {
@@ -541,9 +586,24 @@ func (s *session) compare(r *changeReport) {
 		r.RulesNotCompared = max(na, nb)
 	}
 	if len(fa) > 0 {
-		lost := lostFeatures(fa, fb, s.renamed(), nil, s.shiftRef)
+		lost, changed := compareFeaturesAcross(fa, fb, s.renamed(), nil, s.shiftRef, s.uncounted)
+		if s.uncounted && len(lost) > 0 {
+			// An undo: what the edit it undid renamed or moved (a sheet, the
+			// lines a chart stands on) is not the session's to follow, so the
+			// two versions are paired as check --against pairs them.
+			// What either way finds is there: the pairing by what the sheets
+			// hold takes cells cut and pasted to another sheet for a sheet
+			// renamed and a column inserted, which moves a chart that stayed.
+			if l, c, ok := alignedFeatures(s.before, s.after, fa, fb, true); ok {
+				lost, changed = foundByEither(lost, changed, l, c)
+			}
+		}
 		r.FeaturesLost = len(lost)
 		r.FeaturesLostList = lost[:min(len(lost), changeListed)]
+		if len(changed) > 0 {
+			r.FeaturesChanged = len(changed)
+			r.FeaturesChangedList = changed[:min(len(changed), changeListed)]
+		}
 	}
 	switch {
 	case !lintable:
@@ -553,6 +613,34 @@ func (s *session) compare(r *changeReport) {
 	default:
 		r.Lint = lintDelta(lintA, lintB)
 	}
+}
+
+// foundByEither combines two comparisons of the same two versions' features
+// (the session's, with the lines and sheets it knows moved, and the pairing
+// of the versions as check --against does): a feature is lost only when
+// neither finds it, and a rule one finds edited is changed. The second's
+// changed list is the one given; the first's has what the second lost.
+func foundByEither(lost1 []lostFeature, changed1 []changedFeature, lost2 []lostFeature, changed2 []changedFeature) ([]lostFeature, []changedFeature) {
+	key := func(f lostFeature) string { return f.Kind + "\x00" + f.Where + "\x00" + f.What }
+	both := map[string]bool{}
+	for _, f := range lost1 {
+		both[key(f)] = true
+	}
+	lost := []lostFeature{}
+	changed := changed2
+	for _, f := range lost2 {
+		if both[key(f)] {
+			lost = append(lost, f)
+			continue
+		}
+		for _, c := range changed1 {
+			if c.Kind == f.Kind && c.Where == f.Where {
+				changed = append(changed, c)
+				break
+			}
+		}
+	}
+	return lost, changed
 }
 
 // withoutRules is the features less the validations and conditional formats.
@@ -684,9 +772,10 @@ func (a *app) trackBytes(path string, before, after []byte, results ...xlsx.Resu
 	a.changed = nil
 }
 
-// printChange prints the short form: at most 12 lines (the head, what
+// printChange prints the short form: at most 13 lines (the head, what
 // moved, the new errors, three reasons for unknowns and the rest counted,
-// the features lost, the rules not compared, three lint rules).
+// the features lost, those changed, the rules not compared, three lint
+// rules).
 func (a *app) printChange(r *changeReport) {
 	if r == nil {
 		return
@@ -696,10 +785,14 @@ func (a *app) printChange(r *changeReport) {
 		a.printf("%s (a CSV file holds values only)\n", head)
 		return
 	}
+	lost := plural(r.FeaturesLost, "feature") + " lost"
+	if r.FeaturesChanged > 0 {
+		lost += fmt.Sprintf(" (%d changed)", r.FeaturesChanged)
+	}
 	if r.Uncounted {
-		head = "change: cells not compared (an undo restores the file as it was)" + fmt.Sprintf(", %s lost", plural(r.FeaturesLost, "feature"))
+		head = "change: cells not compared (an undo restores the file as it was), " + lost
 	} else {
-		head += fmt.Sprintf(", %s moved, %s, %s, %s lost", plural(r.Moved, "value"), plural(r.Errors, "new error"), plural(r.Unknown, "new unknown"), plural(r.FeaturesLost, "feature"))
+		head += fmt.Sprintf(", %s moved, %s, %s, %s", plural(r.Moved, "value"), plural(r.Errors, "new error"), plural(r.Unknown, "new unknown"), lost)
 	}
 	if r.RulesNotCompared > 0 {
 		head += " (rules not compared)"
@@ -749,6 +842,13 @@ func (a *app) printChange(r *changeReport) {
 			parts = append(parts, p)
 		}
 		a.printf("lost: %s%s\n", strings.Join(parts, ", "), more(r.FeaturesLost, len(r.FeaturesLostList)))
+	}
+	if len(r.FeaturesChangedList) > 0 {
+		var parts []string
+		for _, f := range r.FeaturesChangedList {
+			parts = append(parts, fmt.Sprintf("%s %s (%s → %s)", strings.ReplaceAll(f.Kind, "_", " "), f.Where, grid.Truncate(f.Before, 60), grid.Truncate(f.After, 60)))
+		}
+		a.printf("changed: %s%s\n", strings.Join(parts, ", "), more(r.FeaturesChanged, len(r.FeaturesChangedList)))
 	}
 	if r.RulesNotCompared > 0 {
 		a.printf("lost: validations and conditional formats not compared (%s, more than %s: sheets check --against compares them)\n", plural(r.RulesNotCompared, "rule"), grid.FormatNumber(featureRules))

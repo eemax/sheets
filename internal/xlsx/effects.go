@@ -60,6 +60,13 @@ type LineOp struct {
 	// deleted.
 	Rename string
 	Gone   bool
+	// Move: the cells of Src on Sheet were cut and pasted (sheets move), to
+	// sheet To, DR rows down and DC columns right; what they carry (a
+	// validation, a conditional format) went with them.
+	Move   bool
+	Src    grid.Range
+	To     string
+	DR, DC int
 }
 
 // Effects is what one session did.

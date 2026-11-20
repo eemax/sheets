@@ -220,6 +220,7 @@ sheets rows/cols insert and delete; to reorder rows, sheets sort.`,
 			if err != nil {
 				return err
 			}
+			a.movedCells(args[0], from, r, to, at.R1-r.R1, at.C1-r.C1)
 			done := fmt.Sprintf("moved %s to %s", res.From, res.To)
 			if created {
 				done += " (new sheet)"

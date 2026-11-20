@@ -189,6 +189,50 @@ func TestSpreadAll(t *testing.T) {
 	}
 }
 
+// SpreadUnless and SpreadAllUnless neither reach nor follow through the
+// formulas blocked tells of (a formula whose value held): with the tax blocked
+// the net, which reads the total too, is still reached; with the total blocked
+// nothing downstream of it is.
+func TestSpreadUnless(t *testing.T) {
+	wb, err := Read(filepath.Join("testdata", "against_before.xlsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := NewTracer(wb)
+	sources := []Source{{Sheet: "Data", Range: grid.Range{R1: 2, C1: 2, R2: 2, C2: 2}}}
+	tax := At{"Summary", 4, 2}
+	got := tr.SpreadUnless(sources, func(at At) bool { return at == tax })
+	if _, ok := got[tax]; ok {
+		t.Errorf("the tax, blocked, is reached: %v", got)
+	}
+	if _, ok := got[At{"Summary", 5, 2}]; !ok {
+		t.Errorf("the net reads the total too, so it is reached without the tax: %v", got)
+	}
+	if _, ok := got[At{"Summary", 3, 2}]; !ok {
+		t.Errorf("the total the input moves is reached: %v", got)
+	}
+	// With the total blocked, neither the tax nor the net is reached through it.
+	total := At{"Summary", 3, 2}
+	got = tr.SpreadUnless(sources, func(at At) bool { return at == total })
+	for _, at := range []At{total, tax, {"Summary", 5, 2}} {
+		if _, ok := got[at]; ok {
+			t.Errorf("%v reached through a blocked total: %v", at, got)
+		}
+	}
+	if !reflect.DeepEqual(tr.SpreadUnless(sources, nil), tr.Spread(sources)) {
+		t.Error("nothing blocked is Spread")
+	}
+	all := tr.SpreadAllUnless(sources, 2, func(at At) bool { return at == total })
+	for _, at := range []At{total, tax, {"Summary", 5, 2}} {
+		if _, ok := all[at]; ok {
+			t.Errorf("%v reached through a blocked total (all): %v", at, all)
+		}
+	}
+	if !reflect.DeepEqual(tr.SpreadAllUnless(sources, 2, nil), tr.SpreadAll(sources, 2)) {
+		t.Error("nothing blocked is SpreadAll")
+	}
+}
+
 // A chart on a chart sheet (a sheet that is one chart, with no anchor) is a
 // feature of that sheet; deleting the sheet takes it away.
 func TestFeaturesChartsheet(t *testing.T) {

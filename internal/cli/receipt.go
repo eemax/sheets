@@ -317,7 +317,11 @@ func (a *app) writeReceipt(path string, r *againstResult) (*receiptInfo, error) 
 	} else {
 		w("| Inputs changed | %d |\n| Formulas changed | %d |\n| Formula changes flagged as likely mistakes | %d |\n", s.Inputs, s.Formulas, s.Flagged)
 		w("| Computed values moved, each with its cause | %d |\n| Values moved with nothing upstream changed (unexplained) | %d |\n", s.Moved, s.Unexplained)
-		w("| Features lost | %d |\n| Values sheets cannot compare (unknown) | %d |\n", s.FeaturesLost, s.Unknown)
+		w("| Features lost | %d |\n", s.FeaturesLost)
+		if s.FeaturesChanged > 0 {
+			w("| Features changed (rules edited on their cells; not lost) | %d |\n", s.FeaturesChanged)
+		}
+		w("| Values sheets cannot compare (unknown) | %d |\n", s.Unknown)
 	}
 	w("| Rows moved (as by a sort; not changes) | %d |\n", s.MovedRows)
 	w("| Check of the file: errors, warnings, notes | %d, %d, %d |\n\n", r.Errors, r.Warnings, r.Notes)
@@ -334,7 +338,7 @@ func (a *app) writeReceipt(path string, r *againstResult) (*receiptInfo, error) 
 	if n := len(r.Unexplained); n > 0 {
 		w("## Unexplained: values that moved with nothing upstream changed\n\n| Cell | Before | After | Note |\n|---|---|---|---|\n")
 		for _, m := range r.Unexplained[:min(n, receiptListed)] {
-			w("| %s | %s | %s | %s |\n", mdCode(withWas(m.Cell, m.Was)), mdCode(clip(m.Before)), mdCode(clip(m.After)), mdText(clipNote(m.Note)))
+			w("| %s | %s | %s | %s |\n", mdCode(withWas(m.Cell, m.Was)), mdCode(clip(m.Before)), mdCode(clip(m.After)), mdText(clipNote(unexplainedNote(m))))
 		}
 		more(n)
 	}
@@ -342,6 +346,13 @@ func (a *app) writeReceipt(path string, r *againstResult) (*receiptInfo, error) 
 		w("## Features lost\n\n| Kind | Where | What |\n|---|---|---|\n")
 		for _, f := range r.FeaturesLost[:min(n, receiptListed)] {
 			w("| %s | %s | %s |\n", mdText(strings.ReplaceAll(f.Kind, "_", " ")), mdCode(clip(f.Where)), mdText(clipNote(f.What)))
+		}
+		more(n)
+	}
+	if n := len(r.FeaturesChanged); n > 0 {
+		w("## Features changed: rules edited on the cells they cover (not lost)\n\n| Kind | Where | Before | After |\n|---|---|---|---|\n")
+		for _, f := range r.FeaturesChanged[:min(n, receiptListed)] {
+			w("| %s | %s | %s | %s |\n", mdText(strings.ReplaceAll(f.Kind, "_", " ")), mdCode(clip(f.Where)), mdCode(clip(f.Before)), mdCode(clip(f.After)))
 		}
 		more(n)
 	}
@@ -445,7 +456,7 @@ func receiptVerdict(r *againstResult) string {
 	if s.Unknown > 0 {
 		return fmt.Sprintf("Every value sheets can compare that moved has its cause; %s cannot be compared.", countOf(s.Unknown, "value"))
 	}
-	if s.Inputs+s.Formulas+s.Moved+s.MovedRows+len(r.Structure) == 0 {
+	if s.Inputs+s.Formulas+s.Moved+s.MovedRows+s.FeaturesChanged+len(r.Structure) == 0 {
 		return "No changes."
 	}
 	return "Every value that moved has its cause; no feature was lost."

@@ -17,11 +17,11 @@ cmp stdout input.out
 ! exec sheets check against_openpyxl.xlsx --against against_before.xlsx
 cmp stdout openpyxl.out
 ! exec sheets --json check against_openpyxl.xlsx --against against_before.xlsx
-stdout '"features_lost":\[\{"kind":"validation","where":"Data!A2:A6","what":"list validation"\},\{"kind":"chart","where":"Data!F2","what":"column chart"\},\{"kind":"shape","where":"Data!F2","what":"TextBox 2"\}\]'
+stdout '"features_lost":\[\{"kind":"validation","where":"Data!A2:A6","what":"list validation: list Summary!\$D\$2:\$D\$6"\},\{"kind":"chart","where":"Data!F2","what":"column chart"\},\{"kind":"shape","where":"Data!F2","what":"TextBox 2"\}\]'
 stdout '\{"cell":"Summary!B3","before":"630","after":"660","cause":"input Data!B2","note":"computed by sheets: the file stores no result"\}'
 stdout '"rule":"missing-result","severity":"error"'
 stdout '"unexplained":\[\],'
-stdout '"summary":\{"inputs_changed":1,"formulas_changed":0,"flagged":0,"moved":8,"unexplained":0,"features_lost":3,"unknown":0,"moved_rows":0\}'
+stdout '"summary":\{"inputs_changed":1,"formulas_changed":0,"flagged":0,"moved":8,"unexplained":0,"features_lost":3,"features_changed":0,"unknown":0,"moved_rows":0\}'
 
 # One row's formula broken: flagged, as unlike the rows around it; what it
 # moves is explained by it.
@@ -63,7 +63,8 @@ stdout '^  Data!2, were 4$'
 stdout ', 0 unexplained,'
 
 # Rows added and removed: totals Excel rewrites to take them in are not
-# changes; what they move is explained by the rows.
+# changes; what they move is explained by the rows, each by those that can
+# move it that way (a row of 4 removed does not raise a total, or a MAX).
 cp against_before.xlsx rows.xlsx
 exec sheets rows insert rows.xlsx Data!4
 exec sheets set rows.xlsx Data!A4 Extra Data!B4 10 Data!C4 5 Data!D4 '=B4*C4'
@@ -489,7 +490,7 @@ exec sheets rows insert novalid.xlsx Data!3
 exec sheets validate novalid.xlsx Data!B2:B7 --clear
 ! exec sheets check novalid.xlsx --against against_before.xlsx
 stdout ', 1 feature lost, '
-stdout '^  validation  Data!B2:B6  whole validation$'
+stdout '^  validation  Data!B2:B6  whole validation: whole between 0 1000$'
 
 # A feature lost is matched only with one of its kind and its identity (a
 # validation or conditional format's type and formula, a chart's type and
@@ -501,24 +502,24 @@ cp against_before.xlsx fmt.xlsx
 exec sheets fmt fmt.xlsx
 ! exec sheets check fmt.xlsx --against against_before.xlsx
 stdout ', 1 feature lost, '
-stdout '^  conditional_format  Data!D2:D6  cell value rule$'
+stdout '^  conditional_format  Data!D2:D6  cell value rule: cellIs greaterThan 140$'
 ! exec sheets --json check fmt.xlsx --against against_before.xlsx
-stdout '"features_lost":\[\{"kind":"conditional_format","where":"Data!D2:D6","what":"cell value rule"\}\]'
+stdout '"features_lost":\[\{"kind":"conditional_format","where":"Data!D2:D6","what":"cell value rule: cellIs greaterThan 140"\}\]'
 cp against_before.xlsx delcol.xlsx
 exec sheets cols delete delcol.xlsx Data!B
 ! exec sheets check delcol.xlsx --against against_before.xlsx
 stdout ', 1 feature lost, '
-stdout '^  validation  Data!B2:B6  whole validation$'
+stdout '^  validation  Data!B2:B6  whole validation: whole between 0 1000$'
 ! stdout 'decimal validation'
 ! exec sheets --json check delcol.xlsx --against against_before.xlsx
-stdout '"features_lost":\[\{"kind":"validation","where":"Data!B2:B6","what":"whole validation"\}\]'
+stdout '"features_lost":\[\{"kind":"validation","where":"Data!B2:B6","what":"whole validation: whole between 0 1000"\}\]'
 # openpyxl's round trip with a chart of other data and another list validation
 # added: the grouped chart, the text box and the list read from Summary are
 # lost all the same.
 fixture against_addchart.xlsx
 ! exec sheets check against_addchart.xlsx --against against_before.xlsx
 stdout ', 3 features lost, '
-stdout '^  validation  Data!A2:A6  list validation$'
+stdout '^  validation  Data!A2:A6  list validation: list Summary!\$D\$2:\$D\$6$'
 stdout '^  chart       Data!F2     column chart$'
 stdout '^  shape       Data!F2     TextBox 2$'
 # Nothing lost when rows are inserted above all of them: the chart's data and
@@ -552,7 +553,7 @@ stdout '^  table  Data!A1:B3  Sales$'
 # left as they were (openpyxl deletes the sheet: they now read nothing) or
 # rewritten with #REF! (sheets and Excel): none is unexplained, and the
 # formulas sheets rewrote are not changes. A name removed is the cause of
-# what used it, ahead of an input changed upstream.
+# what used it, named first, with the input changed upstream after it.
 fixture against_nodata.xlsx against_noname.xlsx against_facts.xlsx
 ! exec sheets check against_nodata.xlsx --against against_before.xlsx
 stdout ', 0 unexplained, 6 features lost,'
@@ -566,7 +567,7 @@ stdout ': 0 inputs changed, 0 formulas changed, 6 computed values moved \(each w
 stdout '^  Summary!B2 +28 → #REF! +sheet removed: Data$'
 ! exec sheets check against_noname.xlsx --against against_before.xlsx
 stdout ', 0 unexplained,'
-stdout '^  Summary!B4 +157.5 → #NAME\? +name TaxRate removed$'
+stdout '^  Summary!B4 +157.5 → #NAME\? +name TaxRate removed, input Data!B2$'
 stdout '^  Summary!B2 +28 → 29 +input Data!B2$'
 stdout '^  name removed: TaxRate = Summary!\$B\$1$'
 
@@ -762,7 +763,7 @@ check of input.xlsx: no problems found
 -- openpyxl.out --
 against_openpyxl.xlsx against against_before.xlsx: 1 input changed, 0 formulas changed, 8 computed values moved (each with its cause), 0 unexplained, 3 features lost, 0 unknown
 features lost:
-  validation  Data!A2:A6  list validation
+  validation  Data!A2:A6  list validation: list Summary!$D$2:$D$6
   chart       Data!F2     column chart
   shape       Data!F2     TextBox 2
 changed:
@@ -805,13 +806,13 @@ warning  Summary!B7  labelled "North units" but reads Data!B2, the "East" line; 
 -- rows.out --
 rows.xlsx against against_before.xlsx: 0 inputs changed, 0 formulas changed, 7 computed values moved (each with its cause), 0 unexplained, 0 features lost, 0 unknown
 moved, each with its cause:
-  Data!B7     28 → 34      rows removed: Data!6 in against_before.xlsx
+  Data!B7     28 → 34      rows added: Data!4
   Data!D7     630 → 580    rows removed: Data!6 in against_before.xlsx
-  Summary!B2  28 → 34      rows removed: Data!6 in against_before.xlsx
+  Summary!B2  28 → 34      rows added: Data!4
   Summary!B3  630 → 580    rows removed: Data!6 in against_before.xlsx
   Summary!B4  157.5 → 145  rows removed: Data!6 in against_before.xlsx
   Summary!B5  472.5 → 435  rows removed: Data!6 in against_before.xlsx
-  Summary!B6  9 → 10       rows removed: Data!6 in against_before.xlsx
+  Summary!B6  9 → 10       rows added: Data!4
 structure:
   row added: Data!4
   row removed: Data!6 in against_before.xlsx

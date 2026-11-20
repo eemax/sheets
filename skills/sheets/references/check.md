@@ -57,34 +57,82 @@
     `insert_rows` and `delete_rows` rewrite no formula), a sheet it reads
     was renamed (openpyxl's `ws.title`), or the cells it reads were cut and
     pasted elsewhere (openpyxl's `move_range`), with what Excel would have
-    written. Inputs compare exactly: a barcode, an order number or an
-    amount in the millions changed in its last digit is a change, in a CSV
-    file too; computed results compare to Excel's 15 digits;
+    written. A defined name left as it was in the same way is flagged in
+    `structure` (`name not rewritten`, with what Excel writes), and the
+    values it moved name it as their cause. Inputs compare exactly: a
+    barcode, an order number or an amount in the millions changed in its
+    last digit is a change, in a CSV file too; computed results compare to
+    Excel's 15 digits;
   - `moved`: computed values that moved, each with its cause upstream (an
     input or formula change, rows added, removed or moved, a sheet or a
     name removed, a name changed), traced through what each formula reads.
     A value that several changed cells reach names each of them, the first
     five and then `and more` (`input Data!B2, input Data!B3`: a MAX that
     one of them moved is the work of the one that moved it, but both are
-    among its sources). A formula changed is listed too, with what it
-    computes now. A value that moved because rows added or removed moved
+    among its sources). An input that changed is always named, whatever
+    rows were added, removed or moved around it: a structure change that
+    reaches the value comes first, the inputs after it. Rows a sort moved
+    are a cause only of what reads them by position (a lookup, `=Data!B2`,
+    a sum of some of them, an array formula over several rows of them): a
+    total over all of them (SUM, MAX, COUNT, an
+    average, SUMIF or SUMPRODUCT over the same rows, a table's column,
+    ranges combined cell by cell inside them: `SUMPRODUCT((A2:A9="East")*B2:B9)`,
+    `SUM(B2:B9*C2:C9)`)
+    did not move for the sort, and names the input that moved it. Two
+    tables on a sheet sorted apart are each a block of their own: a total over
+    one is a total over all the rows moved, and one stored wrong stays
+    `unexplained`. Rows
+    removed or added are a cause only of what they can move that way, a
+    formula Excel rewrote for them included, over a range, a table's
+    column or a defined name alike: a MAX that rose for a row removed, a
+    COUNT that rose, a SUM that fell though they held 0 or less (or by
+    more than they held), or a total that moved for an empty row inserted
+    in its range, did not move for them, and stays `unexplained` unless
+    something else moved it. Nor did a formula that moved with its row, or
+    that rows added or removed above it moved, and reads the cells it read
+    (`=B2*C2` in a sorted row): a wrong result stored for it stays
+    `unexplained`, and so does a total over it. A structure change is a
+    cause only of what it reaches through formulas it moved: a formula
+    whose value held (a MAX an input change left as it was, a total an empty
+    row inserted did not move) stops the tracing, so a wrong result stored
+    for what reads it stays `unexplained`, and what reads that follows it
+    (`which moved with nothing upstream changed`), or holds what it held. A formula changed is listed too, with what
+    it computes now. A value that moved because rows added or removed moved
     its formula or what it reads (`=ROW()`, a range older Excel reads one
     cell of) has them as its cause;
   - `unexplained`: values that moved with nothing upstream changed, the
-    sign of a broken formula or a wrong stored result;
+    sign of a broken formula or a wrong stored result (a total whose rows
+    were sorted too: no sort moves it). What it moved is in `moved` with
+    it as its cause; the cells that read it and hold what they held are
+    listed with it (`held` in `--json`), not as unknown;
   - `features_lost`: charts (on a chart sheet too), validations,
     conditional formats, shapes, pictures, names and tables the old
     version had (openpyxl drops shapes, a chart grouped with a shape, and
     validations in Excel 2010's extension list, such as a list read from
     another sheet). A feature is kept only by one of its kind and identity
     in the new version: a validation or conditional format of the same
-    type and formula (the cells it reads aside, which rows and columns
-    added or removed rewrite), a chart of the same type in the same place
+    type and formula, reading the cells rows and columns added or removed
+    put it on (as Excel rewrites it for them), a chart of the same type in the same place
     or on the same data, a shape or picture in the same place or by name,
     a name or table by its name. Another of its kind is no stand-in: a
-    chart added beside a dropped one, a validation beside one dropped, the
-    banding `sheets fmt` writes over a conditional format, and a rule whose
-    formula was edited, are the old one lost. A column deleted takes the
+    chart added beside a dropped one, a validation beside one dropped, and
+    the banding `sheets fmt` writes over a conditional format, are the old
+    one lost. A validation or conditional format whose cells hold another
+    of its kind now (a bound raised, a dropdown's items or the range it
+    reads, a threshold or the cell it is in) was edited: it is in
+    `features_changed`, with its rule before and after, not lost, and sets
+    no exit 1. Only on the cells it was on: a dropdown cleared from one range
+    and another added on other cells is the first one lost. A lost rule is
+    named with its type, operator and values (`what`), so that one of several
+    on the same cells is told; of several of a kind there, an edit pairs with
+    the one whose text is the closest to it. A rule a tool left as it was where rows moved what it reads
+    (openpyxl's `insert_rows`) is changed too, with what Excel writes. Only a rule of the same type is an edit
+    of it (a whole-number validation made a decimal one, or one that
+    allows any value, too), and a formula rule or custom validation only
+    when it is the same formula but for its numbers, texts and
+    comparison: another rule on the same cells (a list where a number was,
+    data bars for a highlight, banding for a formula highlight) is the old
+    one lost. A column deleted takes the
     validations on it, and the ones beside it move into its place. An
     Excel table renamed (the same columns, on the same sheet) is followed,
     not lost: the formulas that read it by name, which Excel rewrites, are
@@ -109,7 +157,8 @@
     values swapped in a column, is inputs changed where they are, each the
     cause of what it moves. Rows cut and pasted where nothing was
     (`sheets move`, Excel's cut and paste) are rows moved too, with the rows
-    they passed where they were, not rows added or removed. So is a block of
+    they passed where they were, not rows added or removed (a total among
+    them, reading cells that left, moved for the move). So is a block of
     cells cut from beside a table and pasted below it or into other columns
     (`sheets move book.xlsx Sales!H1:J20 Sales!A30`, listed as
     `Sales!A30:C49, were H1:J20`, with `columns` and `was_columns` in
@@ -122,6 +171,12 @@
     as well rows added or removed above, and is told as that;
   - then the check of book.xlsx, as above.
 
+  A row deleted with a cell set in the row that moved up into its place is
+  one row removed and one input changed: a row changed pairs with the row
+  removed or added beside it that differs from it in the fewest cells. So is
+  the last row of a table deleted and a cell set in its place, where nothing
+  moves up: one row removed and the cell typed in (from empty), not every
+  cell of the row changed.
   Formulas Excel rewrites for rows or columns added or removed (a column
   inserted between the columns a formula reads too, or a row inserted on
   the sheet it reads), cells cut and pasted, a sheet renamed, or a sheet
@@ -140,7 +195,9 @@
   unexplained, a feature is lost, or the check finds errors. On a CSV file
   it compares values only. On 150,000 rows it takes about 4 to 6 seconds
   (15,000 rows changed, or all of them sorted), and about 9 when openpyxl
-  left one version without results.
+  left one version without results. It compares the cells there are, not
+  the used range's rectangle: a sheet with A1:B1 and one value at
+  XFD1048576 takes under a second.
 - `--receipt receipt.md` (with `--against`) writes that report for a
   person, as Markdown to attach to a pull request or a message: what to
   look at first (values unexplained, features lost, formula changes
