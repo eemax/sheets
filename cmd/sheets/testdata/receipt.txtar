@@ -1,0 +1,168 @@
+# check --against --receipt writes the report for a person, as Markdown,
+# with before and after pictures of the ranges that changed beside it.
+fixture against_before.xlsx against_openpyxl.xlsx against_chartsheet.xlsx against_chartsheet_deleted.xlsx
+
+# openpyxl's round trip, Data!B2 changed: the chart, its text box and the
+# list validation lost, the values moved with their cause, the missing
+# results. The chart is in the picture before, not after; the validation
+# and the text box no picture shows, so the receipt says so in words. A
+# picture an earlier receipt left under the same name is removed.
+cp against_before.xlsx receipt-3-after.png
+! exec sheets check against_openpyxl.xlsx --against against_before.xlsx --receipt receipt.md
+stdout '^receipt: receipt.md \(4 pictures of 2 ranges\)$'
+cmp receipt.md openpyxl.md
+exists receipt-1-before.png receipt-1-after.png receipt-2-before.png receipt-2-after.png
+! exists receipt-3-after.png
+
+! exec sheets --json check against_openpyxl.xlsx --against against_before.xlsx --receipt receipt.md
+stdout '"receipt":\{"file":"receipt.md","previews":\[\{"before":"Data!A1:G8","after":"Data!A1:G8","before_image":"receipt-1-before.png","after_image":"receipt-1-after.png"\},\{"before":"Summary!A1:C8","after":"Summary!A1:C8","before_image":"receipt-2-before.png","after_image":"receipt-2-after.png"\}\]\}'
+
+# A sheet renamed: its picture before is of the sheet's old name; a name
+# with a space is a link Markdown reads.
+cp against_before.xlsx renamed.xlsx
+exec sheets sheet rename renamed.xlsx Data 'My Facts'
+exec sheets set renamed.xlsx 'My Facts!C3' 25
+exec sheets check renamed.xlsx --against against_before.xlsx --receipt 'my receipt.md'
+grep '^### 1. `''My Facts''!A1:E8 \(was Data!A1:E8\)`$' 'my receipt.md'
+grep '^\| !\[Data!A1:E8 before\]\(<my receipt-1-before.png>\) \| !\[''My Facts''!A1:E8 after\]\(<my receipt-1-after.png>\) \|$' 'my receipt.md'
+grep '^Here: 1 input changed \(C3\), 2 values moved \(D3, D7\)\.$' 'my receipt.md'
+grep '^\*\*Every value that moved has its cause; no feature was lost\.\*\*$' 'my receipt.md'
+exists 'my receipt-1-before.png' 'my receipt-1-after.png'
+
+# A chart on a chart sheet is not drawn: said, with no picture.
+! exec sheets check against_chartsheet_deleted.xlsx --against against_chartsheet.xlsx --receipt cs.md
+stdout '^receipt: cs.md \(0 pictures of 0 ranges\)$'
+grep '^Nothing changed that a picture shows\.$' cs.md
+grep '^- chart Chart1 \(bar chart on a chart sheet\): a chart sheet is not drawn$' cs.md
+
+# A CSV pair: values only, no pictures.
+exec sheets check after.csv --against before.csv --receipt csv.md
+grep '^\| Values changed \| 1 \|$' csv.md
+grep '^A CSV file has no formatting to draw: no pictures\.$' csv.md
+
+# Nothing changed.
+exec sheets check against_before.xlsx --against against_before.xlsx --receipt same.md
+grep '^\*\*No changes\.\*\*$' same.md
+
+# --receipt goes with --against.
+! exec sheets check against_before.xlsx --receipt r.md
+stderr '--receipt writes what --against reports: give --against before.xlsx too'
+! exec sheets check against_before.xlsx --against against_before.xlsx --receipt against_before.xlsx
+stderr '--receipt against_before.xlsx is against_before.xlsx, which it would overwrite: name a .md file'
+exec sheets check against_before.xlsx --against against_before.xlsx
+stdout ': 0 inputs changed,'
+exec sheets check --help
+stdout '^      --receipt string +with --against: write the report as Markdown for a person, with before and after pictures beside it$'
+stdout '^  sheets check book.xlsx --against before.xlsx --receipt receipt.md$'
+
+# Unknown values keep their old place: 12 rows inserted above RAND formulas,
+# the picture before is of the old rows, not the new ones.
+stdin unk.tsv
+exec sheets write unk.xlsx S!A1
+cp unk.xlsx unk2.xlsx
+exec sheets rows insert unk2.xlsx S!2 -n 12
+exec sheets set unk2.xlsx S!B20 99
+exec sheets --json check unk2.xlsx --against unk.xlsx --receipt unk.md
+stdout '"before":"S!A1:D9"'
+grep '^\| `S!C14 \(was C2\)`' unk.md
+
+-- unk.tsv --
+Item	Qty	R
+I2	2	=B2*RAND()
+I3	3	=B3*RAND()
+I4	4	=B4*RAND()
+I5	5	=B5*RAND()
+I6	6	=B6*RAND()
+I7	7	=B7*RAND()
+I8	8	=B8*RAND()
+-- before.csv --
+a,b
+1,2
+3,4
+-- after.csv --
+a,b
+1,2
+3,5
+-- openpyxl.md --
+# Change receipt: `against_openpyxl.xlsx`
+
+What changed in `against_openpyxl.xlsx` since `against_before.xlsx`, and why, as `sheets check --against` found it.
+
+**To look at: 3 features lost; 2 errors in the check of the file.**
+
+| What | Count |
+|---|---:|
+| Inputs changed | 1 |
+| Formulas changed | 0 |
+| Formula changes flagged as likely mistakes | 0 |
+| Computed values moved, each with its cause | 8 |
+| Values moved with nothing upstream changed (unexplained) | 0 |
+| Features lost | 3 |
+| Values sheets cannot compare (unknown) | 0 |
+| Rows moved (as by a sort; not changes) | 0 |
+| Check of the file: errors, warnings, notes | 2, 0, 0 |
+
+## Features lost
+
+| Kind | Where | What |
+|---|---|---|
+| validation | `Data!A2:A6` | list validation |
+| chart | `Data!F2` | column chart |
+| shape | `Data!F2` | TextBox 2 |
+
+## Changed
+
+| Cell | Kind | Before | After |
+|---|---|---|---|
+| `Data!B2` | input | `5` | `6` |
+
+## Values that moved, and why
+
+| Cell | Before | After | Cause |
+|---|---|---|---|
+| `Data!D2` | `150` | `180` | input Data!B2 (computed by sheets: the file stores no result) |
+| `Data!B7` | `28` | `29` | input Data!B2 (computed by sheets: the file stores no result) |
+| `Data!D7` | `630` | `660` | input Data!B2 (computed by sheets: the file stores no result) |
+| `Summary!B2` | `28` | `29` | input Data!B2 (computed by sheets: the file stores no result) |
+| `Summary!B3` | `630` | `660` | input Data!B2 (computed by sheets: the file stores no result) |
+| `Summary!B4` | `157.5` | `165` | input Data!B2 (computed by sheets: the file stores no result) |
+| `Summary!B5` | `472.5` | `495` | input Data!B2 (computed by sheets: the file stores no result) |
+| `Summary!B7` | `5` | `6` | input Data!B2 (computed by sheets: the file stores no result) |
+
+## Check of `against_openpyxl.xlsx`
+
+2 errors, 0 warnings, 0 notes.
+
+| Severity | Cells | Finding |
+|---|---|---|
+| error | `Data!D2, D3, D4, D5, D6, B7, D7` | 7 formulas have no stored result, so pandas, openpyxl and previews read blanks; sheets computes them (D2 = 180): sheets check --fix stores them |
+| error | `Summary!B2, B3, B4, B5, B6, B7` | 6 formulas have no stored result, so pandas, openpyxl and previews read blanks; sheets computes them (B2 = 29): sheets check --fix stores them |
+
+## Before and after
+
+The pictures are drawn by `sheets render`, from each version with the results sheets computed where the file stores none, as the tables above give them.
+
+### 1. `Data!A1:G8`
+
+Here: 1 chart lost (F2), 1 input changed (B2), 3 values moved (D2, B7, D7).
+
+| Before (`against_before.xlsx`) | After (`against_openpyxl.xlsx`) |
+|---|---|
+| ![Data!A1:G8 before](receipt-1-before.png) | ![Data!A1:G8 after](receipt-1-after.png) |
+
+- before: not drawn: conditional formats other than banding
+- after: not drawn: conditional formats other than banding
+
+### 2. `Summary!A1:C8`
+
+Here: 5 values moved (B2, B3, B4, B5, B7).
+
+| Before (`against_before.xlsx`) | After (`against_openpyxl.xlsx`) |
+|---|---|
+| ![Summary!A1:C8 before](receipt-2-before.png) | ![Summary!A1:C8 after](receipt-2-after.png) |
+
+No picture can show these:
+
+- validation Data!A2:A6 (list validation): a validation shows in no picture
+- shape Data!F2 (TextBox 2): sheets render draws no shapes or pictures
+

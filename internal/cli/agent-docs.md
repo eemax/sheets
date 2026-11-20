@@ -345,6 +345,7 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     sheets check book.xlsx                # formula results, unknowns, errors, and lint
     sheets check --fix book.xlsx          # store every result sheets can compute, add prefixes
     sheets check book.xlsx --against before.xlsx  # what changed since before.xlsx, and why
+    sheets check book.xlsx --against before.xlsx --receipt receipt.md  # the same, for a person
     sheets lint book.xlsx                 # errors, broken patterns, totals that miss rows
     sheets lint book.xlsx --rules         # what it checks
     sheets diff book.xlsx                 # what the last sheets command changed
@@ -482,6 +483,25 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   it compares values only. On 150,000 rows it takes about 4 to 6 seconds
   (15,000 rows changed, or all of them sorted), and about 9 when openpyxl
   left one version without results.
+- `--receipt receipt.md` (with `--against`) writes that report for a
+  person, as Markdown to attach to a pull request or a message: what to
+  look at first (values unexplained, features lost, formula changes
+  flagged, the check's errors), a table of the counts, each section's
+  first 25 entries (and the command that lists them all), the check of
+  the file, then before and after pictures, drawn by `sheets render`, of
+  up to three ranges that changed (each sheet before a second range of
+  one, at most 30 rows by 12 columns each, the cells that changed named
+  under each), written beside it as `receipt-1-before.png`,
+  `receipt-1-after.png` and so on (pictures an earlier receipt left under
+  those names are removed). A chart lost is pictured where it was. What no
+  picture can show it says in words: a validation, a shape or picture, a
+  conditional format, a table style, a name or a chart on a chart sheet
+  lost; what `render` leaves out of a range; values sheets cannot know.
+  The pictures show the results sheets computed where a file stores none,
+  as the tables do. Each command's output ends with
+  `receipt: receipt.md (4 pictures of 2 ranges)`; `--json` gives
+  `receipt` with each range's `before`, `after` and their images. On a CSV
+  file there are no pictures. On 150,000 rows it takes about 8 seconds.
 - `lint` finds error values, `#REF!` from deleted cells, unknown functions,
   cells that break their column's formula pattern, rows a formula column
   misses, totals that leave out rows, sums that add a total together with
@@ -498,6 +518,17 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   renamed, then rows, columns and cells. With one file it compares with
   the state before the last change (`--since 3`: the last three), from the
   undo history: the way to check what a command did.
+- `diff` is git's diff driver for workbooks, so `git diff` shows what
+  changed in a `.xlsx` file, not `Binary files differ`. Set it up once in
+  a repository:
+
+      git config diff.sheets.command 'sheets diff'
+      echo '*.xlsx diff=sheets' >> .gitattributes
+
+  `git diff` and `git diff --cached` use it; `git show` and `git log -p`
+  with `--ext-diff`. Each file starts with its line,
+  `sheets diff a/book.xlsx b/book.xlsx` (`new file`, `deleted` or
+  `renamed` after it), then is as `sheets diff` prints two files.
 
 ## Charts
 

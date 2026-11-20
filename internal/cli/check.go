@@ -88,6 +88,7 @@ func (a *app) checkCmd() *cobra.Command {
 		fix     bool
 		failOn  string
 		against string
+		receipt string
 	)
 	cmd := &cobra.Command{
 		Use:   "check <file>",
@@ -116,7 +117,14 @@ compare (unknown); then the check of the file. Rows moved, as by a sort,
 are moved rows, not changes. It exits 1 on values unexplained, features
 lost, or the check's errors. Text lists a few of each; --json all.
 
-  sheets check book.xlsx --against before.xlsx`,
+--receipt out.md writes that report for a person, in Markdown: what to
+look at first, each section's entries (the first 25), and before and after
+pictures (sheets render) of up to three ranges that changed, as
+out-1-before.png, out-1-after.png and so on beside it. What no picture can
+show (a validation, a shape lost) it says in words.
+
+  sheets check book.xlsx --against before.xlsx
+  sheets check book.xlsx --against before.xlsx --receipt receipt.md`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			threshold := lint.Severity(99)
@@ -126,6 +134,9 @@ lost, or the check's errors. Text lists a few of each; --json all.
 					return fmt.Errorf("--fail-on %q: use error, warning, note or never", failOn)
 				}
 				threshold = s
+			}
+			if receipt != "" && against == "" {
+				return fmt.Errorf("--receipt writes what --against reports: give --against before.xlsx too")
 			}
 			if against != "" && fix {
 				return fmt.Errorf("--against reports and changes nothing: run sheets check --fix on its own")
@@ -152,12 +163,20 @@ lost, or the check's errors. Text lists a few of each; --json all.
 					return err
 				}
 				r.Errors, r.Warnings, r.Notes = res.Errors, res.Warnings, res.Notes
+				if receipt != "" {
+					if r.Receipt, err = a.writeReceipt(receipt, r); err != nil {
+						return err
+					}
+				}
 				if a.json {
 					if err := a.printJSON(r); err != nil {
 						return err
 					}
 				} else {
 					a.printAgainst(r)
+					if r.Receipt != nil {
+						a.printReceipt(r.Receipt)
+					}
 				}
 				if fail || againstFails(r) {
 					return errSilent
@@ -180,6 +199,7 @@ lost, or the check's errors. Text lists a few of each; --json all.
 	f := cmd.Flags()
 	f.BoolVar(&fix, "fix", false, "store every result sheets can compute and add missing prefixes")
 	f.StringVar(&against, "against", "", "report what changed since this earlier version of the file, and why")
+	f.StringVar(&receipt, "receipt", "", "with --against: write the report as Markdown for a person, with before and after pictures beside it")
 	f.StringVar(&failOn, "fail-on", "error", "exit 1 on findings this severe: error, warning, note or never")
 	return cmd
 }
