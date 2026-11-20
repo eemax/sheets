@@ -29,7 +29,7 @@ taught.
   bugs (`internal/fuzz/known.txt`; last long run 156.9 findings per
   10,000 edits, 0 new); `check --against`'s report-regress f3.1 to f3.5
   (next step: use the session's recorded ops when sheets made the
-  edits); C's silent-defect rule in `evals/run.py`. WP-13 is still open.
+  edits); the spot-check of the silent-defect rule (fixed in `evals/run.py`, counts regraded) under its landed form. WP-13 is still open.
 - **Waiting on Max:** the gate, and WP-11, the Excel oracle (a Business
   Basic tenant). WP-07b stays parked.
 

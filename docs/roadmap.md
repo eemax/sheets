@@ -70,10 +70,10 @@ labelled `repo:sheets`):
   typed over, cleared or removed at a table's end). Next step: when
   sheets made the edits, use the session's recorded ops instead of
   inferring them.
-- **C's silent-defect counts** are upper bounds until `evals/run.py`'s
-  rule reads "haven't opened the file in Excel" followed by "haven't
-  been calculated" (or "unchecked") as no doubt (wave2-check.md, Silent
-  defects).
+- **Silent-defect counts:** `evals/run.py`'s rule now reads "haven't
+  opened the file in Excel" as doubt (d4710c1), and both results files
+  are regraded with it. What is open is the 10-transcript spot-check
+  under the landed rule, which was not repeated.
 - **The git diff driver** is built (`sheets diff` as git's diff driver,
   change-receipt); what is left of History in Horizon 2 is receipts on
   pull requests and `check` as a CI step.

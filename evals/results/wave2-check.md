@@ -185,13 +185,17 @@ tasks as on 2026-10-25.
 ### Silent defects
 
 A silent defect is a failed run whose final answer claims success
-(`run.claim`, the rule in `evals/README.md`):
+(`run.claim`, the rule in `evals/README.md`). These counts were regraded
+with the rule as integration fix f1.2 (d4710c1) changed it, so that
+"haven't opened the file in Excel" and "haven't been calculated" count as
+doubt (the first draft of this file gave python 7 / 19, python-hint
+6 / 16, python+check 5 / 6):
 
 | arm | silent, lo | silent, stored |
 |---|---|---|
-| python | 7 | 19 |
-| python-hint | 6 | 16 |
-| python+check | 5 | 6 |
+| python | 0 | 0 |
+| python-hint | 2 | 2 |
+| python+check | 0 | 0 |
 
 python+check uses python's transcript, so its silent runs are python's
 silent runs that check did not rescue.
@@ -217,18 +221,16 @@ is 4 of 10:
 | 1818 / python-hint | success | **failure** | "I haven't opened the file in Excel, so the formulas haven't been calculated" |
 | 45300 / python | success | **failure** | "I haven't opened the file in Excel, so the results are unchecked" |
 
-The six disagreements are one miss, all in the same direction: the rule
-reads *haven't opened the file in Excel* followed by *haven't been
-calculated*, *untested* or *unchecked* as no doubt (tested alone, each
-sentence gives `run.claim` → `none`), so the answer's later success
-words win. By the other standard (such caveats are not doubt) the labels
-of those six would be success and agreement would be 10 of 10; the
-agreement figure depends on that choice, and the table uses the
-stricter one. Almost every openpyxl answer carries a line like this, so
-the silent counts above are upper bounds, not measurements. The fix
-belongs to `evals/run.py` (eval-arms' file, outside this piece). It is
-named here as a follow-up for integration. It does not touch the verdict, which rests on pass
-rates alone.
+The six disagreements were one miss, all in the same direction: the
+rule read *haven't opened the file in Excel* followed by *haven't been
+calculated*, *untested* or *unchecked* as no doubt, so the answer's later
+success words won. That miss was fixed in `evals/run.py` by d4710c1
+(f1.2) and the counts above are regraded with the fixed rule. The 4 of 10
+agreement is what the rule gave when the transcripts were read, and was
+not remeasured. By the other standard (such caveats are not doubt) the
+labels of those six would be success; the table uses the stricter one.
+The counts rest on `run.claim` as it now is. They do not touch the
+verdict, which rests on pass rates alone.
 
 ### Cost
 

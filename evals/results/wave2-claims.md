@@ -147,7 +147,7 @@ from reading each failed run's answer (below).
 | run2 | 20 | sheets | 0/24 | 2/2 | | | 10 | 0.13 |
 | run2 | 20 | python | 6/24 | 0/2 | no | yes | 4 | 0.08 |
 | run2 | 20 | skill-lo | 3/24 | 2/2 | yes | yes | 5 | 0.11 |
-| run3 | 19 | sheets | 1/43 | 3/3 | yes | no | 22 | 0.33 |
+| run3 | 19 | sheets | 1/43 | 3/3 | no | no | 22 | 0.33 |
 | run3 | 19 | python | 0/43 | 3/3 | | | 6 | 0.27 |
 | run3 | 19 | skill-lo | 0/43 | 3/3 | | | 8 | 0.51 |
 | run3 | 20 | sheets | 1/24 | 2/2 | yes | yes | 7 | 0.10 |
@@ -156,7 +156,7 @@ from reading each failed run's answer (below).
 
 | arm | defects | rate | task 19 | task 20 | stored | silent (rule) | silent (read) | turns | cost $ | capped |
 |---|---|---|---|---|---|---|---|---|---|---|
-| sheets | 5/201 | 2.5% | 3/129 (2.3%) | 2/72 (2.8%) | 15/15 | 3 of 5 | 4 of 5 | 87 | 1.27 | none |
+| sheets | 5/201 | 2.5% | 3/129 (2.3%) | 2/72 (2.8%) | 15/15 | 2 of 5 | 4 of 5 | 87 | 1.27 | none |
 | python | 11/201 | 5.5% | 3/129 (2.3%) | 8/72 (11.1%) | 5/15 | 0 of 4 | 4 of 4 | 28 | 1.00 | none |
 | skill-lo | 7/201 | 3.5% | 0/129 (0.0%) | 7/72 (9.7%) | 15/15 | 2 of 2 | 2 of 2 | 45 | 1.85 | none |
 
@@ -239,7 +239,7 @@ counts differ on 7 of the 11 failed runs:
   says the conditional formats "still cover the same ranges as before",
   which is its defect.
 - **The rule says silent, the reading says admitted** (1). sheets run3/19
-  says it set Products' margin column to 0.0% unasked, one of the two
+  (now also read as failure by the rule, since d4710c1) says it set Products' margin column to 0.0% unasked, one of the two
   causes of its failed item.
 
 By reading, sheets is silent in 4 of its 5 failed runs, `python` in 4 of
@@ -256,7 +256,9 @@ were checked against the workbooks, opened with openpyxl and read as XML.
 
 **Spot-check:** 10 transcripts read; the 8 failed items in them are all
 real defects (r1/19/python 2, r2/19/python 1, r1/20/skill-lo 4,
-r2/19/sheets 1). The silent verdict agrees with the reading in 7 of 10.
+r2/19/sheets 1). The silent verdict agrees with the reading in 7 of 10 (measured with
+the rule before d4710c1's fix f1.2; the table's rule counts above are
+regraded with the landed rule, which was not re-spot-checked).
 The 3 disagreements, r1/19/python, r2/19/python and r2/19/sheets, are
 `run.claim`'s f4.1: the rule counts a caveat about something else as an
 admission. No task check was wrong, so none was changed and no run was
