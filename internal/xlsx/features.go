@@ -90,12 +90,39 @@ func attrsOf(tag string) map[string]string {
 // Features lists what a workbook (an xlsx package held in memory)
 // carries besides its cells, sheet by sheet in the workbook's order.
 func Features(data []byte) ([]Feature, error) {
+	fs, _, err := FeaturesWithin(data, -1)
+	return fs, err
+}
+
+// FeaturesWithin is Features for a workbook that may hold too many rules
+// to read quickly (a validation or conditional format for each cell:
+// tens of thousands of them): when it holds more than maxRules (a
+// negative maxRules: no bound) it leaves the rules out and says how many
+// there are; the rest (charts, shapes, pictures, names, tables) is
+// listed as ever.
+func FeaturesWithin(data []byte, maxRules int) ([]Feature, int, error) {
+	fs, n, err := features(data, maxRules)
+	if maxRules >= 0 && n > maxRules {
+		kept := fs[:0]
+		for _, f := range fs {
+			if f.Kind != FeatureValidation && f.Kind != FeatureCond {
+				kept = append(kept, f)
+			}
+		}
+		return kept, n, err
+	}
+	return fs, 0, err
+}
+
+// features lists them, and counts the rules the sheets hold (the rules
+// are read until there are more than maxRules).
+func features(data []byte, maxRules int) ([]Feature, int, error) {
 	if bytes.HasPrefix(data, oleMagic) {
-		return nil, fmt.Errorf("file is password-protected or in the legacy .xls format; save it as an unencrypted .xlsx")
+		return nil, 0, fmt.Errorf("file is password-protected or in the legacy .xls format; save it as an unencrypted .xlsx")
 	}
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return nil, fmt.Errorf("not an xlsx file: %w", err)
+		return nil, 0, fmt.Errorf("not an xlsx file: %w", err)
 	}
 	p := &pkg{files: map[string]*zip.File{}}
 	for _, f := range zr.File {
@@ -111,18 +138,19 @@ func Features(data []byte) ([]Feature, error) {
 	}
 	var wbx xWorkbook
 	if err := p.decode(wbPath, &wbx); err != nil {
-		return nil, fmt.Errorf("reading workbook: %w", err)
+		return nil, 0, fmt.Errorf("reading workbook: %w", err)
 	}
 	wbDir := path.Dir(wbPath)
 	rels, err := p.rels(path.Join(wbDir, "_rels", path.Base(wbPath)+".rels"), wbDir)
 	if err != nil {
-		return nil, fmt.Errorf("reading workbook relationships: %w", err)
+		return nil, 0, fmt.Errorf("reading workbook relationships: %w", err)
 	}
 	relByID := map[string]xRel{}
 	for _, r := range rels {
 		relByID[r.ID] = r
 	}
 	var out []Feature
+	total := 0
 	for _, s := range wbx.Sheets {
 		rel, ok := relByID[s.relID()]
 		if ok && strings.HasSuffix(rel.Type, "/chartsheet") {
@@ -139,11 +167,17 @@ func Features(data []byte) ([]Feature, error) {
 		if !ok || !strings.HasSuffix(rel.Type, "/worksheet") {
 			continue
 		}
-		b, err := p.read(rel.Target)
+		b, err := p.readSized(rel.Target)
 		if err != nil {
-			return nil, fmt.Errorf("reading sheet %q: %w", s.Name, err)
+			return nil, 0, fmt.Errorf("reading sheet %q: %w", s.Name, err)
 		}
-		out = append(out, sheetRules(s.Name, b)...)
+		head, tail := outsideCells(b)
+		if maxRules >= 0 {
+			total += countRules(head) + countRules(tail)
+		}
+		if maxRules < 0 || total <= maxRules {
+			out = append(out, sheetRules(s.Name, append(append(make([]byte, 0, len(head)+len(tail)), head...), tail...))...)
+		}
 		parts := p.sheetParts(rel.Target)
 		if parts.drawing != "" {
 			out = append(out, p.drawn(s.Name, parts.drawing)...)
@@ -164,14 +198,14 @@ func Features(data []byte) ([]Feature, error) {
 		}
 		out = append(out, f)
 	}
-	return out, nil
+	return out, total, nil
 }
 
 // sheetRules lists a sheet's data validations and conditional formats,
 // those in Excel 2010's extension list too (where Excel keeps a list read
 // from another sheet, and the parts of a rule older Excel cannot show).
-func sheetRules(sheet string, b []byte) []Feature {
-	s := string(b)
+func sheetRules(sheet string, outside []byte) []Feature {
+	s := string(outside)
 	var out []Feature
 	for _, m := range validationEl.FindAllStringSubmatch(s, -1) {
 		a := attrsOf("<v " + m[1] + ">")
@@ -216,6 +250,54 @@ func sheetRules(sheet string, b []byte) []Feature {
 		}
 	}
 	return out
+}
+
+var (
+	validationStart = []byte("dataValidation ")
+	cfRuleStart     = []byte("cfRule ")
+)
+
+// countRules counts the validations and conditional format rules in a
+// sheet's XML (without its cells): a count, with no reading of them. The
+// name of an element with attributes, in any namespace: not the list of
+// validations (dataValidations), nor an end tag. One with its attributes
+// on lines of their own is not counted: it is read, not skipped.
+func countRules(outside []byte) int {
+	return bytes.Count(outside, validationStart) + bytes.Count(outside, cfRuleStart)
+}
+
+// outsideCells is a sheet's XML without its cells: what comes before them
+// and what after. Validations and conditional formats come after them, and
+// no cell can hold a tag (its text is escaped), so the rules are looked
+// for in the rest alone: through a sheet of 150,000 rows, the looking is
+// what takes the time.
+func outsideCells(b []byte) (head, tail []byte) {
+	i := bytes.Index(b, []byte("sheetData"))
+	j := bytes.LastIndex(b, []byte("sheetData>"))
+	if i < 0 || j <= i {
+		return b, nil
+	}
+	lt := bytes.LastIndexByte(b[:i], '<')
+	if lt < 0 {
+		return b, nil
+	}
+	return b[:lt], b[j+len("sheetData>"):]
+}
+
+// readSized reads a part whole, in one allocation of the size it unpacks to.
+func (p *pkg) readSized(name string) ([]byte, error) {
+	f := p.files[strings.ToLower(strings.TrimPrefix(name, "/"))]
+	if f == nil {
+		return p.read(name)
+	}
+	r, err := p.open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	buf := bytes.NewBuffer(make([]byte, 0, min(f.UncompressedSize64+bytes.MinRead, 1<<30)))
+	_, err = buf.ReadFrom(r)
+	return buf.Bytes(), err
 }
 
 // formulasOf reads the formulas a rule holds, in order, as written (without

@@ -99,6 +99,7 @@ Rent	100	50	=B{r}-C{r}
 -- header.out --
 styled Budget!A1:D1: bold fill=lightblue
 note: text set to black, readable on the #DDEBF7 fill (give color= to choose)
+change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before
 -- looks.out --
 Budget!A1:D1  bold fill=#DDEBF7 align=left valign=middle border=all:thin:#D1D5DB
 Budget!A2:A4  border=all:thin:#D1D5DB

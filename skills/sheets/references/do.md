@@ -15,4 +15,7 @@
   changes before it (`read` and `peek` in a batch show them).
 - Data for `write` comes from `-i file`, `< file`, or a here-document in
   the script (`write Sales!A1 <<END`, the rows, `END`).
+- The batch ends with one change report (see the writing topic) for all
+  its commands, from the file as the batch began: a value moved and moved
+  back is not moved. A script reports the same way.
 - Use it whenever a change takes more than two or three commands.

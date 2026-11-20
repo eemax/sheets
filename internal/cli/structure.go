@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,7 @@ func (a *app) edit(file string, create bool, fn func(ed book.Editor, res *struct
 	if err := ed.Save(a.dryRun); err != nil {
 		return err
 	}
+	a.track(file, ed)
 	res.Warnings = append(res.Warnings, ed.Warnings()...)
 	if a.json {
 		return a.printJSON(res)
@@ -384,9 +386,17 @@ when the file was changed by something else since, unless --force.`,
 				a.printf("would undo: %s\n", entries[len(entries)-1].Command)
 				return nil
 			}
+			before, _ := os.ReadFile(args[0])
 			e, moved, err := undo.Undo(args[0], force)
 			if err != nil {
 				return err
+			}
+			if after, err := os.ReadFile(args[0]); err == nil && before != nil {
+				// The file as it was and as it is again: what the change
+				// report can say of it is the features lost and the lint;
+				// the cells are not compared, and it says so.
+				a.trackBytes(args[0], before, after)
+				a.session.uncounted = true
 			}
 			if a.json {
 				return a.printJSON(map[string]any{"undone": e, "moved_to": moved})

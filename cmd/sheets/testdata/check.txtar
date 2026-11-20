@@ -103,4 +103,6 @@ fixed (one change; sheets undo unprefixed.xlsx takes it back):
 prefixed  Data!C2, D2, E2      added the _xlfn. prefix Excel needs to 3 formulas: AGGREGATE, TEXTJOIN, MAXIFS
 stored    Data!C2, D2, E2, F2  stored 4 computed results where there were none (C2 = "PK1")
 no problems found
+change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint -3 errors
+lint: unprefixed-function 3 → 0
 next: sheets diff unprefixed.xlsx

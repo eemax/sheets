@@ -81,6 +81,7 @@ rows: 4
 result: {"revenue":[25,12,10.5],"taxed":57}
 saved book.xlsx: 6 cells written; styling on 1 range, one undo step
 formulas: Sales!D2 = 25, Sales!D3 = 12, Sales!D4 = 10.5, Sales!G2 = 57
+change: 6 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before
 next: sheets diff book.xlsx
 -- sheet.out --
 Sales!A1:G4
@@ -109,6 +110,8 @@ Region, Units, Price, Revenue
 result: [25,10.5,8,1]
 saved book.xlsx: 6 cells written; Sales!A2:D4 sorted; 1 row deleted from Sales; 2 rows added to Sales, filling D =B{r}*C{r}, one undo step
 formulas: Sales!D4 = 8, Sales!D5 = 1
+change: 16 cells written, 1 value moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before
+moved: Sales!G2 57 → 53.4
 next: sheets diff book.xlsx
 -- tables-sheet.out --
 Sales!A1:G6

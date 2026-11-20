@@ -722,3 +722,15 @@ total["A2"] = "=Data!D2+Data!J2"
 wb.save(f"{out}/against_block.xlsx")
 ws.move_range("H1:J4", rows=29, cols=-7)
 wb.save(f"{out}/against_blockcut.xlsx")
+
+# noresults.xlsx: formulas as openpyxl writes them, with no stored result:
+# Data!B1 divides by A1, C1 is an error already (1/0), D1 is fine, and A1
+# is the cell an edit changes.
+wb = openpyxl.Workbook()
+ws = wb.active
+ws.title = "Data"
+ws["A1"] = 5
+ws["B1"] = "=1/A1"
+ws["C1"] = "=1/0"
+ws["D1"] = "=A1+1"
+wb.save(f"{out}/noresults.xlsx")

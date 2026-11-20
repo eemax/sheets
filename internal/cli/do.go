@@ -115,6 +115,7 @@ far. --dry-run runs everything and saves nothing.`,
 				return err
 			}
 			defer b.End()
+			a.session = batchSession(file, b.Start())
 			res := doResult{File: file, DryRun: a.dryRun}
 			var failed []string
 			for _, st := range steps {
@@ -137,6 +138,7 @@ far. --dry-run runs everything and saves nothing.`,
 					return fmt.Errorf("line %d (%s): %w; nothing was saved", st.line, st.text, err)
 				}
 			}
+			a.ended(b)
 			if !a.dryRun {
 				if err := b.Commit(); err != nil {
 					return err
@@ -190,7 +192,7 @@ func jsonOutput(b []byte) json.RawMessage {
 // printed.
 func (a *app) runStep(file string, st step) ([]byte, error) {
 	var out bytes.Buffer
-	in := &app{stdin: bytes.NewReader(st.input), stdout: &out, stderr: &out, json: a.json, batch: true}
+	in := &app{stdin: bytes.NewReader(st.input), stdout: &out, stderr: &out, json: a.json, batch: true, session: a.session}
 	if st.from != "" {
 		data, err := os.ReadFile(st.from)
 		if err != nil {

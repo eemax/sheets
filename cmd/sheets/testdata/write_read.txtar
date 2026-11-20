@@ -34,6 +34,7 @@ Total		=SUM(C2:C4)			=SUM(F2:F4)
 wrote 5 rows × 6 cols to Sales!A1:F5 (new file)
 types: A date, C integer, D currency, E percent, F formula
 formulas: F2 = 1500, F3 = 2400, F4 = 25000, C5 = 2200, F5 = 28900
+change: 30 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before
 next: sheets fmt book.xlsx
 -- info.out --
 book.xlsx · xlsx · 7 KB · 1 sheet

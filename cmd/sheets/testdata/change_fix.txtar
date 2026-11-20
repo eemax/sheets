@@ -1,0 +1,172 @@
+# The change report counts what the command did, no more and no less.
+
+# A sort moves a formula that already showed an error: not a new one.
+stdin ratios.tsv
+exec sheets write m.xlsx Data!A1
+exec sheets sort m.xlsx Data Name
+stdout '^change: 9 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before$'
+! stdout 'new errors:'
+# A move does too, and a new error is still told.
+exec sheets move m.xlsx Data!C2:C4 Data!E2:E4
+stdout ', 0 new errors,'
+exec sheets set m.xlsx Data!B3 0
+stdout '^change: 1 cell written, 1 value moved, 1 new error,'
+stdout '^new errors: Data!E3 #DIV/0! \(was 0.5\)$'
+
+# check --fix stores results where the file had none, or marked them out of
+# date: none of them was known, so none moved and none is new (an error it
+# stores is: nothing says it showed one before, as with the editors).
+fixture kinds_xlsxwriter.xlsx
+fixture kinds_unknown.xlsx
+fixture stale.xlsx
+exec sheets check --fix kinds_xlsxwriter.xlsx
+stdout '^change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, '
+exec sheets check --fix kinds_unknown.xlsx
+stdout '^change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, '
+exec sheets check --fix stale.xlsx --fail-on never
+stdout '^change: 0 cells written, 0 values moved, 1 new error, 0 new unknowns, '
+stdout '^new errors: Data!C6 #DIV/0! \(no result stored before\)$'
+
+# Cells a dynamic array spills into are not cells written; the values it
+# moves are told.
+exec sheets set s.xlsx B1 3 A1 '=SEQUENCE(B1)'
+stdout '^change: 2 cells written, '
+exec sheets set s.xlsx B1 5
+stdout '^change: 1 cell written, 2 values moved, '
+stdout '^moved: Sheet1!A4 nothing → 4, Sheet1!A5 nothing → 5$'
+exec sheets set s.xlsx B1 2
+stdout '^change: 1 cell written, 3 values moved, '
+stdout '^moved: Sheet1!A3 3 → nothing, Sheet1!A4 4 → nothing, Sheet1!A5 5 → nothing$'
+exec sheets set s.xlsx C1 '=SEQUENCE(3,1,B1*10)' B1 5
+stdout '^change: 2 cells written, '
+exec sheets set s.xlsx B1 7
+stdout '^change: 1 cell written, 5 values moved, '
+stdout '^moved: Sheet1!C1 50 → 70, Sheet1!C2 51 → 71, Sheet1!C3 52 → 72, Sheet1!A6 nothing → 6, Sheet1!A7 nothing → 7$'
+exec sheets --json set s.xlsx B1 1
+stdout '"change":\{"cells":1,"moved":9,'
+
+# Chart add and delete, query --into and undo report too.
+stdin chart.tsv
+exec sheets write d.xlsx Data!A1
+exec sheets chart add d.xlsx Data
+stdout '^change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before$'
+exec sheets chart delete d.xlsx Data!D1
+stdout '^change: 0 cells written, .*, 1 feature lost, '
+stdout '^lost: chart Data!D1 '
+exec sheets undo d.xlsx
+stdout '^change: .*, 0 features lost, '
+exec sheets --json chart delete d.xlsx Data!D1
+stdout '"deleted":"Data!D1"'
+stdout '"change":\{"cells":0,.*"features_lost":1,'
+exec sheets --json undo d.xlsx
+stdout '"change":\{"counts_omitted":true,"features_lost":0'
+exec sheets undo d.xlsx
+stdout '^change: .*, 1 feature lost, '
+exec sheets query d.xlsx 'select * from Data' --into Out
+stdout '^change: 9 cells written, '
+shortform 15
+exec sheets --json query d.xlsx 'select * from Data' --into Out
+stdout '"change":\{"cells":9,'
+
+# A sort or move carrying formulas that had no result is nothing new; a
+# rewrite that keeps an error is not a new error, and one that makes
+# one is.
+stdin info.tsv
+exec sheets write k.xlsx Data!A1
+exec sheets sort k.xlsx Data N
+stdout ', 0 new unknowns,'
+exec sheets sort k.xlsx Data N:desc
+stdout ', 0 new unknowns,'
+exec sheets move k.xlsx Data!B2:B3 Data!D2
+stdout ', 0 new unknowns,'
+stdin div.tsv
+exec sheets write e.xlsx Data!A1
+exec sheets replace e.xlsx '1/' '2/' Data --formulas
+stdout ', 0 new errors,'
+exec sheets set e.xlsx Data!B2 '=3/A2'
+stdout ', 0 new errors,'
+exec sheets set e.xlsx Data!B3 '=3/A2'
+stdout ', 1 new error,'
+exec sheets set e.xlsx Data!B3 '=INFO("osversion")'
+stdout ', 1 new unknown,'
+exec sheets set e.xlsx Data!B3 '=INFO("release")'
+stdout ', 0 new unknowns,'
+
+# A file that stored no result for its formulas (openpyxl's) cannot say
+# what they showed before: an error the edit reached is counted and marked,
+# one it did not reach (C1, 1/0 all along) is not told.
+fixture noresults.xlsx
+cp noresults.xlsx noresults2.xlsx
+exec sheets set noresults.xlsx Data!A1 0
+stdout '^change: 1 cell written, 0 values moved, 1 new error, '
+stdout '^new errors: Data!B1 #DIV/0! \(no result stored before\)$'
+! stdout 'C1'
+env SHEETS_STREAM=always
+exec sheets set noresults2.xlsx Data!A1 0
+stdout '^change: 1 cell written, 0 values moved, 1 new error, '
+stdout '^new errors: Data!B1 #DIV/0! \(no result stored before\)$'
+env SHEETS_STREAM=
+exec sheets --json set noresults.xlsx Data!A1 5
+stdout '"change":\{"cells":1,"moved":2,.*"new_errors":0,'
+
+# A batch's one report describes the file the batch leaves: a result check
+# --fix stores clears the unknown an earlier step left (a streaming set
+# leaves INDIRECT's result out), and the error it stores where the file
+# had no result is new.
+env SHEETS_STREAM=always
+exec sheets set b.xlsx D!A1 2 D!B1 '=INDIRECT("A1")'
+stdin indirect.sh
+exec sheets do b.xlsx
+stdout '^change: 1 cell written, 0 values moved, 0 new errors, 0 new unknowns, '
+! stdout 'unknown:'
+exec sheets set b.xlsx D!A3 1 D!B3 '=INDIRECT("A3")'
+stdin indirect_json.sh
+exec sheets --json do b.xlsx
+stdout '"new_unknown":0'
+env SHEETS_STREAM=
+
+# The head line names a new finding of one rule even when a finding of
+# another went away.
+exec sheets set l.xlsx D!A1 0 D!B1 '=1/A1' D!D5 '=A1'
+exec sheets rows delete l.xlsx D!1
+! stdout 'lint as before'
+stdout 'lint \+1 error -1 error'
+stdout '^lint: broken-reference 0 → 1: '
+stdout '^lint: error-value 1 → 0$'
+
+# undo does not compare the cells: it says so instead of counting 0, and
+# leaves the counts out of --json.
+stdin div.tsv
+exec sheets write u.xlsx Data!A1
+exec sheets set u.xlsx Data!A2 7
+exec sheets undo u.xlsx
+stdout '^change: cells not compared \(an undo restores the file as it was\), 0 features lost, lint '
+! stdout 'cells written'
+exec sheets set u.xlsx Data!A2 7
+exec sheets --json undo u.xlsx
+stdout '"change":\{"counts_omitted":true,"features_lost":0,'
+! stdout '"cells"'
+
+-- indirect.sh --
+set D!A2 4
+check --fix
+-- indirect_json.sh --
+set D!A4 4
+check --fix
+-- info.tsv --
+N	X
+b	=INFO("osversion")
+a	=INFO("osversion")
+-- div.tsv --
+A	B
+0	=1/A2
+2	5
+-- ratios.tsv --
+Name	Val	Ratio
+b	2	=1/B2
+a	0	=1/B3
+c	3	=1/B4
+-- chart.tsv --
+Name	Val
+a	1
+b	2

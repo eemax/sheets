@@ -339,3 +339,45 @@ func TestFeaturesDrawn(t *testing.T) {
 		t.Errorf("drawn: %+v", fs)
 	}
 }
+
+// A workbook with more rules than the bound leaves them out and counts them;
+// its names, tables and the rest are listed as ever.
+func TestFeaturesWithin(t *testing.T) {
+	f := excelize.NewFile()
+	defer f.Close()
+	for r := 1; r <= 30; r++ {
+		cell := "B" + string(rune('0'+r/10)) + string(rune('0'+r%10))
+		dv := excelize.NewDataValidation(true)
+		dv.SetSqref(cell)
+		dv.SetRange(0, 9, excelize.DataValidationTypeWhole, excelize.DataValidationOperatorBetween)
+		if err := f.AddDataValidation("Sheet1", dv); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.SetDefinedName(&excelize.DefinedName{Name: "Rate", RefersTo: "Sheet1!$A$1"}); err != nil {
+		t.Fatal(err)
+	}
+	buf, err := f.WriteToBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := func(fs []Feature) map[string]int {
+		m := map[string]int{}
+		for _, x := range fs {
+			m[x.Kind]++
+		}
+		return m
+	}
+	fs, over, err := FeaturesWithin(buf.Bytes(), 30)
+	if err != nil || over != 0 || !reflect.DeepEqual(kinds(fs), map[string]int{FeatureValidation: 30, FeatureName: 1}) {
+		t.Errorf("at the bound: %v, over %d, %v", kinds(fs), over, err)
+	}
+	fs, over, err = FeaturesWithin(buf.Bytes(), 29)
+	if err != nil || over != 30 || !reflect.DeepEqual(kinds(fs), map[string]int{FeatureName: 1}) {
+		t.Errorf("past the bound: %v, over %d, %v", kinds(fs), over, err)
+	}
+	all, err := Features(buf.Bytes())
+	if err != nil || len(all) != 31 {
+		t.Errorf("no bound: %d features, %v", len(all), err)
+	}
+}
