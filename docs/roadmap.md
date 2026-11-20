@@ -16,14 +16,14 @@ Wave 2 is revised (2026-11-18, from the review of sheets in
 | WP-07a | Excel check, round 2: what sheets writes today | 1 | done |
 | WP-12 | Fix: a dynamic array set on a sheet the same command adds is saved corrupt | 1 | done |
 | WP-16 | Fix: every edit Excel refuses inside an array is refused; hand over to the full editor only when an edit reaches an array | 1 | done |
-| WP-14 | A: engine: what it computes unlike Excel becomes unknown, so check --fix never stores it | 2 (A) | planned |
-| WP-18 | A: fix: moving or copying a plain range formula makes it spill; sort refuses single-cell dynamic arrays | 2 (A) | planned |
-| WP-15 | A: fix: spills lost by a script's sheet copy, and after deleting a row inside a spill | 2 (A) | planned |
-| WP-08 | B: evals that can fail (narrowed): a 20-edit session and a feature-loss task | 2 (B) | planned |
-| WP-02 | C: does `check --fix` beat a one-line prefix hint? (cheap) | 2 (C) | planned |
-| WP-03 + WP-09 | D: the change report (merged): `check --against`, the short form after each edit, a Markdown receipt | 2 (D) | planned |
-| WP-17 | E: the fuzzer | 2 (E) | planned |
-| Gate | After B and C: Max reviews their verdicts | 2 | planned |
+| WP-14 | A: engine: what it computes unlike Excel becomes unknown, so check --fix never stores it | 2 (A) | done |
+| WP-18 | A: fix: moving or copying a plain range formula makes it spill; sort refuses single-cell dynamic arrays | 2 (A) | done |
+| WP-15 | A: fix: spills lost by a script's sheet copy, and after deleting a row inside a spill | 2 (A) | done |
+| WP-08 | B: evals that can fail (narrowed): a 20-edit session and a feature-loss task | 2 (B) | done |
+| WP-02 | C: does `check --fix` beat a one-line prefix hint? (cheap) | 2 (C) | done |
+| WP-03 + WP-09 | D: the change report (merged): `check --against`, the short form after each edit, a Markdown receipt | 2 (D) | done |
+| WP-17 | E: the fuzzer | 2 (E) | done |
+| Gate | After B and C: Max reviews their verdicts (below) | 2 | waiting on Max |
 | WP-05 | `explain` and `trace` | after the gate | planned |
 | WP-04 | Expectations the workbook carries | after the gate | planned |
 | WP-06 | `what-if`: folded into `set --dry-run --show`, later | later | folded |
@@ -34,6 +34,49 @@ Wave 2 is revised (2026-11-18, from the review of sheets in
 
 **Order of wave 2:** A and E first, in parallel. Then B and C. D builds
 meanwhile. The gate comes after B and C.
+
+**Wave 2 landed (2026-11-20).** A, B, C, D and E are done, on `main`.
+
+**The verdicts at the gate**, as their results files state them:
+
+- **B** ([wave2-claims.md](../evals/results/wave2-claims.md)): "**Verdict:**
+  fail. sheets' defect rate is 5/201 (2.5%); the best Python arm is
+  `skill-lo` at 7/201 (3.5%), and half of that is 1.74%, so the first
+  condition fails. The second holds: sheets cost $1.27 against
+  `skill-lo`'s $1.85 (0.69 times; the bar is 1.3)." Measured on sheets
+  after piece A, without D's change report.
+- **C** ([wave2-check.md](../evals/results/wave2-check.md)): "**Verdict:**
+  check passes Max's rule. Under stored values, python+check beat
+  python-hint 75 to 15 (60 tasks only it passed, none only the hint
+  passed; one-sided exact McNemar p ≈ 9 × 10⁻¹⁹). Under the
+  SpreadsheetBench grading it was not worse, and in fact better: 78 to 70
+  (11 against 3, p = 0.029)."
+
+**Follow-ups for the next wave** (filed as issues in the portal repo,
+labelled `repo:sheets`):
+
+- **B again, with D's per-edit report** in the sheets arm.
+- **The fuzzer's known bugs.** Its last long run (seed 2721491, 20
+  minutes, [internal/fuzz/README.md](../internal/fuzz/README.md)) made
+  874 findings in 55,712 edits, **156.9 per 10,000, 0 new**, all from
+  bugs `internal/fuzz/known.txt` names. Its 23 bug lines name 14 bugs,
+  each a fix to make: `escape`, `sort-editors`, `map-order`,
+  `script-legacy-dynamic`, `table-header-control`, `spill-overwrites`,
+  `insert-turns-dynamic`, `table-header-renamed`, `replace-loses-kind`,
+  `full-keeps-array-metadata`, `intersection-kept`, `stream-note-prefix`,
+  `sheet-copy-note` and `spill-into-merge`.
+- **`check --against`, report-regress f3.1 to f3.5:** the cases where
+  pairing two versions by their contents alone guesses wrong (rows
+  typed over, cleared or removed at a table's end). Next step: when
+  sheets made the edits, use the session's recorded ops instead of
+  inferring them.
+- **C's silent-defect counts** are upper bounds until `evals/run.py`'s
+  rule reads "haven't opened the file in Excel" followed by "haven't
+  been calculated" (or "unchecked") as no doubt (wave2-check.md, Silent
+  defects).
+- **The git diff driver** is built (`sheets diff` as git's diff driver,
+  change-receipt); what is left of History in Horizon 2 is receipts on
+  pull requests and `check` as a CI step.
 
 **Parked (Max, 2026-11-03):** whatever needs Excel installed. That's
 WP-07b, and Max opening the Excel check pack.

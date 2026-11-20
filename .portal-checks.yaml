@@ -7,8 +7,11 @@
 # (each needs data or tools outside the repo, set by env var, and skips without it):
 # TestEngineCorpus (SHEETS_CALC_CORPUS, Excel's results over ~/sheets-evals), the check corpus
 # (SHEETS_CHECK_CORPUS, LibreOffice), the probe (SHEETS_PROBE_FILE), STREAM_ROUNDS' longer
-# random comparison, and scripts/excel-check.sh (a manual look in real Excel).
-# No per-area check: the whole plain suite runs in ~10 s, so narrowing paths buys nothing.
+# random comparison, the fuzzer's long mode (SHEETS_FUZZ=long, a timed run over fresh pools),
+# scripts/fuzz-mutants.sh (the fuzzer against wave 1's bugs put back), and
+# scripts/excel-check.sh (a manual look in real Excel).
+# No per-area check: the whole plain suite runs in ~72 s with the fuzzer (MacBook M4, 2026-11-20;
+# the fuzzer's package alone ~71 s), so narrowing paths buys little.
 checks:
   fast:   # go vet, go test ./... (go's test cache on)
     run: scripts/check.sh fast
