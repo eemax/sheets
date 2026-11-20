@@ -1,8 +1,13 @@
 # sheets
 
-A command-line tool for spreadsheets, built for AI agents. It reads Excel
-files without flooding an agent's context window, writes data with
-sensible types, and applies an opinionated house style in one command.
+A command-line tool for spreadsheets, built for AI agents. Its core is
+changing a workbook people already use, the way Excel would, and then
+saying what the change did and what it cannot vouch for. Python can write
+the file; `sheets check` is the on-ramp that computes, fixes and checks it.
+
+It also reads Excel files without flooding an agent's context window and
+writes data with sensible types. Further down, the house style: an
+opinionated look applied in one command.
 
 ```
 $ sheets info q3.xlsx

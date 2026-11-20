@@ -2,21 +2,28 @@
 
 ## Where sheets stands
 
+The core is changing a workbook people already use, the way Excel would,
+and saying what the change did and what it cannot vouch for.
+
 On a single, short task, an agent with plain Python (openpyxl, pandas) does
 about as well as one with sheets, and a little more cheaply: on our own 18
-tasks it passed 54 of 54. Even on SpreadsheetBench, where sheets led 81 to 71,
-most of the gap came from file-format knowledge (openpyxl leaving off the
-`_xlfn.` prefix), which one line in a skill could teach.
-
-So sheets does not win by helping an agent finish more tasks. That gap
-closes as models and skills improve. It wins with what an agent cannot
-rebuild inside one session:
+tasks it passed 54 of 54. On SpreadsheetBench sheets led 81 to 71, but most
+of the gap was file-format knowledge (openpyxl leaving off the `_xlfn.`
+prefix), which one line in a skill could teach. So sheets does not win by
+finishing more short tasks. It is meant to win where a script cannot follow:
 
 - **A calculation engine.** It gives live values for formulas, without Excel.
 - **Edits that follow Excel's rules.** References, tables, charts, names and
   conditional formats follow every structural edit.
 - **Fidelity.** It keeps what a workbook already holds.
-- **Checks.** It can tell whether the result is right.
+- **Checks.** It says what is right, what is unknown and what is wrong.
+
+Today `sheets check` and `check --fix` exist. They compute and store
+results, add missing prefixes and report what sheets cannot know. The
+engine is being made to say unknown wherever it differs from Excel, and
+formulas keep their kind through every edit. The change report is not
+built yet. Whether the claims hold is not yet measured: wave 2 builds the
+tests that can fail (see How we know it works).
 
 Agents don't write their own compiler or their own git for each task. They
 use tools whose correctness was engineered once. That's what sheets is for
@@ -35,34 +42,40 @@ have none of it outside Excel's window. sheets is that infrastructure:
 | a compiler and runtime | the engine |
 | a linter | `lint` |
 | tests | expectations the workbook carries, checked after every change |
-| version control | `diff` and `undo`; history across sessions |
+| version control | `diff` and `undo`; history across sessions through git (session mode is deferred) |
 | code review | a receipt: what changed, rendered, with the checks that passed |
-| a debugger | `explain`, `trace` and `what-if` |
+| a debugger | the change report now; `what-if` as `set --dry-run --show` later; `explain` later |
 
-## Identity: Excel for agents without Excel
+## Identity: changing the workbook people already use
+
+The core is changing a workbook people already use, the way Excel would,
+and saying what the change did and what it cannot vouch for. It means
+references that follow, features that survive, values that are computed or
+called unknown, and a report a person can read.
 
 sheets is for where no Excel runs: servers, pipelines, background agents,
 CI. When a person has Excel open, the assistants inside Excel own that
 moment. sheets owns the rest: a workbook changed headlessly, by an agent,
 and handed to a person who has to trust it.
 
-## Position: Python writes, sheets proves
+## Position: living workbooks first, `check` as the on-ramp
 
-Agents will always script, so sheets completes Python rather than competing
-with it.
+Agents will always script, so sheets sits beside Python rather than
+competing with it.
 
 - **Building something new from data:** use whatever is natural, Python
   included.
 - **Reading or changing a workbook someone already uses:** use sheets. It
-  keeps the workbook whole.
-- **Always finish with `sheets check`.** Whatever wrote the file, it computes
-  and stores every result, fixes what Excel would reject, runs the checks,
-  and says what's right, what's unknown and what's wrong.
+  keeps the workbook whole, and reports what the change did.
+- **On-ramp: Python writes, sheets proves.** Whatever wrote the file,
+  `sheets check` computes and stores every result, fixes what Excel would
+  reject, runs the checks, and says what's right, what's unknown and
+  what's wrong. It is how a Python user first meets sheets.
 
-The workbook goes to a person with a **receipt**: what changed (rendered),
-which numbers moved and why, and the checks that passed. People are the
-ones who decide which tools their agents use. A receipt is how they come to
-require sheets.
+The workbook goes to a person with a **change report**: what changed
+(rendered), which numbers moved and why, what was lost, and what sheets
+cannot vouch for. People decide which tools their agents use. A report is
+how they come to require sheets.
 
 ## Principles
 
@@ -110,33 +123,41 @@ drive the roadmap more than any benchmark does.
 
 | Measure | What it shows |
 |---|---|
-| Silent-defect rate: the agent reports success, but the file is wrong | Trust: the number that matters |
-| Python plus `sheets check` against Python alone | Whether sheets improves the workflows agents already use |
+| B: silent-defect rate and cost against the best Python arm, on a 20-edit session and a feature-loss task | Whether sheets is the better way to change a living workbook |
+| C: `check --fix` against a one-line prefix hint, on a paired test | Whether `check` is worth pitching |
+| Fuzzer findings per 10,000 edits | Trust: no file corrupted |
 | Integrity after 20 edits in a row on a real workbook | Living workbooks |
-| The reference workflows, run end to end | Real use |
 | Pass rate on SpreadsheetBench and our tasks | No regressions |
 
-**Kill criterion for the position.** If `sheets check` does not clearly cut
-Python's silent defects, "Python writes, sheets proves" is the wrong wedge.
-sheets then focuses on editing living workbooks.
+**Kill criterion for the position.** Two numbered tests, each reported whatever its result:
+
+1. **B's test.** sheets has at most half the best Python arm's defect rate,
+   at no more than 1.3 times its cost. If not, the claim that sheets is the
+   better way to change a workbook is not shown.
+2. **C's test.** `check --fix` beats a one-line prefix hint on a paired
+   test, or `check` stays a convenience and stops being the pitch.
 
 ## Horizons
 
 - **Horizon 1, weeks:**
-  - `sheets check` with receipts and expectations;
-  - values that changed where no edit reached;
-  - `explain`, `trace` and `what-if`;
-  - the Excel check;
-  - evals for the measures above.
+  - the trust of the engine and the kinds of formulas (wave 2, piece A);
+  - the fuzzer: random workbooks, random edits, fixed invariants;
+  - the change report: `check --against`, the short form after each edit,
+    a Markdown receipt;
+  - evals that can fail: B's and C's tests;
+  - the Excel check.
 - **Horizon 2, months:**
-  - a session mode that keeps a workbook in memory;
-  - a Python client on top of it, once Horizon 1 shows the position holds;
-  - templates;
-  - history, and change review: an agent proposes, a person sees it
+  - session mode is deferred, with no measured need;
+  - the Python client is a thin wrapper over the CLI;
+  - history goes through git: `sheets diff` as a diff driver, receipts on
+    pull requests, `check` as a CI step;
+  - `what-if` as `set --dry-run --show`, and `explain`;
+  - templates, and change review: an agent proposes, a person sees it
     rendered and accepts.
 - **Later:**
-  - the engine in WebAssembly, for a browser that computes;
-  - an MCP mode for chat clients without a shell;
+  - an MCP mode of four tools: look, change, check, render;
   - perhaps other spreadsheet backends behind the same engine.
+
+WebAssembly is cut.
 
 The detailed plan, as work packages, is in [roadmap.md](roadmap.md).
