@@ -399,17 +399,22 @@ func TestAgainstCausesCarriedRow(t *testing.T) {
 	}
 }
 
-// A row removed and an input changed in the same column: the MAX that rose,
-// and the totals, moved for the input (f5.3); the cell that read the row
-// removed moved for the removal.
+// A row removed and an input changed in the same column: the MAX that rose
+// moved for the input (the row held less than it was, f5.3); the totals moved
+// for both, the row removed first, whichever way they moved (the row took 5
+// off a total that rose with the input, f0.1 of the last audit); the cell that
+// read the row removed moved for the removal.
 func TestAgainstCausesRemovedRise(t *testing.T) {
 	dir, before := causesFixture(t)
 	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"rows", "delete", "Data!2"}, []string{"set", "Data!B3", "77"})
 	r, _ := against(t, after, before)
 	m := causes(r)
-	for _, c := range []string{"Summary!B6", "Data!B6", "Data!D6", "Summary!B2", "Summary!B3", "Summary!B4", "Summary!B5"} {
-		if m[c] != "input Data!B3" {
-			t.Errorf("%s: cause %q, want input Data!B3", c, m[c])
+	if m["Summary!B6"] != "input Data!B3" {
+		t.Errorf("Summary!B6 (MAX): cause %q, want input Data!B3", m["Summary!B6"])
+	}
+	for _, c := range []string{"Data!B6", "Data!D6", "Summary!B2", "Summary!B3", "Summary!B4", "Summary!B5"} {
+		if want := "rows removed: Data!2 in " + before + ", input Data!B3"; m[c] != want {
+			t.Errorf("%s: cause %q, want %q", c, m[c], want)
 		}
 	}
 	if !strings.HasPrefix(m["Summary!B7"], "rows removed: Data!2") {

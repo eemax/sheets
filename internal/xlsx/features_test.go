@@ -425,3 +425,28 @@ func TestFeaturesWithin(t *testing.T) {
 		t.Errorf("no bound: %d features, %v", len(all), err)
 	}
 }
+
+// A cell cleared that was the last of its row and column is a source beyond
+// the cells the sheet uses now, and what reads it is reached (a total over a
+// range it is in); a whole row given as a source is still cut to what the sheet
+// uses (f0.2 of the last audit, check --against).
+func TestAgainstRegressSpreadBeyondUsed(t *testing.T) {
+	s := grid.NewSheet("S")
+	s.Set(1, 1, grid.Cell{Kind: grid.Number, Num: 1})
+	s.Set(2, 1, grid.Cell{Kind: grid.Number, Num: 2})
+	s.Set(1, 3, grid.Cell{Formula: `SUM(A1:A6)`})
+	tr := NewTracer(&grid.Workbook{Sheets: []*grid.Sheet{s}})
+	cell := Source{Sheet: "S", Range: grid.Range{R1: 5, C1: 1, R2: 5, C2: 1}}
+	for name, got := range map[string]map[At]int{"Spread": tr.Spread([]Source{cell}), "SpreadUnless": tr.SpreadUnless([]Source{cell}, nil)} {
+		if _, ok := got[At{"S", 1, 3}]; !ok {
+			t.Errorf("%s from a cell beyond the used range: %v", name, got)
+		}
+	}
+	if got := tr.SpreadAll([]Source{cell}, 2); len(got[At{"S", 1, 3}].Sources) != 1 {
+		t.Errorf("SpreadAll from a cell beyond the used range: %v", got)
+	}
+	row := Source{Sheet: "S", Range: grid.Range{R1: 5, C1: 1, R2: 5, C2: grid.MaxCols}, Readers: true}
+	if got := tr.Spread([]Source{row}); len(got) != 0 {
+		t.Errorf("a whole row beyond the used range: %v", got)
+	}
+}

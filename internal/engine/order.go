@@ -173,19 +173,43 @@ func OrderReads(text string, name func(sheet, n string) (RefArg, bool)) ([]Order
 				return
 			case fn == "SUMIF" || fn == "AVERAGEIF" || fn == "SUMIFS" || fn == "AVERAGEIFS" || fn == "MAXIFS" ||
 				fn == "MINIFS" || fn == "COUNTIFS" || fn == "SUMPRODUCT":
-				groups++
-				for i, a := range n.args {
-					paired := true
+				paired := func(i int) bool {
 					switch fn {
 					case "SUMIF", "AVERAGEIF":
-						paired = i != 1
+						return i != 1
 					case "COUNTIFS":
-						paired = i%2 == 0
+						return i%2 == 0
 					case "SUMIFS", "AVERAGEIFS", "MAXIFS", "MINIFS":
-						paired = i == 0 || i%2 == 1
+						return i == 0 || i%2 == 1
 					}
-					if paired {
-						arg(a, true, groups)
+					return true
+				}
+				// The ranges it pairs cell by cell are a set together only when
+				// each of them is a reference, or references combined cell by cell:
+				// an array constant or a call among them (SUMPRODUCT(B2:B6,{1;2;3}),
+				// weights by position; ROW(B2:B6)) pairs the others' cells with
+				// what does not move with them, so they are read by position.
+				whole := true
+				for i, a := range n.args {
+					if !paired(i) {
+						continue
+					}
+					if _, isRef := refArg(a); isRef || a.kind == nName {
+						continue
+					}
+					if ranged := false; elementwise(a, &ranged) && ranged {
+						continue
+					}
+					whole = false
+				}
+				g := 0
+				if whole {
+					groups++
+					g = groups
+				}
+				for i, a := range n.args {
+					if whole && paired(i) {
+						arg(a, true, g)
 					} else {
 						arg(a, false, 0)
 					}
@@ -217,6 +241,47 @@ func OuterNamed(text string, name func(sheet, n string) (RefArg, bool)) (Call, b
 	}
 	c := Call{Func: strings.ToUpper(bareName(n.str))}
 	for _, a := range n.args {
+		r, ok := refArg(a)
+		if !ok && a.kind == nName && name != nil {
+			r, ok = name(a.sheet, a.str)
+		}
+		if !ok {
+			return Call{}, false
+		}
+		c.Refs = append(c.Refs, r)
+	}
+	return c, len(c.Refs) > 0
+}
+
+// PairedSumNamed gives the call a formula is, alone, when it is a SUMIF, a
+// SUMIFS or a SUMPRODUCT: with the ranges it adds up cell by cell as its
+// references (a SUMIF's range and sum range, a SUMIFS's sum range and criteria
+// ranges, each of a SUMPRODUCT's arrays; what a criterion is given, whatever
+// it is, is not among them). ok is false when it is no such call alone, or a
+// range of it is no reference or a name that is none (name as OuterNamed's).
+// What such a call adds up for a row that holds nothing in the ranges is
+// nothing: an empty cell is 0 in a sum, and a product with it.
+func PairedSumNamed(text string, name func(sheet, n string) (RefArg, bool)) (Call, bool) {
+	n, err := Parse(text)
+	if err != nil || n.kind != nCall {
+		return Call{}, false
+	}
+	c := Call{Func: strings.ToUpper(bareName(n.str))}
+	var ranged func(i int) bool
+	switch c.Func {
+	case "SUMIF":
+		ranged = func(i int) bool { return i != 1 }
+	case "SUMIFS":
+		ranged = func(i int) bool { return i == 0 || i%2 == 1 }
+	case "SUMPRODUCT":
+		ranged = func(int) bool { return true }
+	default:
+		return Call{}, false
+	}
+	for i, a := range n.args {
+		if !ranged(i) {
+			continue
+		}
 		r, ok := refArg(a)
 		if !ok && a.kind == nName && name != nil {
 			r, ok = name(a.sheet, a.str)

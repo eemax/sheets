@@ -195,6 +195,19 @@ func (t *Tracer) Outer(sheet string, row, col int) (engine.Call, bool) {
 	return engine.OuterNamed(f.calc, func(on, n string) (engine.RefArg, bool) { return t.nameRef(f.sheet, on, n) })
 }
 
+// PairedSum gives the call a formula cell is, alone, when it is a SUMIF, a
+// SUMIFS or a SUMPRODUCT, with the ranges it adds up cell by cell resolved as
+// Outer resolves what it is given (engine.PairedSumNamed): false for any other
+// cell.
+func (t *Tracer) PairedSum(sheet string, row, col int) (engine.Call, bool) {
+	id, ok := t.at[keyOf(sheet, row, col)]
+	if !ok {
+		return engine.Call{}, false
+	}
+	f := t.fs[id]
+	return engine.PairedSumNamed(f.calc, func(on, n string) (engine.RefArg, bool) { return t.nameRef(f.sheet, on, n) })
+}
+
 // Anchor gives the cell of the array formula whose result a cell holds
 // (not the formula's own cell).
 func (t *Tracer) Anchor(sheet string, row, col int) (At, bool) {
@@ -298,9 +311,7 @@ func (t *Tracer) SpreadUnless(sources []Source, blocked func(At) bool) map[At]in
 	for i, s := range sources {
 		rg := s.Range
 		if u, ok := t.used[strings.ToLower(s.Sheet)]; ok && !u.Empty() {
-			// Whole rows or columns: the cells the sheet uses, which is
-			// what a formula reading them can find changed.
-			rg = rg.Intersect(grid.Range{R1: 1, C1: 1, R2: u.R2, C2: u.C2})
+			rg = clipUsed(rg, u)
 		}
 		cols := t.columnsOf(s.Sheet, rg.C1, rg.C2)
 		if !rg.Empty() && rg.Rows()*len(cols) > wideSource {
@@ -417,7 +428,7 @@ func (t *Tracer) SpreadUnless(sources []Source, blocked func(At) bool) map[At]in
 			s := sources[it.src]
 			rg := s.Range
 			if u, ok := t.used[strings.ToLower(s.Sheet)]; ok {
-				rg = rg.Intersect(grid.Range{R1: 1, C1: 1, R2: u.R2, C2: u.C2})
+				rg = clipUsed(rg, u)
 			}
 			for id, f := range t.fs {
 				k := keyOf(f.sheet, f.row, f.col)
@@ -462,6 +473,17 @@ const wideSource = 1 << 20
 // wholeRow is how many columns a source may span for Spread to look at each
 // of them: past it, only the columns that can make a difference (columnsOf).
 const wholeRow = 64
+
+// clipUsed cuts a source that is whole rows or columns to the cells the sheet
+// uses, which is what a formula reading them can find changed. A source that is
+// cells is kept, though beyond what the sheet uses now: a cell cleared, the
+// last of its row and column, is read by the formulas whose ranges reach it.
+func clipUsed(rg, used grid.Range) grid.Range {
+	if rg.R2 < grid.MaxRows && rg.C2 < grid.MaxCols {
+		return rg
+	}
+	return rg.Intersect(grid.Range{R1: 1, C1: 1, R2: used.R2, C2: used.C2})
+}
 
 // columnsOf gives the columns c1..c2 of a source's rows that Spread looks
 // at. A source spanning few columns gives them all. One spanning many (rows
@@ -653,7 +675,7 @@ func (t *Tracer) SpreadAllUnless(sources []Source, limit int, blocked func(At) b
 	for i, s := range sources {
 		rg := s.Range
 		if u, ok := t.used[strings.ToLower(s.Sheet)]; ok && !u.Empty() {
-			rg = rg.Intersect(grid.Range{R1: 1, C1: 1, R2: u.R2, C2: u.C2})
+			rg = clipUsed(rg, u)
 		}
 		queue = queue[:0]
 		cols := t.columnsOf(s.Sheet, rg.C1, rg.C2)
