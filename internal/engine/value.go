@@ -130,7 +130,9 @@ func toNumber(v Value) (float64, *Value) {
 // textNumber reads text as Excel does in arithmetic: numbers with thousands
 // separators, a currency sign, a percent sign, scientific notation, dates and
 // times in the forms Excel understands in an English locale.
-func textNumber(s string) (float64, bool) {
+func textNumber(s string) (float64, bool) { return textNumberOf(s, true) }
+
+func textNumberOf(s string, count bool) (float64, bool) {
 	t := strings.TrimSpace(s)
 	if t == "" {
 		return 0, false
@@ -168,7 +170,10 @@ func textNumber(s string) (float64, bool) {
 	if sign != "" || neg || pct {
 		return 0, false
 	}
-	if n, ok := parseDateTime(s); ok {
+	if n, ok := parseDateTimeOf(strings.TrimSpace(s)); ok {
+		if count && !isTime(strings.TrimSpace(s)) {
+			epochUses.Add(1) // a date: a serial of the 1900 system
+		}
 		return n, true
 	}
 	return 0, false
@@ -415,15 +420,20 @@ func roundSig(x float64, n int) float64 {
 // marks (1,200 is 1200 in English, 1.2 in German; 1.5 is no number in
 // German), currency signs, and dates written with slashes, dots or month
 // names. The engine does not guess at those.
-func readNumber(s string) (n float64, ok, dependent bool) {
+func readNumber(s string) (n float64, ok, dependent bool) { return readNumberOf(s, true) }
+
+// readNumberOf is readNumber; count tells whether a date read counts as a
+// use of the 1900 system (see epochUses): not for a caller that takes it
+// so.
+func readNumberOf(s string, count bool) (n float64, ok, dependent bool) {
 	t := strings.TrimSpace(s)
 	if t == "" {
 		return 0, false, false
 	}
-	if n, ok := universalNumber(t); ok {
+	if n, ok := universalNumberOf(t, count); ok {
 		return n, true, false
 	}
-	if _, ok := textNumber(t); ok {
+	if _, ok := textNumberOf(t, false); ok {
 		return 0, false, true
 	}
 	if otherLanguageNumber(t) || dayFirstDate(t) {
@@ -433,7 +443,9 @@ func readNumber(s string) (n float64, ok, dependent bool) {
 }
 
 // universalNumber reads text every Excel language reads alike.
-func universalNumber(t string) (float64, bool) {
+func universalNumber(t string) (float64, bool) { return universalNumberOf(t, true) }
+
+func universalNumberOf(t string, count bool) (float64, bool) {
 	body := strings.TrimSpace(strings.TrimSuffix(t, "%"))
 	pct := body != t
 	neg := false
@@ -462,7 +474,10 @@ func universalNumber(t string) (float64, bool) {
 	}
 	// ISO dates, times, and the two together.
 	if isISODate(t) || isTime(t) || isISODateTime(t) {
-		if n, ok := parseDateTime(t); ok {
+		if n, ok := parseDateTimeOf(t); ok {
+			if count && !isTime(t) {
+				epochUses.Add(1) // a date: a serial of the 1900 system
+			}
 			return n, true
 		}
 	}

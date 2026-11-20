@@ -21,6 +21,9 @@ import (
 // SHEETS_CALC_CORPUS names a folder of Excel-saved workbooks;
 // SHEETS_CALC_CORPUS_SHOW sets the examples listed per function, and
 // SHEETS_CALC_CORPUS_FN lists only formulas calling that function.
+// SHEETS_CALC_CORPUS_CELLS names a file to write every formula's outcome
+// to, one line each (file, cell, outcome, the engine's value, Excel's), to
+// compare two runs cell by cell.
 func TestEngineCorpus(t *testing.T) {
 	dir := os.Getenv("SHEETS_CALC_CORPUS")
 	if dir == "" {
@@ -41,6 +44,10 @@ func TestEngineCorpus(t *testing.T) {
 	differBy := map[string][]string{}
 	unsupBy := map[string]int{}
 	unsup := 0
+	var cells []string
+	outcome := func(p, sheet string, r, col int, what string, got, want grid.Cell) {
+		cells = append(cells, fmt.Sprintf("%s\t%s!%s\t%s\t%s\t%s", filepath.Base(p), sheet, grid.CellName(r, col), what, show1(got), show1(want)))
+	}
 	for _, p := range files {
 		data, err := os.ReadFile(p)
 		if err != nil {
@@ -92,21 +99,25 @@ func TestEngineCorpus(t *testing.T) {
 				if v.Kind == engine.Error && v.Str == engine.ErrUnsupported {
 					unsup++
 					unsupBy[reasonKind(v.Why())]++
+					outcome(p, s.Name, r, col, "unknown: "+v.Why(), grid.Cell{}, want)
 					return
 				}
 				got := calcToCell(v)
 				if agreesCell(got, want) {
 					agree++
+					outcome(p, s.Name, r, col, "agrees", got, want)
 					return
 				}
 				if got.Kind == grid.Text && want.Kind == grid.Text && strings.TrimSpace(got.Text) == strings.TrimSpace(want.Text) {
 					space++
+					outcome(p, s.Name, r, col, "spaces", got, want)
 					if os.Getenv("SHEETS_CALC_CORPUS_SPACES") != "" && space <= 12 {
 						t.Logf("spaces: %s %s!%s =%s: got %q, Excel %q", filepath.Base(p), s.Name, grid.CellName(r, col), cell.Formula, got.Text, want.Text)
 					}
 					return
 				}
 				differ++
+				outcome(p, s.Name, r, col, "differs", got, want)
 				if len(fnsIn) == 0 {
 					fnsIn = []string{"(no function)"}
 				}
@@ -115,6 +126,11 @@ func TestEngineCorpus(t *testing.T) {
 					differBy[fn] = append(differBy[fn], ex)
 				}
 			})
+		}
+	}
+	if out := os.Getenv("SHEETS_CALC_CORPUS_CELLS"); out != "" {
+		if err := os.WriteFile(out, []byte(strings.Join(cells, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
 		}
 	}
 	total := agree + differ + space + unsup

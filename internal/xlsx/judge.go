@@ -1,6 +1,7 @@
 package xlsx
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -38,6 +39,9 @@ type judge struct {
 	stored   func(f *formulaAt) (grid.Cell, bool)
 	deadline time.Time
 	at       map[cellKey]*formulaAt
+	// oneCell tells whether a cell anchors a legacy array formula in one
+	// cell (see oneCellNote); nil where none is told.
+	oneCell func(sheet string, row, col int) bool
 
 	evals map[*formulaAt]*judged
 	state []int8   // per node: 0 not seen, 1 holds, 2 does not, 3 working
@@ -94,6 +98,11 @@ func (j *judge) result(f *formulaAt) *judged {
 		r = judgedOf(j.eng.Compute(f.sheet, f.row, f.col))
 		if j.eng.Date1904 && r.err == nil && engine.EpochUses() != before {
 			r = &judged{note: date1904Note, err: errUnsupported}
+		}
+		if r.err == nil && j.oneCell != nil && j.oneCell(f.sheet, f.row, f.col) {
+			if a, done := j.eng.ArrayOf(f.sheet, f.row, f.col); done && a.Rows*a.Cols > 1 {
+				r = &judged{note: oneCellNote(a), err: errUnsupported}
+			}
 		}
 		if r.err == nil && r.v.Kind == grid.Error && r.v.Text == "#NAME?" {
 			// Say which name Excel does not know.
@@ -264,6 +273,16 @@ func show(c grid.Cell) string {
 	return "nothing"
 }
 
-// date1904Note says why a result that turns serials into dates has no
-// value in a workbook of the 1904 date system.
-const date1904Note = "it works with dates, and this workbook counts dates in the 1904 system, which the sheets calculator does not"
+// oneCellNote says why an array formula in one cell whose result is
+// larger has no value: entered with Ctrl+Shift+Enter, Excel shows the
+// result's first value; a dynamic array there shows #SPILL! (or spills),
+// and the mark that says a formula is one, tools such as openpyxl drop.
+func oneCellNote(a *engine.Arr) string {
+	return fmt.Sprintf("it is an array formula in one cell whose result is %d×%d: Excel shows its first value if it was entered with Ctrl+Shift+Enter, "+
+		"but spills it (or shows #SPILL!) if it is a dynamic array whose mark was dropped, as openpyxl does; the file cannot tell which", a.Rows, a.Cols)
+}
+
+// date1904Note says why a result that reads a date written as text as a
+// number (arithmetic on one, VALUE) has no value in a workbook of the 1904
+// date system: the calculator reads it as a serial of the 1900 system.
+const date1904Note = "it reads a date written as text as a number, and this workbook counts dates in the 1904 system, which the sheets calculator does not do for text"
