@@ -648,8 +648,9 @@ func (g *gen) sortable(s *grid.Sheet) []string {
 }
 
 // sortOK is the model of what sheets refuses to sort (xlsx/sort.go): a
-// range with fewer than two rows; one that takes in a dynamic array, its
-// results, or part of a legacy array over several cells; one that takes in
+// range with fewer than two rows; one that takes in a dynamic array over
+// several cells, or its results (one in a single cell sorts with its row,
+// as in Excel), or part of a legacy array over several cells; one that takes in
 // part of an Excel table (it must be the table's data rows, and its
 // columns); and one holding a formula that reads another sheet, a range, a
 // name, another row, or a column outside the range. (Sheets does some of
@@ -660,7 +661,7 @@ func sortOK(wb *grid.Workbook, s *grid.Sheet, rg grid.Range) bool {
 		return false
 	}
 	for _, a := range s.Spills {
-		if !a.Intersect(rg).Empty() {
+		if a.Rows()*a.Cols() > 1 && !a.Intersect(rg).Empty() {
 			return false
 		}
 	}

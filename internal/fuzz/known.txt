@@ -4,25 +4,6 @@
 #   SHEETS_FUZZ_REPRO=<seed> go test ./internal/fuzz -run 'TestFuzz$' -v
 # A fix removes its lines (the run lists those it no longer makes).
 
-# WP-18: moving or copying a plain formula that reads a range where one
-# value goes (='Data'!C2:C3*10, kept plain: Excel shows it with @), or the
-# cells it reads, stores it as a dynamic array that spills. By move and
-# copy, and by do and script batches that move or copy.
-copy kinds 100028
-copy kinds 100162
-copy kinds 100163
-copy kinds 100164
-copy kinds 100245
-do kinds 100021
-move kinds 100071
-move kinds 100114
-move kinds 100130
-move kinds 100157
-move kinds 100178
-move kinds 100217
-move kinds 100255
-move kinds 100297
-
 # New: sheets saves a different workbook from one run to the next when a
 # paste lands on dynamic arrays (copy over the arrays of a sheet): values it
 # pasted are missing at random (Q 2026!H7: "Pear" or nothing), by either

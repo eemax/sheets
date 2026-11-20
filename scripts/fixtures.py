@@ -389,6 +389,54 @@ for r in range(1, 4):
     ws.cell(r, 4).value = ArrayFormula(f"D{r}", f"=SUM(B{r}:B{r}*2)")
 wb.save(f"{out}/arrays_rows.xlsx")
 
+# kinds_xlsxwriter.xlsx: a formula of each kind, for move, copy and sort (as
+# the wave-1 audit's k1.xlsx): plain ones, one reading a range where one
+# value goes (F1, implicit intersection), legacy arrays in one cell (C) and
+# over two (H1:H2), dynamic arrays in one cell (D, as Excel 365 stores SUM
+# over an array) and over two (G1:G2).
+xw = xlsxwriter.Workbook(f"{out}/kinds_xlsxwriter.xlsx")
+s = xw.add_worksheet("S")
+for i, (a, b) in enumerate([(3, 1), (1, 2), (2, 3), (5, 4), (4, 5), (6, 6)]):
+    r = i + 1
+    s.write_row(i, 0, [a, b])
+    if r % 2:
+        s.write_array_formula(f"C{r}:C{r}", f"{{=SUM(A{r}:B{r}*2)}}")
+    else:
+        s.write_formula(f"C{r}", f"=A{r}+B{r}")
+    if r % 3 == 0:
+        s.write_dynamic_array_formula(f"D{r}", f"=SUM(A{r}:B{r}*3)")
+    else:
+        s.write_formula(f"D{r}", f"=A{r}*B{r}")
+s.write_formula("F1", "=B1:B2*100")
+s.write_dynamic_array_formula("G1:G2", "=SEQUENCE(2)")
+s.write_array_formula("H1:H2", "{=A1:A2*10}")
+xw.close()
+
+# kinds_pending.xlsx: dynamic functions as XlsxWriter's write_formula stores
+# them, cm="1" with the range of their own cell and no result yet (Excel
+# spills =SEQUENCE(3) in D1 over D1:D3 when it opens the file).
+xw = xlsxwriter.Workbook(f"{out}/kinds_pending.xlsx")
+s = xw.add_worksheet("S")
+for i, (a, b) in enumerate([(3, 1), (1, 2), (2, 3), (5, 4), (4, 5), (6, 6)]):
+    s.write_row(i, 0, [a, b])
+s.write_formula("D1", "=SEQUENCE(3)")
+xw.close()
+
+# kinds_unknown.xlsx: the same with dynamic functions sheets cannot compute
+# (MAP over a LAMBDA), so how far they spill is unknown. S has one in D1
+# (Excel spills it over D1:D3) with text in D4; U has one in each of D1:D6.
+xw = xlsxwriter.Workbook(f"{out}/kinds_unknown.xlsx")
+s = xw.add_worksheet("S")
+u = xw.add_worksheet("U")
+for i, (a, b) in enumerate([(9, 1), (5, 2), (4, 3), (1, 4), (3, 5), (2, 6)]):
+    s.write_row(i, 0, [a, b])
+    u.write_row(i, 0, [a, b])
+s.write_formula("D1", "=_xlfn.MAP(B1:B3,_xlfn.LAMBDA(_xlpm.x,_xlpm.x*2))")
+s.write("D4", "x")
+for r in range(1, 7):
+    u.write_formula(f"D{r}", f"=_xlfn.MAP(B{r},_xlfn.LAMBDA(_xlpm.x,_xlpm.x*2))")
+xw.close()
+
 # unlike_excel.xlsx: one formula of each class WP-01 found computed unlike
 # Excel (sheet Cases, A1:D12: the class, the formula, what Excel shows, and
 # a formula reading it), over sheet Data.

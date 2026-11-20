@@ -96,8 +96,10 @@ sequences 100000, 100001, …).
   range takes in a dynamic array or a legacy array, a formula in it reads
   another sheet by its row), so the sort class was barely judged: 40 reached
   the invariants. Now 85 in 100 are picked from what a model of sheets'
-  refusals (`sortOK` in `edits.go`) passes: the data rows of an Excel table
-  (by its name, with its column names, or as a range), or the rows under the
+  refusals (`sortOK` in `edits.go`; since WP-18 it lets through a dynamic
+  array in one cell, which sorts with its row as in Excel) passes: the data
+  rows of an Excel table (by its name, with its column names, or as a
+  range), or the rows under the
   header of the block at the sheet's top left, over some of its leftmost
   columns, by a column with no formula first. The other 15 in 100 are random,
   as before, so the refusals are still exercised. 320 of 320 sorts the model
@@ -434,6 +436,8 @@ Findings on the code this was built on (99ba275), 34 in all:
   batches that move or copy. Moving the cells such a formula reads is now a
   third of the sources of copy and move, so a bug there (the one fixed in
   65873b1, put back, is caught) shows in the first minutes of a run.
+  Fixed since (WP-18, kinds-spills): a moved or copied formula keeps its
+  kind, and known.txt no longer lists them.
 - **3 × new, `copy repeat`:** a paste over dynamic arrays gives a different
   workbook from one run to the next. The shrunk `copy repeat 100139` sets
   a dynamic array in `Q 2026!H6:H8` (`UPPER(A2:A4)`), then copies

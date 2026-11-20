@@ -231,6 +231,11 @@ func TestSortOK(t *testing.T) {
 	s.Spills = []grid.Range{rg("F3:F4")}
 	check("a spill", s, "A2:F8", false)
 	check("... beside it", s, "A2:C8", true)
+	s.Spills = []grid.Range{rg("F3")}
+	s.Set(3, 6, grid.Cell{Kind: grid.Number, Num: 1, Formula: `IF(N("d")=0,B3*2)`})
+	check("a dynamic array in one cell", s, "A2:F8", true)
+	s.Spills = []grid.Range{rg("F3:F4")}
+	s.Set(3, 6, grid.Cell{})
 	s.Arrays = []grid.Range{rg("E2:E3"), rg("G4")}
 	check("a legacy array over several cells", s, "A2:E8", false)
 	check("a legacy array over one", s, "A2:C8", true)
