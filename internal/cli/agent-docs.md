@@ -458,9 +458,14 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     one of them moved is the work of the one that moved it, but both are
     among its sources). An input that changed is always named, whatever
     rows were added, removed or moved around it: a structure change that
-    reaches the value comes first, the inputs after it. Rows a sort moved
+    reaches the value comes first, the inputs after it (a row inserted and
+    typed in, and an input in the same column changed:
+    `rows added: Data!4, input Data!B2`), and so do rows removed and rows
+    added that both moved it (`rows removed: Data!3 in a.xlsx, rows added: Data!5`).
+    Rows a sort moved
     are a cause only of what reads them by position (a lookup, `=Data!B2`,
-    a sum of some of them, an array formula over several rows of them): a
+    a sum of some of them, an array formula over several rows of them, a
+    weight beside them that stays: `SUMPRODUCT(B2:B9,{1;2;3;4;5;6;7;8})`): a
     total over all of them (SUM, MAX, COUNT, an
     average, SUMIF or SUMPRODUCT over the same rows, a table's column,
     ranges combined cell by cell inside them: `SUMPRODUCT((A2:A9="East")*B2:B9)`,
@@ -473,9 +478,13 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     formula Excel rewrote for them included, over a range, a table's
     column or a defined name alike: a MAX that rose for a row removed, a
     COUNT that rose, a SUM that fell though they held 0 or less (or by
-    more than they held), or a total that moved for an empty row inserted
-    in its range, did not move for them, and stays `unexplained` unless
-    something else moved it. Nor did a formula that moved with its row, or
+    more than they held), or a total (a SUM, a SUMIF per region) that moved for
+    an empty row inserted in its range, did not move for them, and stays `unexplained` unless
+    something else moved it. That holds when they alone changed what the
+    formula reads: with a changed input reaching it, or lines of the other
+    kind, the net move is no telling of what they did, and they are named
+    when they held something (a row of 7 removed, and an input raised by 45
+    in the same column: the total rose, for both). Nor did a formula that moved with its row, or
     that rows added or removed above it moved, and reads the cells it read
     (`=B2*C2` in a sorted row): a wrong result stored for it stays
     `unexplained`, and so does a total over it. A structure change is a
@@ -483,7 +492,10 @@ cells. Excel 365 comment threads are listed but cannot be changed.
     whose value held (a MAX an input change left as it was, a total an empty
     row inserted did not move) stops the tracing, so a wrong result stored
     for what reads it stays `unexplained`, and what reads that follows it
-    (`which moved with nothing upstream changed`), or holds what it held. A formula changed is listed too, with what
+    (`which moved with nothing upstream changed`), or holds what it held.
+    A total over formulas that rows added moved (a grand total over SUMIFs
+    that read a row inserted and typed in) moved for them through those
+    formulas, whichever way, and names them as those formulas do. A formula changed is listed too, with what
     it computes now. A value that moved because rows added or removed moved
     its formula or what it reads (`=ROW()`, a range older Excel reads one
     cell of) has them as its cause;
@@ -563,7 +575,21 @@ cells. Excel 365 comment threads are listed but cannot be changed.
   removed or added beside it that differs from it in the fewest cells. So is
   the last row of a table deleted and a cell set in its place, where nothing
   moves up: one row removed and the cell typed in (from empty), not every
-  cell of the row changed.
+  cell of the row changed, when what reads the rows shows they were removed
+  (a formula, a defined name, an Excel table or a chart's series reading
+  them as Excel rewrote it for the removal, and none as it was). Otherwise
+  its values are the same as the row's cells cleared and typed over where
+  they are, and that is what is reported, each cell changed, the cleared
+  ones too: the last row edited in place, a CSV file, a sheet nothing reads,
+  openpyxl's `delete_rows` (which rewrites no formula). The last rows of a
+  table with nothing in their place (cleared with `sheets clear`, or
+  deleted) are the other way about: one row removed, unless a formula, a
+  defined name, an Excel table or a chart's series reading them reads them
+  as it did (not rewritten for a removal), when they were cleared where
+  they are: each cell changed, the values cleared named, what reads them
+  moved for them, nothing flagged. Both hold when a column was added or
+  removed too, and when the table was sorted (a single record cleared or
+  deleted, with a cell set in its place or none).
   Formulas Excel rewrites for rows or columns added or removed (a column
   inserted between the columns a formula reads too, or a row inserted on
   the sheet it reads), cells cut and pasted, a sheet renamed, or a sheet

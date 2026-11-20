@@ -63,8 +63,9 @@ stdout '^  Data!2, were 4$'
 stdout ', 0 unexplained,'
 
 # Rows added and removed: totals Excel rewrites to take them in are not
-# changes; what they move is explained by the rows, each by those that can
-# move it that way (a row of 4 removed does not raise a total, or a MAX).
+# changes; what they move is explained by the rows, each by those that moved
+# it (the totals by the row removed and the row added: 28 − 4 + 10; a row of 4
+# removed is no cause of a MAX that rose).
 cp against_before.xlsx rows.xlsx
 exec sheets rows insert rows.xlsx Data!4
 exec sheets set rows.xlsx Data!A4 Extra Data!B4 10 Data!C4 5 Data!D4 '=B4*C4'
@@ -806,12 +807,12 @@ warning  Summary!B7  labelled "North units" but reads Data!B2, the "East" line; 
 -- rows.out --
 rows.xlsx against against_before.xlsx: 0 inputs changed, 0 formulas changed, 7 computed values moved (each with its cause), 0 unexplained, 0 features lost, 0 unknown
 moved, each with its cause:
-  Data!B7     28 → 34      rows added: Data!4
-  Data!D7     630 → 580    rows removed: Data!6 in against_before.xlsx
-  Summary!B2  28 → 34      rows added: Data!4
-  Summary!B3  630 → 580    rows removed: Data!6 in against_before.xlsx
-  Summary!B4  157.5 → 145  rows removed: Data!6 in against_before.xlsx
-  Summary!B5  472.5 → 435  rows removed: Data!6 in against_before.xlsx
+  Data!B7     28 → 34      rows removed: Data!6 in against_before.xlsx, rows added: Data!4
+  Data!D7     630 → 580    rows removed: Data!6 in against_before.xlsx, rows added: Data!4
+  Summary!B2  28 → 34      rows removed: Data!6 in against_before.xlsx, rows added: Data!4
+  Summary!B3  630 → 580    rows removed: Data!6 in against_before.xlsx, rows added: Data!4
+  Summary!B4  157.5 → 145  rows removed: Data!6 in against_before.xlsx, rows added: Data!4
+  Summary!B5  472.5 → 435  rows removed: Data!6 in against_before.xlsx, rows added: Data!4
   Summary!B6  9 → 10       rows added: Data!4
 structure:
   row added: Data!4

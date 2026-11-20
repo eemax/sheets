@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -509,6 +510,133 @@ type report struct {
 	// reads counts the cells read one by one to tell what a total over them
 	// should give (readRange).
 	reads int
+	// notTyped are the sheets (old names, lower-cased) whose last rows are not
+	// taken as removed with cells typed in where they were (typedRemoved);
+	// toldCleared those whose last rows removed alone, or a row removed beside a
+	// sort, are told cleared where they were. Each is set from its own evidence.
+	notTyped, toldCleared map[string]bool
+	// inReach is what the cells changed reach (inputReach); lineTouch the
+	// lines added and removed that formulas read, by where the formula is now
+	// (linesTouching).
+	inReach   map[xlsx.At]xlsx.Reach
+	lineTouch map[xlsx.At][]lineKey
+	// moved are the formulas (as now placed) whose values moved with no cause
+	// of their own; addReach those of them that rows or columns added reach,
+	// by the lines (readsMovedBy).
+	moved    rowsIndex
+	addReach map[addedLines]rowsIndex
+}
+
+// rowsIndex is cells of a workbook by sheet (lower-cased) and column, their
+// rows in order.
+type rowsIndex map[string]map[int][]int
+
+func (x rowsIndex) add(at xlsx.At) {
+	k := strings.ToLower(at.Sheet)
+	if x[k] == nil {
+		x[k] = map[int][]int{}
+	}
+	x[k][at.Col] = append(x[k][at.Col], at.Row)
+}
+
+func (x rowsIndex) sort() {
+	for _, byCol := range x {
+		for _, rows := range byCol {
+			sort.Ints(rows)
+		}
+	}
+}
+
+// within tells whether a cell of the index lies in an area of a sheet, but
+// those skip tells of.
+func (x rowsIndex) within(sheet string, a engine.Area, skip func(row, col int) bool) bool {
+	for col, rows := range x[strings.ToLower(sheet)] {
+		if col < a.C1 || col > a.C2 {
+			continue
+		}
+		for i := sort.SearchInts(rows, a.R1); i < len(rows) && rows[i] <= a.R2; i++ {
+			if !skip(rows[i], col) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// lineKey is a kind of lines changed: the rows (or columns) removed from a
+// sheet (as the old version names it) or added to it (as now).
+type lineKey struct {
+	removed bool
+	sheet   string // lower-cased
+	cols    bool
+}
+
+// inputReach is the cells changed that reach each formula (the first few),
+// through formulas whose values moved.
+func (r *report) inputReach() map[xlsx.At]xlsx.Reach {
+	if r.inReach == nil {
+		r.inReach = map[xlsx.At]xlsx.Reach{}
+		if r.cells > 0 {
+			r.inReach = r.tracerB().SpreadAllUnless(r.sources[:r.cells], causeListed, func(at xlsx.At) bool { return r.heldAt[at] })
+		}
+	}
+	return r.inReach
+}
+
+// linesTouching tells, for each formula of the new version (by where it is),
+// the lines added and removed that it reads directly: the removed ones by the
+// old formula, as the old version had it.
+func (r *report) linesTouching() map[xlsx.At][]lineKey {
+	if r.lineTouch != nil {
+		return r.lineTouch
+	}
+	r.lineTouch = map[xlsx.At][]lineKey{}
+	for _, e := range r.edits {
+		old := e.sheet
+		for was, now := range r.renamed {
+			if sa := r.A.wb.Sheet(was); sa != nil && strings.EqualFold(now, e.sheet) {
+				old = sa.Name
+				break
+			}
+		}
+		for _, cols := range []bool{false, true} {
+			gone, added := e.rowsRemoved, e.rowsAdded
+			if cols {
+				gone, added = e.colsRemoved, e.colsAdded
+			}
+			key := lineKey{true, strings.ToLower(old), cols}
+			for at := range r.tracerA().Touching(old, gone, cols) {
+				if m := r.lines[strings.ToLower(at.Sheet)]; m != nil && m.rowOf(at.Row, at.Col) > 0 && m.col[at.Col] > 0 {
+					here := xlsx.At{Sheet: m.sheet, Row: m.rowOf(at.Row, at.Col), Col: m.col[at.Col]}
+					r.lineTouch[here] = append(r.lineTouch[here], key)
+				}
+			}
+			key = lineKey{false, strings.ToLower(e.sheet), cols}
+			for at := range r.tracerB().Touching(e.sheet, added, cols) {
+				r.lineTouch[at] = append(r.lineTouch[at], key)
+			}
+		}
+	}
+	return r.lineTouch
+}
+
+// alongside tells whether something else than the lines of a kind changed
+// what a value reads: a cell changed that reaches it, or lines of another
+// kind that it reads. The value's net move is then no telling of what these
+// lines did to it.
+func (r *report) alongside(c *candidate, own lineKey) bool {
+	if c.cause != "" || r.out.ValuesOnly {
+		return false
+	}
+	if _, ok := r.inputReach()[c.at]; ok {
+		return true
+	}
+	for _, k := range r.linesTouching()[c.at] {
+		if k != own {
+			return true
+		}
+	}
+	return false
 }
 
 // tracerA follows what the old version's formulas read.
@@ -1487,10 +1615,21 @@ type job struct {
 	cols                                           [][2]int
 	rowsAdded, rowsRemoved, colsAdded, colsRemoved []int
 	// typed are the rows (as numbered now) whose cells were typed in where
-	// a row was removed: no row added, their cells changed from empty.
-	typed  []int
-	moved  []diff.Moved
-	blocks []blockJob
+	// a row was removed: no row added, their cells changed from empty;
+	// typedOld the rows removed (as numbered before) whose places they took.
+	// cleared are the last rows removed with none added or typed in (as
+	// numbered before): taken as removed, though cells cleared where they were
+	// look the same.
+	typed, typedOld, cleared []int
+	// blanked is the row removed that a sort left cleared where it is (see
+	// clearedSorted): the old row, and the new one it was cleared in. It is
+	// outside rows, which the rows moved are told from, and compared with them.
+	// clearedAt are the rows added (as numbered now) that cleared stands for the
+	// place of: a blank row among the rows kept.
+	blanked   []diff.Pair
+	clearedAt []int
+	moved     []diff.Moved
+	blocks    []blockJob
 	// pasted is rows cut and pasted where nothing was (sheets move, Excel's
 	// cut and paste), the rows around them where they were: the run, the
 	// columns it spans (0 for whole rows), and the move as formulas follow
@@ -1574,34 +1713,29 @@ func (r *report) prepare(p diff.SheetPair) *job {
 	}
 	// A row removed and a row added in the same place at the end are the row
 	// removed and cells typed in where it was, when the new row holds none of
-	// what the old one did and the old one held more (a row deleted, then a
-	// cell set in the row now at that index, with nothing to move up into its
-	// place): one row removed and the cells typed in, not every cell of the
-	// row changed.
-	typed := map[int]bool{}
+	// what the old one did and the old one held a cell it does not (a row
+	// deleted, then a cell set in the row now at that index, with nothing to
+	// move up into its place): one row removed and the cells typed in, not every
+	// cell of the row changed. The values alike are the row's cells cleared and
+	// typed over where they are, so the rows stay removed only when what reads
+	// them shows it (typedRemoved; notTyped names the sheets where nothing does):
+	// no count of the cells cleared stands for that, in a table of two columns
+	// there is one.
+	typed, typedFrom := map[int]bool{}, map[int]bool{}
 	p.Rows = pairReplaced(p.Rows, func(o, n int, last bool) bool {
-		if !last || len(p.Blocks) > 0 || len(j.colsAdded)+len(j.colsRemoved) > 0 {
+		if !last || r.notTyped[strings.ToLower(sa.Name)] || len(p.Blocks) > 0 {
 			return false
 		}
-		held, cleared, same := 0, 0, 0
-		for _, c := range j.held() {
-			x, y := alikeKey(r.A.wb, sa, o, c[0]), alikeKey(r.B.wb, sb, n, c[1])
-			switch {
-			case y != "":
-				held++
-				if x == y {
-					same++
-				}
-			case x != "":
-				cleared++
-			}
-		}
-		if held > 0 && same == 0 && cleared >= 2 {
-			typed[n] = true
+		if r.typedOver(j, o, n) {
+			typed[n], typedFrom[o] = true, true
 			return true
 		}
 		return false
 	})
+	// The last rows removed, with none added or typed in beside them, are
+	// rows cleared where they were when what reads them shows it
+	// (typedRemoved): their cells changed, the values cleared named.
+	p.Rows, j.cleared = r.pairCleared(p, j, typed, typedFrom)
 	if len(p.Moved) == 0 && len(p.Blocks) == 0 {
 		p.Rows = r.reseat(sa, sb, p.Rows, j.held())
 	}
@@ -1664,9 +1798,368 @@ func (r *report) prepare(p diff.SheetPair) *job {
 			j.rowsAdded = append(j.rowsAdded, q.New)
 		case q.New == 0:
 			j.rowsRemoved = append(j.rowsRemoved, q.Old)
+			if typedFrom[q.Old] {
+				j.typedOld = append(j.typedOld, q.Old)
+			}
 		}
 	}
 	return j
+}
+
+// typedOver tells whether a new row (n) holds cells where an old one (o) held
+// others, none the same: the cells typed in where the row was removed, or the
+// row's cells cleared and typed over where they are (typedRemoved tells which).
+func (r *report) typedOver(j *job, o, n int) bool {
+	held, cleared, same := 0, 0, 0
+	for _, c := range j.held() {
+		x, y := alikeKey(r.A.wb, j.sa, o, c[0]), alikeKey(r.B.wb, j.sb, n, c[1])
+		switch {
+		case y != "":
+			held++
+			if x == y {
+				same++
+			}
+		case x != "":
+			cleared++
+		}
+	}
+	return held > 0 && same == 0 && cleared >= 1
+}
+
+// pairCleared finds the last rows of a sheet removed with none kept, added or
+// typed in after them (and no block beside them; a sort is clearedSorted's),
+// which hold something: they are given, numbered as before, to be told removed
+// or cleared where they were (typedRemoved). Where something shows they were
+// cleared (toldCleared names the sheets), they are paired with the rows they
+// were cleared in, numbered as they would be with them kept, and none is given.
+func (r *report) pairCleared(p diff.SheetPair, j *job, typed, typedFrom map[int]bool) ([]diff.Pair, []int) {
+	rows := p.Rows
+	if len(p.Blocks) > 0 || r.out.ValuesOnly {
+		return rows, nil
+	}
+	if len(p.Moved) > 0 {
+		return r.clearedSorted(p, j, typed, typedFrom)
+	}
+	tail := len(rows)
+	for tail > 0 && rows[tail-1].New == 0 && rows[tail-1].Old != 0 && !typedFrom[rows[tail-1].Old] {
+		tail--
+	}
+	if tail == len(rows) {
+		return rows, nil
+	}
+	// A row kept right before them numbers them as they would be (rows added
+	// or typed in between would number them twice).
+	kept := tail - 1
+	if kept < 0 || rows[kept].Old == 0 || rows[kept].New == 0 {
+		return rows, nil
+	}
+	var olds []int
+	for _, q := range rows[tail:] {
+		held := false
+		for _, c := range j.held() {
+			held = held || alikeKey(r.A.wb, p.Old, q.Old, c[0]) != ""
+		}
+		if !held {
+			return rows, nil
+		}
+		olds = append(olds, q.Old)
+	}
+	if !r.toldCleared[strings.ToLower(p.Old.Name)] {
+		return rows, olds
+	}
+	out := append([]diff.Pair{}, rows[:tail]...)
+	for _, o := range olds {
+		out = append(out, diff.Pair{Old: o, New: rows[kept].New + o - rows[kept].Old})
+	}
+	return out, nil
+}
+
+// clearedSorted is pairCleared for a sheet whose rows a sort moved: the rows
+// removed are not the last, and where they would be cleared is not told by the
+// rows kept around them. It tells of a single row removed that holds something
+// (with no other added), when the new version has, in the span of the rows
+// paired, one row that none is paired with: the blank one it was cleared in (a
+// table sorted and its last record cleared, or a record cleared and the table
+// sorted, the blank going last), or the one with cells typed in where it was
+// removed, as prepare takes a row removed and one added in the same place at the
+// end (typedOver). They are given to be told removed or cleared (typedRemoved)
+// as pairCleared's are; where something shows it was cleared (toldCleared, or
+// notTyped for one with cells typed in), the old row is j.blanked, outside the
+// rows moved, compared with the new one, and none is given. More than one row removed, or a blank row more than one, would
+// number them by a guess: they stay removed.
+func (r *report) clearedSorted(p diff.SheetPair, j *job, typed, typedFrom map[int]bool) ([]diff.Pair, []int) {
+	rows := p.Rows
+	gone, put, lo, hi := -1, -1, 0, 0
+	paired := map[int]bool{}
+	for i, q := range rows {
+		switch {
+		case q.Old == 0:
+			if put >= 0 {
+				return rows, nil
+			}
+			put = i
+		case q.New == 0:
+			if gone >= 0 || typedFrom[q.Old] {
+				return rows, nil
+			}
+			gone = i
+		default:
+			paired[q.New] = true
+			if lo == 0 || q.New < lo {
+				lo = q.New
+			}
+			hi = max(hi, q.New)
+		}
+	}
+	if gone < 0 {
+		return rows, nil
+	}
+	o, held := rows[gone].Old, false
+	for _, c := range j.held() {
+		held = held || alikeKey(r.A.wb, p.Old, o, c[0]) != ""
+	}
+	if !held {
+		return rows, nil
+	}
+	n := 0
+	if put >= 0 {
+		// A row added with cells typed in; or a blank one, the row cleared in
+		// among the rows kept (a total row below the table).
+		if n = rows[put].New; n < lo || n > hi+1 || !r.typedOver(j, o, n) && !rowBlank(p.New, n, j.held(), 1) {
+			return rows, nil
+		}
+	} else {
+		// Among the rows paired (a total row below the table is one), or, with
+		// none there, the one after them.
+		var at []int
+		for k := lo; k <= hi; k++ {
+			if !paired[k] && rowBlank(p.New, k, j.held(), 1) {
+				at = append(at, k)
+			}
+		}
+		if len(at) == 0 && rowBlank(p.New, hi+1, j.held(), 1) {
+			at = append(at, hi+1)
+		}
+		if len(at) != 1 {
+			return rows, nil
+		}
+		n = at[0]
+	}
+	name, blank := strings.ToLower(p.Old.Name), put < 0 || rowBlank(p.New, n, j.held(), 1)
+	if blank && !r.toldCleared[name] || !blank && !r.notTyped[name] {
+		switch {
+		case put < 0:
+		case blank:
+			j.clearedAt = []int{n}
+		default:
+			typed[n], typedFrom[o] = true, true
+			return rows, nil
+		}
+		return rows, []int{o}
+	}
+	j.blanked = []diff.Pair{{Old: o, New: n}}
+	var out []diff.Pair
+	for i, q := range rows {
+		if i != gone && i != put {
+			out = append(out, q)
+		}
+	}
+	return out, nil
+}
+
+// typedRemoved tells whether something shows that the rows prepare took as
+// removed were removed (the first result) or were cleared where they are (the
+// second): rows with cells typed in where they were (job.typed), or the last
+// rows with nothing in their place (job.cleared). Their values alike cannot
+// tell: a formula, a defined name, an Excel table or a chart's series of the
+// old version that reads the sheet from the first of them down reads now as
+// Excel rewrites it for their removal, or as it would with the rows kept. With nothing to show
+// it (a CSV file, rows nothing reads) neither is, and the rows with cells typed
+// in were not removed (their cells changed where they are, and the values
+// cleared are among the changes), while the last rows with none were.
+func (r *report) typedRemoved(j *job, jobs []*job) (bool, bool) {
+	typedOld := append(append([]int{}, j.typedOld...), j.cleared...)
+	if len(typedOld) == 0 || r.out.ValuesOnly {
+		return false, false
+	}
+	told := r.edits
+	defer r.setEdits(told)
+	// The other story's edits: the rows typed over kept, the rest as told.
+	kept := append([]lineEdit{}, told...)
+	other := *j
+	gone := map[int]bool{}
+	for _, o := range typedOld {
+		gone[o] = true
+	}
+	other.rowsRemoved, other.rowsAdded = nil, nil
+	for _, o := range j.rowsRemoved {
+		if !gone[o] {
+			other.rowsRemoved = append(other.rowsRemoved, o)
+		}
+	}
+	for _, n := range j.rowsAdded {
+		if !slices.Contains(j.clearedAt, n) {
+			other.rowsAdded = append(other.rowsAdded, n)
+		}
+	}
+	for i := range kept {
+		if kept[i].sheet == j.sb.Name {
+			kept[i] = other.edit()
+		}
+	}
+	// What may tell: each one's old text, the sheet it is on as now named (""
+	// for a name), and what the new version holds in its place.
+	type probe struct{ text, home, now string }
+	var probes []probe
+	type movedBlock struct{ cols, rows map[int]bool }
+	type placed struct {
+		sb       *grid.Sheet
+		row, col map[int]int
+		// moved are the old rows a sort moved (of the whole rows, and of each
+		// block's columns): a sort writes the formulas of the rows it moves again
+		// for their new place, so what such a formula holds now tells nothing of
+		// the rows removed or kept.
+		moved  map[int]bool
+		blocks []movedBlock
+	}
+	places := map[string]*placed{}
+	for _, k := range jobs {
+		if k == nil {
+			continue
+		}
+		pl := &placed{sb: k.sb, row: map[int]int{}, col: map[int]int{}, moved: map[int]bool{}}
+		for _, q := range k.rows {
+			if q.Old > 0 && q.New > 0 {
+				pl.row[q.Old] = q.New
+			}
+		}
+		for _, c := range k.cols {
+			pl.col[c[0]] = c[1]
+		}
+		for _, m := range k.moved {
+			for i := 0; i < m.Rows; i++ {
+				pl.moved[m.From+i] = true
+			}
+		}
+		for _, b := range k.blocks {
+			mb := movedBlock{cols: map[int]bool{}, rows: map[int]bool{}}
+			for _, c := range b.cols {
+				mb.cols[c[0]] = true
+			}
+			for _, m := range b.moved {
+				for i := 0; i < m.Rows; i++ {
+					mb.rows[m.From+i] = true
+				}
+			}
+			pl.blocks = append(pl.blocks, mb)
+		}
+		places[strings.ToLower(k.sa.Name)] = pl
+	}
+	sorted := func(pl *placed, row, col int) bool {
+		if pl.moved[row] {
+			return true
+		}
+		for _, b := range pl.blocks {
+			if b.cols[col] && b.rows[row] {
+				return true
+			}
+		}
+		return false
+	}
+	lo := slices.Min(typedOld)
+	for at := range r.tracerA().Touching(j.sa.Name, [][2]int{{lo, grid.MaxRows}}, false) {
+		pl := places[strings.ToLower(at.Sheet)]
+		if pl == nil || sorted(pl, at.Row, at.Col) {
+			continue
+		}
+		c, d := r.A.wb.Sheet(at.Sheet).At(at.Row, at.Col), pl.sb.At(pl.row[at.Row], pl.col[at.Col])
+		if c != nil && c.Formula != "" && d != nil && d.Formula != "" {
+			probes = append(probes, probe{c.Formula, pl.sb.Name, d.Formula})
+		}
+	}
+	names := map[string]string{}
+	for _, n := range r.B.wb.Names {
+		names[strings.ToLower(n.Scope+"!"+n.Name)] = n.Ref
+	}
+	for _, n := range r.A.wb.Names {
+		if now, ok := names[strings.ToLower(r.renamed[strings.ToLower(n.Scope)]+"!"+n.Name)]; ok {
+			probes = append(probes, probe{n.Ref, "", now})
+		}
+	}
+	for _, f := range r.fa {
+		if f.Kind != xlsx.FeatureTable {
+			continue
+		}
+		name := strings.ToLower(f.What)
+		if to, ok := r.tables[name]; ok {
+			name = strings.ToLower(to)
+		}
+		for _, g := range r.fb {
+			if g.Kind == xlsx.FeatureTable && strings.ToLower(g.What) == name {
+				probes = append(probes, probe{f.Where, r.renamed[strings.ToLower(f.Sheet)], g.Where})
+			}
+		}
+	}
+	// A chart's series: the charts of each version on a sheet (as now named),
+	// of a type and with as many series, paired in their order; where there
+	// are not as many of them in both, which is which cannot be told.
+	type chartKey struct {
+		sheet, typ string
+		cs         bool
+		n          int
+	}
+	charts := map[chartKey][2][]xlsx.Feature{}
+	for v, fs := range [][]xlsx.Feature{r.fa, r.fb} {
+		for _, f := range fs {
+			if f.Kind != xlsx.FeatureChart || len(f.Series) == 0 {
+				continue
+			}
+			on := f.Sheet
+			if to, ok := r.renamed[strings.ToLower(f.Sheet)]; v == 0 && ok {
+				if on = to; to == "" {
+					continue // its sheet was removed
+				}
+			}
+			k := chartKey{strings.ToLower(on), f.Type, f.Chartsheet, len(f.Series)}
+			both := charts[k]
+			both[v] = append(both[v], f)
+			charts[k] = both
+		}
+	}
+	for k, both := range charts {
+		if len(both[0]) != len(both[1]) {
+			continue
+		}
+		home := both[1][0].Sheet
+		if k.cs {
+			home = "" // a chart sheet has no cells: its series name their sheet
+		}
+		for i, f := range both[0] {
+			for s, ref := range f.Series {
+				probes = append(probes, probe{ref, home, both[1][i].Series[s]})
+			}
+		}
+	}
+	rewrite := func(p probe) string { return folded(r.shifted(r.renamedIn(p.text), p.home, false, "")) }
+	ifRemoved := make([]string, len(probes))
+	for i, p := range probes {
+		ifRemoved[i] = rewrite(p)
+	}
+	r.setEdits(kept)
+	shown := 0
+	for i, p := range probes {
+		ifKept := rewrite(p)
+		if ifKept == ifRemoved[i] {
+			continue // the rows' removal does not move it
+		}
+		switch folded(p.now) {
+		case ifRemoved[i]:
+			shown++
+		case ifKept:
+			return false, true
+		}
+	}
+	return shown > 0, false
 }
 
 // edit gives the lines a job added and removed, with the span of the rows
@@ -1926,6 +2419,9 @@ func (r *report) compare() {
 				m.row[q.Old] = q.New
 			}
 		}
+		for _, q := range j.blanked {
+			m.row[q.Old] = q.New
+		}
 		for _, c := range j.cols {
 			m.col[c[0]] = c[1]
 		}
@@ -1977,6 +2473,11 @@ func (r *report) compare() {
 			if q.Old == 0 || q.New == 0 {
 				continue
 			}
+			for _, c := range j.held() {
+				pair(q.Old, c[0], q.New, c[1])
+			}
+		}
+		for _, q := range j.blanked {
 			for _, c := range j.held() {
 				pair(q.Old, c[0], q.New, c[1])
 			}
@@ -2171,7 +2672,56 @@ func (r *report) align() (diff.Alignment, []*job) {
 		}
 		return es
 	}
+	// pairs are the alignments the jobs were prepared from.
+	pairs := append([]diff.SheetPair{}, al.Sheets...)
+	// retyped prepares again the sheets where something shows that the rows
+	// taken as removed with cells typed in where they were were not (notTyped),
+	// or that the last rows taken as removed were cleared where they are
+	// (toldCleared), each from the evidence of its own (typedRemoved). A sheet
+	// prepared again may have rows of the other kind to tell, whose evidence is
+	// weighed in turn.
+	retyped := func() {
+		for pass := 0; pass < 4; pass++ {
+			var redo []int
+			for i, j := range jobs {
+				if j == nil || len(j.typed)+len(j.cleared) == 0 {
+					continue
+				}
+				// Rows typed over were edited in place unless something shows they
+				// were removed, and so was a row removed with a blank one added in
+				// its place among the rows kept (a record cleared in a sorted
+				// table, as a row removed and one added in the same place are
+				// paired); the last rows removed alone, removed unless something
+				// shows they were cleared.
+				removed, kept := r.typedRemoved(j, jobs)
+				name := strings.ToLower(j.sa.Name)
+				switch {
+				case len(j.typed) > 0 && !removed:
+					if r.notTyped == nil {
+						r.notTyped = map[string]bool{}
+					}
+					r.notTyped[name] = true
+				case len(j.typed) == 0 && (len(j.clearedAt) > 0 && !removed || len(j.clearedAt) == 0 && kept):
+					if r.toldCleared == nil {
+						r.toldCleared = map[string]bool{}
+					}
+					r.toldCleared[name] = true
+				default:
+					continue
+				}
+				redo = append(redo, i)
+			}
+			if len(redo) == 0 {
+				return
+			}
+			for _, i := range redo {
+				jobs[i] = r.prepare(pairs[i])
+			}
+			r.setEdits(edits())
+		}
+	}
 	r.setEdits(edits())
+	retyped()
 	if !out.ValuesOnly && (r.anyLines || r.anyCut || len(r.renames) > 0 || len(r.tables) > 0) {
 		// A sheet whose formulas read another that lines were added to or
 		// removed from, or that was renamed: its rows are keyed by their
@@ -2194,12 +2744,14 @@ func (r *report) align() (diff.Alignment, []*job) {
 			if j == nil || !readsOthers(j.sa, touched) {
 				continue
 			}
-			if k := r.prepare(diff.AlignSheet(A.wb, j.sa, B.wb, j.sb, again)); k.lineCount() < j.lineCount() {
-				jobs[i], changed = k, true
+			p := diff.AlignSheet(A.wb, j.sa, B.wb, j.sb, again)
+			if k := r.prepare(p); k.lineCount() < j.lineCount() {
+				jobs[i], pairs[i], changed = k, p, true
 			}
 		}
 		if changed {
 			r.setEdits(edits())
+			retyped()
 		}
 	}
 	return al, jobs
@@ -2300,8 +2852,30 @@ func (r *report) linesMove(removed bool, home *grid.Sheet, at xlsx.At, sheet str
 	}
 	call, ok := tr.Outer(at.Sheet, at.Row, at.Col)
 	ws := side.wb.Sheet(sheet)
+	if ws != nil && (!ok || !aggregates[call.Func]) {
+		// A SUMIF, a SUMIFS or a SUMPRODUCT adds up what a row holds in its
+		// ranges, and a row that holds nothing there adds 0 (an empty row in a
+		// SUMIF per region): only lines that hold something can move it, and
+		// which way is then not told. Its ranges all on the sheet the lines
+		// are of, since where they are not, a range that grows is paired with
+		// cells of another sheet.
+		if pc, paired := tr.PairedSum(at.Sheet, at.Row, at.Col); paired && rangesOn(pc, home, ws) {
+			if h, known := heldIn(side.wb, home, ws, pc.Refs, runs, cols); known && h.filled == 0 {
+				return false
+			}
+		}
+	}
 	if !ok || ws == nil || !aggregates[call.Func] {
 		return true
+	}
+	if !removed && r.readsMovedBy(home, at, call.Refs, sheet, runs, cols) {
+		// It reads formulas the lines moved (a total over SUMIFs that read a
+		// row added, a MAX of totals), beside them or instead of them: what
+		// they hold of what it reads is not all they did to it, which can be
+		// either way. A result that is not what the call gives is still no
+		// work of theirs. (Rows removed reach it through the formulas that read
+		// them, each a cause of its own.)
+		return r.resultHolds(c)
 	}
 	h, known := heldIn(side.wb, home, ws, call.Refs, runs, cols)
 	if !known {
@@ -2313,6 +2887,7 @@ func (r *report) linesMove(removed bool, home *grid.Sheet, at xlsx.At, sheet str
 	// totals reads n²/2 cells), and only for a value the lines could have moved.
 	direction := func() bool {
 		d, was := c.after.num-c.before.num, c.before.num
+		raw := 0.0
 		if call.Func == "MAX" || call.Func == "MIN" {
 			// Compared with what the lines held, as the file stores it: across two
 			// date systems that is not told.
@@ -2320,6 +2895,39 @@ func (r *report) linesMove(removed bool, home *grid.Sheet, at xlsx.At, sheet str
 				return true
 			}
 			d, was = c.after.cell.Num-c.before.cell.Num, c.before.cell.Num
+			raw = c.after.cell.Num
+		}
+		// With a cell changed that reaches the value, or lines of another kind
+		// that it reads, its net move is no telling of what these lines did to
+		// it (a row removed that took 7 off a total and a cell raised by 45:
+		// the total rose). They moved it when it is not what it would be with
+		// them left as they were: the rows removed kept, or the rows added not
+		// there.
+		if r.alongside(c, lineKey{removed, strings.ToLower(sheet), cols}) {
+			if removed {
+				switch call.Func {
+				case "MAX":
+					return h.numbers > 0 && h.hi > raw
+				case "MIN":
+					return h.numbers > 0 && h.lo < raw
+				case "COUNT", "AVERAGE":
+					return h.numbers > 0
+				case "COUNTA":
+					return h.filled > 0
+				}
+				return h.sum != 0
+			}
+			switch call.Func {
+			case "MAX":
+				return h.numbers > 0 && h.hi >= raw
+			case "MIN":
+				return h.numbers > 0 && h.lo <= raw
+			case "COUNT", "AVERAGE":
+				return h.numbers > 0
+			case "COUNTA":
+				return h.filled > 0
+			}
+			return h.sum != 0
 		}
 		if removed {
 			switch call.Func {
@@ -2351,6 +2959,21 @@ func (r *report) linesMove(removed bool, home *grid.Sheet, at xlsx.At, sheet str
 		return h.sum > 0 && d > 0 || h.sum < 0 && d < 0
 	}
 	return direction() && r.resultHolds(c)
+}
+
+// rangesOn tells whether every reference of a call, of a formula on home, is
+// on a sheet.
+func rangesOn(call engine.Call, home, ws *grid.Sheet) bool {
+	for _, ref := range call.Refs {
+		on := ref.Sheet
+		if on == "" {
+			on = home.Name
+		}
+		if !strings.EqualFold(on, ws.Name) {
+			return false
+		}
+	}
+	return true
 }
 
 // resultHolds tells whether the result the new version stores for a formula
@@ -2593,6 +3216,102 @@ func heldIn(wb *grid.Workbook, home, ws *grid.Sheet, refs []engine.RefArg, runs 
 		}
 	}
 	return h, true
+}
+
+// readsMovedBy tells whether a formula of the new version (at, on home)
+// reads, by the references of its call, a formula whose value moved with no
+// cause of its own that lines added to a sheet (runs, numbered as now; of
+// columns with cols) reach, through formulas that moved and were not changed
+// themselves: what the lines moved, it reads (a total over SUMIFs that read a
+// row added). What it reads of the lines themselves is not counted (heldIn
+// weighs it).
+func (r *report) readsMovedBy(home *grid.Sheet, at xlsx.At, refs []engine.RefArg, sheet string, runs [][2]int, cols bool) bool {
+	if r.moved == nil {
+		r.moved = rowsIndex{}
+		for _, c := range r.candidates {
+			if c.cause == "" {
+				r.moved.add(c.at)
+			}
+		}
+		r.moved.sort()
+	}
+	inRuns := func(n int) bool {
+		for _, run := range runs {
+			if n >= run[0] && n <= run[1] {
+				return true
+			}
+		}
+		return false
+	}
+	// reads tells whether a ref reads a cell of x, not of the lines, not at.
+	reads := func(x rowsIndex, ref engine.RefArg) bool {
+		on := ref.Sheet
+		if on == "" {
+			on = home.Name
+		}
+		same := strings.EqualFold(on, sheet)
+		return x.within(on, ref.Area, func(row, col int) bool {
+			line := row
+			if cols {
+				line = col
+			}
+			return same && inRuns(line) || row == at.Row && col == at.Col && strings.EqualFold(on, at.Sheet)
+		})
+	}
+	// Formulas that moved are looked for first; what the lines reach is
+	// followed only for a call that reads some.
+	var hits []engine.RefArg
+	for _, ref := range refs {
+		if reads(r.moved, ref) {
+			hits = append(hits, ref)
+		}
+	}
+	if len(hits) == 0 {
+		return false
+	}
+	x := r.addedReach(sheet, cols)
+	for _, ref := range hits {
+		if reads(x, ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// addedReach gives the formulas whose values moved with no cause of their own
+// that the rows (or columns, with cols) added to a sheet reach, through
+// formulas that moved and were not changed themselves.
+func (r *report) addedReach(sheet string, cols bool) rowsIndex {
+	k := addedLines{strings.ToLower(sheet), cols}
+	if x, ok := r.addReach[k]; ok {
+		return x
+	}
+	var srcs []xlsx.Source
+	for n, a := range r.lineAdded {
+		if strings.EqualFold(a.sheet, sheet) && a.cols == cols {
+			srcs = append(srcs, r.lineSources[n])
+		}
+	}
+	own, moved := map[xlsx.At]bool{}, map[xlsx.At]bool{}
+	for _, c := range r.candidates {
+		if c.cause != "" {
+			own[c.at] = true
+		} else {
+			moved[c.at] = true
+		}
+	}
+	x := rowsIndex{}
+	for at := range r.tracerB().SpreadUnless(srcs, func(at xlsx.At) bool { return r.heldAt[at] || own[at] }) {
+		if moved[at] {
+			x.add(at)
+		}
+	}
+	x.sort()
+	if r.addReach == nil {
+		r.addReach = map[addedLines]rowsIndex{}
+	}
+	r.addReach[k] = x
+	return x
 }
 
 // sameRef tells whether a name refers to the same thing, as Excel rewrites
@@ -3040,9 +3759,6 @@ func (r *report) trace(tr *xlsx.Tracer) {
 	// for what changed upstream of it.
 	holds := func(at xlsx.At) bool { return r.heldAt[at] }
 	causeOf := tr.SpreadUnless(r.sources, holds)
-	// A value that cells changed moved is the work of all of them that reach
-	// it, not only the nearest.
-	var allOf map[xlsx.At]xlsx.Reach
 	// What rows moved reach alone (sorted: the sources they are), for a
 	// value a cell changed reaches first.
 	var lineOf map[xlsx.At]int
@@ -3068,59 +3784,31 @@ func (r *report) trace(tr *xlsx.Tracer) {
 		}
 		return 0, false
 	}
-	// causeText says what moved a value whose nearest cause is source k: the
-	// structure change k is, when it is one, then each of the cells changed
-	// that reach it (the first few): an input that changed is always named,
-	// whatever rows were removed or moved around it.
 	// inputsOf gives the cells changed that reach a value (the first few).
 	inputsOf := func(c candidate) xlsx.Reach {
-		if allOf == nil && r.cells > 0 {
-			allOf = tr.SpreadAllUnless(r.sources[:r.cells], causeListed, holds)
-		}
+		// A value that cells changed moved is the work of all of them that
+		// reach it, not only the nearest.
 		for _, at := range places(c) {
-			if g, ok := allOf[at]; ok {
+			if g, ok := r.inputReach()[at]; ok {
 				return g
 			}
 		}
 		return xlsx.Reach{}
 	}
-	causeText := func(c candidate, k int) string {
-		got := inputsOf(c)
-		var labels []string
-		if k >= r.cells {
-			labels = append(labels, r.causes[k])
-		}
-		for _, n := range got.Sources {
-			labels = append(labels, r.causes[n])
-		}
-		if got.More {
-			labels = append(labels, "and more")
-		}
-		if len(labels) == 0 {
-			labels = append(labels, r.causes[k])
-		}
-		if k < r.cells && len(sorted) > 0 {
-			// A cell changed is nearest; rows a sort moved may reach it too,
-			// read by position (a lookup, a cell of a sorted row).
-			if lineOf == nil {
-				srcs := make([]xlsx.Source, len(sorted))
-				for i, n := range sorted {
-					srcs[i] = r.sources[n]
+	// changedFormula tells of the formulas among the cells changed: a structure
+	// change upstream of one is not followed through it (what it moved, it
+	// moved).
+	var changedAt map[xlsx.At]bool
+	changedFormula := func(at xlsx.At) bool {
+		if changedAt == nil {
+			changedAt = map[xlsx.At]bool{}
+			for _, src := range r.sources[:r.cells] {
+				if at := (xlsx.At{Sheet: src.Sheet, Row: src.Range.R1, Col: src.Range.C1}); tr.Formula(at.Sheet, at.Row, at.Col) {
+					changedAt[at] = true
 				}
-				// Not through a formula changed: what it moved, it moved.
-				stop := map[xlsx.At]bool{}
-				for _, src := range r.sources[:r.cells] {
-					if at := (xlsx.At{Sheet: src.Sheet, Row: src.Range.R1, Col: src.Range.C1}); tr.Formula(at.Sheet, at.Row, at.Col) {
-						stop[at] = true
-					}
-				}
-				lineOf = tr.SpreadUnless(srcs, func(at xlsx.At) bool { return stop[at] || holds(at) })
-			}
-			if n, ok := cause(lineOf, c); ok {
-				labels = append(labels, r.causes[sorted[n]])
 			}
 		}
-		return strings.Join(labels, ", ")
+		return changedAt[at]
 	}
 	anchorOf := func(c candidate) xlsx.At {
 		at := c.at
@@ -3249,6 +3937,110 @@ func (r *report) trace(tr *xlsx.Tracer) {
 			left = leaving(left, a)
 		}
 		return 0, false
+	}
+	// structureOf gives the structure changes that reach a value whose nearest
+	// cause is a cell changed, by their index among the sources: rows or
+	// columns added, as direct counts them (they could move it, through
+	// formulas they could move), and the others but rows a sort moved (rows
+	// removed across what a formula reads, a name changed or removed, a sheet
+	// removed or added), not through a formula changed or one whose value held.
+	var addedKinds []addedLines
+	for a := range kinds {
+		addedKinds = append(addedKinds, a)
+	}
+	sort.Slice(addedKinds, func(i, j int) bool {
+		if addedKinds[i].sheet != addedKinds[j].sheet {
+			return addedKinds[i].sheet < addedKinds[j].sheet
+		}
+		return !addedKinds[i].cols && addedKinds[j].cols
+	})
+	var otherOf map[xlsx.At]xlsx.Reach
+	structureOf := func(c candidate) []int {
+		if otherOf == nil {
+			srcs := append([]xlsx.Source{}, r.sources...)
+			for n := range srcs {
+				_, added := r.lineAdded[n-lineBase]
+				if n < r.cells || n >= lineBase && (added || srcs[n].Reordered.R2 > 0) {
+					srcs[n].Range = grid.Range{R1: 1, C1: 1, R2: 0, C2: 0}
+				}
+			}
+			otherOf = tr.SpreadAllUnless(srcs, causeListed, func(at xlsx.At) bool { return holds(at) || changedFormula(at) })
+		}
+		seen := map[int]bool{}
+		var out []int
+		for _, at := range places(c) {
+			for _, n := range otherOf[at].Sources {
+				if !seen[n] {
+					seen[n] = true
+					out = append(out, n)
+				}
+			}
+		}
+		for _, a := range addedKinds {
+			if !addMoves(a, c) {
+				continue
+			}
+			if n, ok := cause(linesReach(a), c); ok && !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
+		}
+		sort.Ints(out)
+		return out
+	}
+	// causeText says what moved a value whose nearest cause is source k: the
+	// structure changes that reach it first (k, when it is one), then each of
+	// the cells changed that reach it (the first few), then rows a sort moved
+	// that reach it beside a cell changed: an input that changed is always
+	// named, whatever rows were added, removed or moved around it, and so is a
+	// structure change that moved the value beside it.
+	causeText := func(c candidate, k int) string {
+		got := inputsOf(c)
+		var labels []string
+		structure := structureOf(c)
+		if k >= r.cells {
+			// The nearest is a structure change: others that reach the value
+			// moved it too (rows removed and rows added, each as it can).
+			structure = append(structure, k)
+			sort.Ints(structure)
+		}
+		for _, n := range structure {
+			labels = append(labels, r.causes[n])
+		}
+		// Each cell that read lines removed is a source of its own, with the
+		// label of the lines: said once.
+		once := labels[:0:0]
+		for _, l := range labels {
+			if !slices.Contains(once, l) {
+				once = append(once, l)
+			}
+		}
+		labels = once
+		for _, n := range got.Sources {
+			labels = append(labels, r.causes[n])
+		}
+		if got.More {
+			labels = append(labels, "and more")
+		}
+		if (k < r.cells && len(got.Sources) == 0) || len(labels) == 0 {
+			labels = append(labels, r.causes[k])
+		}
+		if k < r.cells && len(sorted) > 0 {
+			// A cell changed is nearest; rows a sort moved may reach it too,
+			// read by position (a lookup, a cell of a sorted row).
+			if lineOf == nil {
+				srcs := make([]xlsx.Source, len(sorted))
+				for i, n := range sorted {
+					srcs[i] = r.sources[n]
+				}
+				// Not through a formula changed: what it moved, it moved.
+				lineOf = tr.SpreadUnless(srcs, func(at xlsx.At) bool { return changedFormula(at) || holds(at) })
+			}
+			if n, ok := cause(lineOf, c); ok {
+				labels = append(labels, r.causes[sorted[n]])
+			}
+		}
+		return strings.Join(labels, ", ")
 	}
 	// heldCause is direct for a formula that held: the nearest cause that
 	// reaches it, rows added counting only when they reach it through formulas
