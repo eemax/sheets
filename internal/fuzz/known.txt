@@ -1,0 +1,69 @@
+# Findings of the default mode (seed 1) on today's code, one per line:
+# <edit class> <invariant> <sequence seed>. The default mode passes only on
+# findings listed here; replay one with
+#   SHEETS_FUZZ_REPRO=<seed> go test ./internal/fuzz -run 'TestFuzz$' -v
+# A fix removes its lines (the run lists those it no longer makes).
+
+# WP-18: moving or copying a plain formula that reads a range where one
+# value goes (='Data'!C2:C3*10, kept plain: Excel shows it with @), or the
+# cells it reads, stores it as a dynamic array that spills. By move and
+# copy, and by do and script batches that move or copy.
+copy kinds 100028
+copy kinds 100162
+copy kinds 100163
+copy kinds 100164
+copy kinds 100245
+do kinds 100021
+move kinds 100071
+move kinds 100114
+move kinds 100130
+move kinds 100157
+move kinds 100178
+move kinds 100217
+move kinds 100255
+move kinds 100297
+
+# New: sheets saves a different workbook from one run to the next when a
+# paste lands on dynamic arrays (copy over the arrays of a sheet): values it
+# pasted are missing at random (Q 2026!H7: "Pear" or nothing), by either
+# editor. It lays the results of dynamic arrays out in map order
+# (xlsx/spill.go, spillResults). The fuzzer makes an edit that removes a
+# dynamic array again, 20 times by each editor, on the same bytes, to see it
+# every run.
+copy repeat 100061
+copy repeat 100139
+copy repeat 100202
+
+# New: after a sort the streaming editor stores the results of the formulas on
+# the sheet it sorted (it computes them), and the full editor leaves them as
+# they were: pending, or the 0 XlsxWriter stores. The two save different
+# cells, whether the sort moved rows or found them in order (Q 2026!B2 is
+# 2088 in the streaming editor's file and has no result in the full
+# editor's). The default run reaches it now that most of its sorts are ones
+# sheets does (see sortable in edits.go): the first version's, refused, never
+# did.
+sort editors 100035
+sort editors 100047
+sort editors 100098
+sort editors 100172
+sort editors 100219
+sort editors 100228
+sort editors 100315
+
+# New: a text typed with two escape-like sequences that share an underscore
+# (_x005F_x0041_) is stored as another text. ooxmlText (xlsx/stream_sheet.go)
+# escapes each _xHHHH_ with a regular expression, and the match for the first
+# (_x005F_) uses the underscore the second starts with, so the second is left
+# as it is: the file holds _x005F_x005F_x0041_, which Excel reads as _x005FA.
+# Both editors store it so (the code is shared), so only the text invariant,
+# which reads the text back, sees it.
+set text 100046
+set text 100123
+set text 100134
+write text 100006
+write text 100042
+write text 100067
+write text 100136
+write text 100262
+write text 100272
+write text 100317
