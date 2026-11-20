@@ -1,0 +1,14 @@
+Wave 1's WP-16, round 2 (fixed in 65873b1): a formula rewritten where it
+stands (a move rewrote its references) loses its kind: it is written again by
+its text. Put back: rewriteFormula ends with setFormula, not putBack.
+
+--- a/internal/xlsx/edit.go
++++ b/internal/xlsx/edit.go
+@@ -840,5 +840,5 @@
+ 		}
+ 	}
+ 	// Otherwise as it was: a dynamic array as one, any other formula plain.
+-	return e.putBack(sheet, cell, text, e.wasDynamic(sheet, cell))
+-}
++	return e.setFormula(sheet, cell, text)
++}

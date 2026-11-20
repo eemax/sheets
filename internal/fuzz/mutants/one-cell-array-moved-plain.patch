@@ -1,0 +1,17 @@
+Wave 1's WP-16, round 1 (fixed in 2270292): an array formula in one cell
+(entered with Ctrl+Shift+Enter) that a move, copy or sort takes goes where it
+goes as a plain formula. Put back: take no longer marks it an array, so put
+writes it plain.
+
+--- a/internal/xlsx/ranges.go
++++ b/internal/xlsx/ranges.go
+@@ -180,9 +180,6 @@
+ 			h.formula = c.Formula
+ 			if _, ok := spills[[2]int{row, col}]; ok && c.Formula != "" {
+ 				h.dynamic = true
+-			}
+-			if rg, ok := e.legacyArrays()[keyOf(sheet, row, col)]; ok && c.Formula != "" && rg.Rows()*rg.Cols() == 1 {
+-				h.array = true
+ 			}
+ 		})
+ 		for _, n := range s.Links {
