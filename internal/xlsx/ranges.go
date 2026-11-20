@@ -270,7 +270,10 @@ func (e *Editor) put(sheet string, row, col int, h *taken, text string, what pas
 			}
 		case text != "":
 			delete(e.legacyArrays(), keyOf(sheet, row, col))
-			err = e.setFormulaAs(sheet, cell, text, h.dynamic)
+			// A formula keeps its kind where it goes, as Excel keeps it:
+			// a plain one that reads a range where one value goes
+			// (=B1:B2*100) stays plain, and does not spill.
+			err = e.putBack(sheet, cell, text, h.dynamic)
 		case h.cell.Kind == grid.Text:
 			err = setText(e.f, sheet, cell, h.cell.Text)
 		case h.cell.Kind == grid.Number:
@@ -1253,6 +1256,7 @@ func (e *Editor) MoveRange(from string, src grid.Range, to string, at grid.Range
 		if err := e.put(to, dst.R1+k[0], dst.C1+k[1], h, text, pasteAll); err != nil {
 			return res, err
 		}
+		e.carry(keyOf(to, dst.R1+k[0], dst.C1+k[1]), h, text)
 	}
 	left := []grid.Range{src}
 	if same {

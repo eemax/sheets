@@ -65,6 +65,7 @@ type StreamEditor struct {
 	extent    map[string]grid.Range // used range by lower-cased sheet, where edits grew it
 	warnings  []string
 	res       *calcResult // after saving
+	out       []byte      // the file as last rendered
 	// laysOut lets Render go on where a legacy array over several cells
 	// is to be computed, which needs the full editor (see Auto.full).
 	laysOut bool
@@ -334,26 +335,34 @@ func (s *StreamEditor) cellNow(sheet string, row, col int) grid.Cell {
 // formulasNow lists the workbook's formulas where they are now.
 func (s *StreamEditor) formulasNow() map[cellKey]*formulaAt {
 	all := map[cellKey]*formulaAt{}
+	replaced := map[cellKey]*formulaAt{} // formulas an edit replaced
 	for _, sh := range s.wb.Sheets {
 		sh.Each(sh.Used(), func(r, c int, cell *grid.Cell) {
 			if cell.Formula == "" {
 				return
 			}
 			now, ok := s.rowNow(sh.Name, r)
-			if !ok || s.edit(sh.Name, now, c) != nil {
+			if !ok {
+				return
+			}
+			if s.edit(sh.Name, now, c) != nil {
+				replaced[keyOf(sh.Name, now, c)] = &formulaAt{pending: cell.Pending, stored: valueOf(*cell), staleRes: staleOf(*cell)}
 				return
 			}
 			text := cell.Formula
 			if len(s.ops) > 0 {
 				text = s.rewrite(text, sh.Name)
 			}
-			all[keyOf(sh.Name, now, c)] = &formulaAt{sheet: sh.Name, row: now, col: c, text: text, pending: cell.Pending, stored: valueOf(*cell), unprefixed: cell.Unprefixed}
+			all[keyOf(sh.Name, now, c)] = &formulaAt{sheet: sh.Name, row: now, col: c, text: text, pending: cell.Pending, stored: valueOf(*cell), staleRes: staleOf(*cell), unprefixed: cell.Unprefixed}
 		})
 	}
 	for _, sh := range s.wb.Sheets {
 		for pos, e := range s.edits[strings.ToLower(sh.Name)] {
 			if e.v.Formula != "" {
-				all[keyOf(sh.Name, pos[0], pos[1])] = &formulaAt{sheet: sh.Name, row: pos[0], col: pos[1], text: e.v.Formula, pending: true}
+				k := keyOf(sh.Name, pos[0], pos[1])
+				nf := &formulaAt{sheet: sh.Name, row: pos[0], col: pos[1], text: e.v.Formula, pending: true, written: true}
+				nf.notePrior(replaced[k])
+				all[k] = nf
 			}
 		}
 	}

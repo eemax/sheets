@@ -41,6 +41,7 @@ stderr 'Sales has no column "Nope"'
 -- fill.out --
 Sheet1!C2:C3 ← =A2*B2 (2 cells)
 formulas: Sheet1!C2 = 7.5, Sheet1!C3 = 6
+change: 2 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before
 -- formulas.out --
 Sheet1!A1:C3
 	A	B	C

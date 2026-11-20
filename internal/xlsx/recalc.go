@@ -38,7 +38,14 @@ type formulaAt struct {
 	row, col int
 	text     string
 	pending  bool      // its stored result was missing or stale when opened
+	staleRes grid.Cell // the stale result a pending formula stored (it says nothing of what Excel shows)
 	stored   grid.Cell // its stored result when opened, if any (Empty if none)
+	// written: the formula is one this session wrote. prior is the stored
+	// result of the formula it replaced (priorKnown), or priorBlank: that
+	// one had none; for the change report (see effects.go).
+	written                bool
+	prior                  grid.Cell
+	priorKnown, priorBlank bool
 	// unprefixed: it calls a function stored without its prefix, which
 	// Excel shows as #NAME? (see grid.Cell.Unprefixed).
 	unprefixed bool
@@ -69,8 +76,33 @@ func (e *Editor) touch(sheet string, row, col int) {
 	if e.changed == nil {
 		e.changed = map[cellKey]string{}
 	}
-	e.changed[keyOf(sheet, row, col)] = sheet
+	k := keyOf(sheet, row, col)
+	e.changed[k] = sheet
+	delete(e.spilled, k) // written, whatever else it was
+	delete(e.regrown, k)
 	e.edits++
+}
+
+// touchSpill records that a cell's value changed because a dynamic array's
+// result fills it or leaves it (readers of it are recomputed), not
+// because the command wrote it. was is its value before; now, as it is
+// left.
+func (e *Editor) touchSpill(sheet string, row, col int, was, now grid.Cell) {
+	k := keyOf(sheet, row, col)
+	if c := e.spilled[k]; c != nil {
+		c.after = valueOnly(now)
+		e.edits++
+		return
+	}
+	if _, written := e.changed[k]; written {
+		e.edits++
+		return
+	}
+	e.touch(sheet, row, col)
+	if e.spilled == nil {
+		e.spilled = map[cellKey]*spillCell{}
+	}
+	e.spilled[k] = &spillCell{sheet: sheet, before: valueOnly(was), after: valueOnly(now)}
 }
 
 // mustRecompute records a formula an edit of rows, columns or sheets may
@@ -97,7 +129,7 @@ func (e *Editor) formulasNow() (map[cellKey]*formulaAt, error) {
 		for _, s := range e.wb.Sheets {
 			s.Each(s.Used(), func(r, c int, cell *grid.Cell) {
 				if cell.Formula != "" {
-					all[keyOf(s.Name, r, c)] = &formulaAt{sheet: s.Name, row: r, col: c, text: cell.Formula, pending: cell.Pending, stored: valueOf(*cell), unprefixed: cell.Unprefixed}
+					all[keyOf(s.Name, r, c)] = &formulaAt{sheet: s.Name, row: r, col: c, text: cell.Formula, pending: cell.Pending, stored: valueOf(*cell), staleRes: staleOf(*cell), unprefixed: cell.Unprefixed}
 				}
 			})
 		}
@@ -114,7 +146,9 @@ func (e *Editor) formulasNow() (map[cellKey]*formulaAt, error) {
 		if text == "" {
 			delete(all, k)
 		} else {
-			all[k] = &formulaAt{sheet: sheet, row: k.row, col: k.col, text: formula.FromFile(text), unprefixed: len(formula.Unprefixed(text)) > 0}
+			nf := &formulaAt{sheet: sheet, row: k.row, col: k.col, text: formula.FromFile(text), unprefixed: len(formula.Unprefixed(text)) > 0, written: true}
+			nf.notePrior(all[k])
+			all[k] = nf
 		}
 	}
 	return all, nil
@@ -171,6 +205,25 @@ func (x *depIndex) readers(k cellKey, fn func(id int)) {
 	}
 }
 
+// readersOf calls fn with every formula that reads cell k, leaving them in
+// the index (readers drops them), for tracing from one cell after another.
+// A formula may be given more than once.
+func (x *depIndex) readersOf(k cellKey, fn func(id int)) {
+	for _, id := range x.cells[k] {
+		fn(id)
+	}
+	if t := x.columns[cellKey{k.sheet, 0, k.col}]; t != nil {
+		t.find(k.row, fn)
+	}
+	for rg, ids := range x.wide[k.sheet] {
+		if rg.Contains(k.row, k.col) {
+			for _, id := range ids {
+				fn(id)
+			}
+		}
+	}
+}
+
 // rowTree holds row ranges in a segment tree over a sheet's rows: a range
 // lies in the few nodes that cover it, and the nodes on the way down to a
 // row hold exactly the ranges taking it in. So finding them costs the
@@ -208,6 +261,25 @@ func (t *rowTree) take(r int, fn func(id int)) {
 			fn(id)
 		}
 		delete(t.nodes, node)
+		if nlo == nhi {
+			return
+		}
+		mid := (nlo + nhi) / 2
+		if r <= mid {
+			node, nhi = 2*node, mid
+		} else {
+			node, nlo = 2*node+1, mid+1
+		}
+	}
+}
+
+// find calls fn with the ranges holding row r, and keeps them.
+func (t *rowTree) find(r int, fn func(id int)) {
+	node, nlo, nhi := 1, 1, rowSpan
+	for {
+		for _, id := range t.nodes[node] {
+			fn(id)
+		}
 		if nlo == nhi {
 			return
 		}
@@ -362,9 +434,11 @@ func (rs *resolver) tableRanges(f *formulaAt, d formula.Deps) ([]formula.Ref, bo
 type calcState struct {
 	formulas  map[cellKey]*formulaAt // the workbook's formulas as they stand
 	rs        *resolver
-	changed   map[cellKey]string // cells written, by sheet name
-	recompute map[cellKey]bool   // formulas an edit of rows, columns or sheets reached
-	edited    bool               // rows, columns or sheets changed
+	changed   map[cellKey]string    // cells written, by sheet name
+	carried   map[cellKey]carryKind // formulas moved that showed an error, or had no result, already
+	recompute map[cellKey]bool      // formulas an edit of rows, columns or sheets reached
+	regrown   map[cellKey]bool      // among changed, formulas only regrown as Excel would (see Editor.regrown)
+	edited    bool                  // rows, columns or sheets changed
 	// restore stores again the results of formulas not recomputed: an
 	// edit of rows took them off with their formulas (see relines).
 	restore bool
@@ -393,6 +467,9 @@ type calcState struct {
 	// within tells whether a cell lies inside another cell's legacy array
 	// formula, where Excel allows no formula of its own.
 	within func(sheet string, row, col int) bool
+	// oneCell tells whether a cell anchors a legacy array formula in one
+	// cell, whose result larger than it is unknown (see oneCellNote).
+	oneCell func(sheet string, row, col int) bool
 }
 
 // calcResult is what working out results gives.
@@ -403,6 +480,9 @@ type calcResult struct {
 	touched  map[string][][2]int // cells whose values changed, by lower-cased sheet
 	arrays   map[cellKey]spilled // whole results of dynamic arrays computed
 	legacy   map[cellKey]laidOut // whole results of legacy array formulas over several cells
+	// effects are the results recomputed that moved, went or became
+	// errors, for the change report (see effects.go).
+	effects []ResultChange
 }
 
 // laidOut is a legacy array formula's whole result, over its range.
@@ -460,7 +540,7 @@ func (e *Editor) results() (calcResult, error) {
 	if err != nil {
 		return calcResult{}, err
 	}
-	st := calcState{formulas: all, rs: e.resolver(), changed: e.changed, recompute: e.recompute,
+	st := calcState{formulas: all, rs: e.resolver(), changed: e.changed, carried: e.carried, recompute: e.recompute, regrown: e.regrown,
 		edited: e.structural || e.sheetsChanged, restore: e.lines != nil, unshared: e.unshared, order: e.sheetIndex, calcFile: e.calcFile,
 		typer: func(all map[cellKey]*formulaAt, computing map[*formulaAt]bool, rs *resolver) *typer {
 			return e.newTyper(all, computing, rs)
@@ -483,6 +563,10 @@ func (e *Editor) results() (calcResult, error) {
 	st.within = func(sheet string, row, col int) bool {
 		rg, ok := e.legacyArrayIn(sheet, row, col)
 		return ok && (rg.R1 != row || rg.C1 != col)
+	}
+	st.oneCell = func(sheet string, row, col int) bool {
+		rg, ok := e.legacyArrays()[keyOf(sheet, row, col)]
+		return ok && rg.Rows()*rg.Cols() == 1
 	}
 	res, err := computeResults(st)
 	if err != nil {
@@ -519,6 +603,13 @@ func (e *Editor) calcFile(list []*formulaAt, rs *resolver, computing map[*formul
 		return calcToCell(v), true
 	})
 	return book, plan, nil
+}
+
+// wrote tells whether the command wrote the cell: changed, and not only
+// a formula whose references were regrown as Excel would.
+func (st calcState) wrote(k cellKey) bool {
+	_, ok := st.changed[k]
+	return ok && !st.regrown[k]
 }
 
 // computeResults works out the results to store for a session's state.
@@ -647,6 +738,7 @@ func computeResults(st calcState) (calcResult, error) {
 	}), rs, ty, computing, plan, func(f *formulaAt) (grid.Cell, bool) {
 		return f.stored, f.stored.Kind != grid.Empty && !f.pending
 	}, deadline)
+	j.oneCell = st.oneCell
 
 	var unsupported, unprefixed []string
 	left := 0
@@ -672,10 +764,16 @@ func computeResults(st calcState) (calcResult, error) {
 				store(f, grid.Cell{})
 				out.dropped[keyOf(f.sheet, f.row, f.col)] = linkNote
 			}
+			if i < len(first) {
+				written := st.wrote(keyOf(f.sheet, f.row, f.col))
+				if rc, keep := effectOf(f, written, st.carried[keyOf(f.sheet, f.row, f.col)], true, grid.Cell{}, false, linkNote); keep {
+					out.effects = append(out.effects, rc)
+				}
+			}
 			continue
 		}
 		key := keyOf(f.sheet, f.row, f.col)
-		_, written := st.changed[key]
+		written := st.wrote(key)
 		ok, why := j.holds(f)
 		var v grid.Cell
 		if ok {
@@ -743,6 +841,11 @@ func computeResults(st calcState) (calcResult, error) {
 			// No stored result rather than a wrong or stale one.
 			store(f, grid.Cell{})
 			out.dropped[key] = why
+			if !(why == arrayNotFilled && st.deferArrays) {
+				if rc, keep := effectOf(f, written, st.carried[key], i < len(first), grid.Cell{}, false, why); keep {
+					out.effects = append(out.effects, rc)
+				}
+			}
 			switch {
 			case i >= len(first) || written:
 			case why == arrayNotFilled && st.deferArrays:
@@ -757,6 +860,9 @@ func computeResults(st calcState) (calcResult, error) {
 			continue
 		}
 		store(f, v)
+		if rc, keep := effectOf(f, written, st.carried[key], i < len(first), v, true, ""); keep {
+			out.effects = append(out.effects, rc)
+		}
 	}
 	if cycle := j.members; len(cycle) > 0 {
 		var list []string
@@ -836,6 +942,15 @@ func computeResults(st calcState) (calcResult, error) {
 }
 
 // valueOf is the stored result of a formula cell as read (Empty if none).
+// staleOf is the result a formula stored that the file marks for
+// recalculation: kept for the change report, never trusted.
+func staleOf(c grid.Cell) grid.Cell {
+	if !c.Pending {
+		return grid.Cell{}
+	}
+	return grid.Cell{Kind: c.Kind, Bool: c.Bool, Num: c.Num, Text: c.Text}
+}
+
 func valueOf(c grid.Cell) grid.Cell {
 	if c.Pending {
 		return grid.Cell{}

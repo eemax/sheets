@@ -300,6 +300,7 @@ func (a *app) queryInto(file, into string, res *query.Result, tables []*query.Ta
 	if err := ed.Save(a.dryRun); err != nil {
 		return nil, err
 	}
+	a.track(file, ed)
 	w.saved(ed)
 	return w, nil
 }

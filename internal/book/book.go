@@ -89,6 +89,16 @@ type Editor interface {
 	Warnings() []string
 }
 
+// Tracked is an editor that tells what its session did, for the change
+// report every changing command prints: the file before and after, and
+// what each part of the session wrote, recomputed and moved (see
+// xlsx.Effects).
+type Tracked interface {
+	Before() []byte
+	After() []byte
+	Effects() []xlsx.Effects
+}
+
 type (
 	ChartSpec     = xlsx.ChartSpec
 	SeriesSpec    = xlsx.SeriesSpec
@@ -212,3 +222,8 @@ func Check(path string, opts FormatOptions) (bool, *FormatResult, error) {
 	}
 	return xlsx.Check(path, opts)
 }
+
+var (
+	_ Tracked = (*xlsx.Editor)(nil)
+	_ Tracked = (*xlsx.Auto)(nil)
+)

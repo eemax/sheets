@@ -85,8 +85,10 @@ var checkTime = xlsx.CheckOptions{Budget: 2 * time.Minute, Compare: 10 * time.Se
 
 func (a *app) checkCmd() *cobra.Command {
 	var (
-		fix    bool
-		failOn string
+		fix     bool
+		failOn  string
+		against string
+		receipt string
 	)
 	cmd := &cobra.Command{
 		Use:   "check <file>",
@@ -103,7 +105,26 @@ one change you can undo. A result Excel stored is never replaced, and
 nothing else changes. Running it again changes nothing.
 
 Exits 1 on errors, as lint does (--fail-on warning|note|never). On a CSV
-file it runs lint.`,
+file it runs lint.
+
+--against before.xlsx reports what changed since that version, whoever
+wrote either file: inputs and formulas that changed; computed values that
+moved, each with its cause upstream (an input or formula change, rows
+added, removed or moved, a name changed); values that moved with nothing
+upstream changed (unexplained); features lost (charts, validations,
+conditional formats, shapes, pictures, names, tables); values sheets cannot
+compare (unknown); then the check of the file. Rows moved, as by a sort,
+are moved rows, not changes. It exits 1 on values unexplained, features
+lost, or the check's errors. Text lists a few of each; --json all.
+
+--receipt out.md writes that report for a person, in Markdown: what to
+look at first, each section's entries (the first 25), and before and after
+pictures (sheets render) of up to three ranges that changed, as
+out-1-before.png, out-1-after.png and so on beside it. What no picture can
+show (a validation, a shape lost) it says in words.
+
+  sheets check book.xlsx --against before.xlsx
+  sheets check book.xlsx --against before.xlsx --receipt receipt.md`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			threshold := lint.Severity(99)
@@ -114,7 +135,13 @@ file it runs lint.`,
 				}
 				threshold = s
 			}
-			res, err := a.check(args[0], fix)
+			if receipt != "" && against == "" {
+				return fmt.Errorf("--receipt writes what --against reports: give --against before.xlsx too")
+			}
+			if against != "" && fix {
+				return fmt.Errorf("--against reports and changes nothing: run sheets check --fix on its own")
+			}
+			res, cr, err := a.checkFile(args[0], fix)
 			if err != nil {
 				return err
 			}
@@ -129,6 +156,32 @@ file it runs lint.`,
 					res.Notes++
 				}
 				fail = fail || f.Severity >= threshold
+			}
+			if against != "" {
+				r, err := a.against(args[0], against, res, cr)
+				if err != nil {
+					return err
+				}
+				r.Errors, r.Warnings, r.Notes = res.Errors, res.Warnings, res.Notes
+				if receipt != "" {
+					if r.Receipt, err = a.writeReceipt(receipt, r); err != nil {
+						return err
+					}
+				}
+				if a.json {
+					if err := a.printJSON(r); err != nil {
+						return err
+					}
+				} else {
+					a.printAgainst(r)
+					if r.Receipt != nil {
+						a.printReceipt(r.Receipt)
+					}
+				}
+				if fail || againstFails(r) {
+					return errSilent
+				}
+				return nil
 			}
 			if a.json {
 				if err := a.printJSON(res); err != nil {
@@ -145,36 +198,39 @@ file it runs lint.`,
 	}
 	f := cmd.Flags()
 	f.BoolVar(&fix, "fix", false, "store every result sheets can compute and add missing prefixes")
+	f.StringVar(&against, "against", "", "report what changed since this earlier version of the file, and why")
+	f.StringVar(&receipt, "receipt", "", "with --against: write the report as Markdown for a person, with before and after pictures beside it")
 	f.StringVar(&failOn, "fail-on", "error", "exit 1 on findings this severe: error, warning, note or never")
 	return cmd
 }
 
-// check checks a file, fixing it with fix.
-func (a *app) check(path string, fix bool) (*checkResult, error) {
+// checkFile checks a file, fixing it with fix; it gives the results too
+// (nil for a CSV file).
+func (a *app) checkFile(path string, fix bool) (*checkResult, *xlsx.CheckResult, error) {
 	res := &checkResult{File: path}
 	kind, err := book.FormatOf(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if kind == "csv" {
 		// A CSV file holds values: there are no results to compute.
 		wb, err := open(path)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		res.Findings = lintFindings(lint.Check(wb, lint.Options{}))
-		return res, nil
+		return res, nil, nil
 	}
 	data, err := xlsx.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cr, err := xlsx.CheckResults(path, data, checkTime)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if fix && cr.FixError != "" {
-		return nil, errors.New(cr.FixError)
+		return nil, nil, errors.New(cr.FixError)
 	}
 	fc := &checkFormulas{Total: cr.Formulas, Vouched: cr.Vouched, Missing: cr.Missing, Stale: cr.Stale, Unprefixed: cr.Unprefixed,
 		Confirmed: cr.Confirmed, Unknown: len(cr.Unknown)}
@@ -194,9 +250,17 @@ func (a *app) check(path string, fix bool) (*checkResult, error) {
 		// What is left once fixed.
 		if cr.Data != nil && !a.dryRun {
 			if err := xlsx.SaveData(path, cr.Data); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			res.Fixed = true
+		}
+		if cr.Data != nil {
+			// What the fix stores tells the session what the file holds now:
+			// a result an earlier step of a batch left out is back, one that
+			// moved is moved, and an error stored where none was is new (as
+			// with the editors, a result the file marked out of date or
+			// lacked was not known, so it did not move).
+			a.trackBytes(path, data, cr.Data, a.fixResults(cr.Changes)...)
 		}
 		wb = cr.After
 	} else {
@@ -211,7 +275,33 @@ func (a *app) check(path string, fix bool) (*checkResult, error) {
 	own = append(own, differFindings(cr.Differ)...)
 	res.Findings = append(own, lintFindings(lint.Check(wb, lint.Options{}))...)
 	sort.SliceStable(res.Findings, func(i, j int) bool { return res.Findings[i].Severity > res.Findings[j].Severity })
-	return res, nil
+	return res, cr, nil
+}
+
+// fixResults are the results check --fix stored, dropped or replaced, as
+// the session follows them: only the cells it already follows (an earlier
+// step of a batch worked on them) and the errors it stored, which is all
+// the report can use of them.
+func (a *app) fixResults(cs []xlsx.Change) []xlsx.ResultChange {
+	var out []xlsx.ResultChange
+	for _, c := range cs {
+		if c.Kind != "stored" && c.Kind != "replaced" && c.Kind != "dropped" {
+			continue
+		}
+		rc := xlsx.ResultChange{Sheet: c.Sheet, Row: c.Row, Col: c.Col, After: c.After, Now: c.Kind != "dropped", Reached: true}
+		follows := a.session.follows(c.Sheet, c.Row, c.Col)
+		if rc.Now && c.After.Kind != grid.Error && !follows {
+			continue
+		}
+		if !rc.Now {
+			if !follows {
+				continue
+			}
+			rc.After, rc.Why = grid.Cell{}, c.Why
+		}
+		out = append(out, rc)
+	}
+	return out
 }
 
 func lintFindings(fs []lint.Finding) []checkFinding {

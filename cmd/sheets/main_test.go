@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/eemax/sheets/internal/xlsxtest"
@@ -28,6 +30,13 @@ func TestScripts(t *testing.T) {
 			if v := os.Getenv("SHEETS_STREAM"); v != "" {
 				env.Setenv("SHEETS_STREAM", v)
 			}
+			// Under -race each command is a race-detecting process, which
+			// sleeps a second as it exits (atexit_sleep_ms) for reports from
+			// goroutines still running: 190 commands made against.txtar 183 s,
+			// the race stage's longest, against 2.5 s plain. A command waits
+			// for its own goroutines before it exits, and a race found is
+			// still reported when found (exit 66 fails the script).
+			env.Setenv("GORACE", strings.TrimSpace(os.Getenv("GORACE")+" atexit_sleep_ms=0"))
 			return nil
 		},
 		Cmds: map[string]func(ts *testscript.TestScript, neg bool, args []string){
@@ -51,6 +60,45 @@ func TestScripts(t *testing.T) {
 					if !neg && err != nil {
 						ts.Fatalf("%s: %v", name, err)
 					}
+				}
+			},
+			// shortform checks the last command's change report: one, and
+			// under the given number of lines (the head line and what
+			// follows it, up to the next-step hints).
+			// shortform 15
+			"shortform": func(ts *testscript.TestScript, neg bool, args []string) {
+				if len(args) != 1 {
+					ts.Fatalf("usage: shortform maxlines")
+				}
+				limit, err := strconv.Atoi(args[0])
+				ts.Check(err)
+				lines := strings.Split(strings.TrimRight(ts.ReadFile("stdout"), "\n"), "\n")
+				start, n := -1, 0
+				for i, l := range lines {
+					if strings.HasPrefix(l, "change: ") {
+						if start >= 0 {
+							ts.Fatalf("two change reports: lines %d and %d", start+1, i+1)
+						}
+						start = i
+					}
+				}
+				if start < 0 {
+					if !neg {
+						ts.Fatalf("no change report")
+					}
+					return
+				}
+				for _, l := range lines[start:] {
+					if strings.HasPrefix(l, "next: ") {
+						break
+					}
+					n++
+				}
+				if neg {
+					ts.Fatalf("a change report of %d lines", n)
+				}
+				if n >= limit {
+					ts.Fatalf("the change report has %d lines, %d or more", n, limit)
 				}
 			},
 			// part prints a part of a workbook:

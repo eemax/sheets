@@ -57,6 +57,11 @@ type patches struct {
 	// conds are the sheets' conditional formats, which excelize never
 	// holds (see linefix.go).
 	conds map[string]*condSection
+	// x14Rules are what the session's edits of lines and sheets do to each
+	// sheet's validations in Excel 2010's extension list, which excelize
+	// neither reads nor moves, in order, by sheet: applied when saving
+	// (see moveX14Validations).
+	x14Rules map[string][]func([]byte) []byte
 	// errorCells are cells holding an error value as a constant (#N/A
 	// typed in or pasted as a value), by sheet, which excelize cannot
 	// write: it writes them as text, and they are retyped here.
@@ -72,7 +77,7 @@ type chartFix struct {
 type sheetEdit struct{ from, to string }
 
 func newPatches() *patches {
-	return &patches{plainCols: map[string]bool{}, noFilter: map[string]bool{}, dynamic: map[string]map[string]bool{}, plain: map[string]map[string]bool{}, newCharts: map[string]chartFix{}, noTabColor: map[string]bool{}, errorCells: map[string]map[string]bool{}, notesChanged: map[string]bool{}, conds: map[string]*condSection{}}
+	return &patches{plainCols: map[string]bool{}, noFilter: map[string]bool{}, dynamic: map[string]map[string]bool{}, plain: map[string]map[string]bool{}, newCharts: map[string]chartFix{}, noTabColor: map[string]bool{}, errorCells: map[string]map[string]bool{}, notesChanged: map[string]bool{}, conds: map[string]*condSection{}, x14Rules: map[string][]func([]byte) []byte{}}
 }
 
 // markCell records whether a cell holds a dynamic array formula.
@@ -92,6 +97,10 @@ func (p *patches) rename(from, to string) {
 	if v, ok := p.conds[from]; ok {
 		p.conds[to] = v
 		delete(p.conds, from)
+	}
+	if v, ok := p.x14Rules[from]; ok {
+		p.x14Rules[to] = v
+		delete(p.x14Rules, from)
 	}
 	if p.notesChanged[from] {
 		p.notesChanged[to] = true
@@ -340,6 +349,9 @@ func serialize(f *excelize.File, pt *patches) ([]byte, error) {
 		}
 		if sec := pt.conds[sheet]; sec != nil && !sec.empty() {
 			b = writeConds(b, sec)
+		}
+		if fns := pt.x14Rules[sheet]; len(fns) > 0 {
+			b = moveX14Validations(b, fns)
 		}
 		b = orderRules(b)
 		if dyn, plain := pt.dynamic[sheet], pt.plain[sheet]; len(dyn)+len(plain) > 0 {

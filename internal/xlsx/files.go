@@ -14,6 +14,7 @@ import (
 type Batch struct {
 	path    string
 	data    []byte // nil while the file does not exist
+	start   []byte // the file as the batch began
 	changed bool
 }
 
@@ -33,7 +34,7 @@ func StartBatch(path string) (*Batch, error) {
 	data, err := os.ReadFile(abs)
 	switch {
 	case err == nil:
-		b.data = data
+		b.data, b.start = data, data
 	case !errors.Is(err, fs.ErrNotExist):
 		return nil, err
 	}
@@ -54,6 +55,11 @@ func (b *Batch) End() {
 		batch = nil
 	}
 }
+
+// Start is the file as the batch began (nil when there was none), and Data
+// as its commands have left it.
+func (b *Batch) Start() []byte { return b.start }
+func (b *Batch) Data() []byte  { return b.data }
 
 // Changed reports whether a command of the batch saved the file.
 func (b *Batch) Changed() bool { return b.changed }

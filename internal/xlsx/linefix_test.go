@@ -242,3 +242,49 @@ func TestMergedCellsHideTheirCells(t *testing.T) {
 		})
 	}
 }
+
+// Validations in Excel 2010's extension list (a list read from another
+// sheet, as Excel saves one), which excelize neither reads nor moves,
+// follow edits of lines and sheets in the full editor as Excel moves them.
+func TestX14ValidationsFollowEdits(t *testing.T) {
+	x14 := regexp.MustCompile(`<x14:dataValidations count="(\d+)"[^>]*>.*?<xm:f>([^<]*)</xm:f>.*?<xm:sqref>([^<]*)</xm:sqref>`)
+	cases := []struct {
+		name  string
+		edit  func(e *Editor) error
+		sheet string // Data's name after the edit
+		want  string // count, list source, cells; "" when it went
+	}{
+		{"rows inserted above what it reads", func(e *Editor) error { return e.InsertRows("Summary", 2, 1) }, "Data", "1 Summary!$D$3:$D$7 A2:A6"},
+		{"row deleted within what it reads", func(e *Editor) error { return e.DeleteRows("Summary", 3, 3) }, "Data", "1 Summary!$D$2:$D$5 A2:A6"},
+		{"column inserted before what it reads", func(e *Editor) error { return e.InsertCols("Summary", 1, 1) }, "Data", "1 Summary!$E$2:$E$6 A2:A6"},
+		{"row inserted above its cells", func(e *Editor) error { return e.InsertRows("Data", 1, 1) }, "Data", "1 Summary!$D$2:$D$6 A3:A7"},
+		{"its cells all deleted", func(e *Editor) error { return e.DeleteRows("Data", 2, 6) }, "Data", ""},
+		{"sheet it reads renamed", func(e *Editor) error { return e.RenameSheet("Summary", "Totals") }, "Data", "1 Totals!$D$2:$D$6 A2:A6"},
+		{"its sheet renamed, then a row inserted above what it reads", func(e *Editor) error {
+			if err := e.RenameSheet("Data", "Facts"); err != nil {
+				return err
+			}
+			return e.InsertRows("Summary", 2, 1)
+		}, "Facts", "1 Summary!$D$3:$D$7 A2:A6"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := t.TempDir() + "/b.xlsx"
+			b, err := os.ReadFile("testdata/against_before.xlsx")
+			must(t, err)
+			must(t, os.WriteFile(path, b, 0o644))
+			change(t, path, func(e *Editor) { must(t, c.edit(e)) })
+			validPackage(t, path)
+			got := ""
+			if m := x14.FindStringSubmatch(sheetXML(t, path, "xl/worksheets/sheet1.xml")); m != nil {
+				got = strings.Join(m[1:], " ")
+			}
+			if got != c.want {
+				t.Errorf("%s's x14 validation: got %q, want %q", c.sheet, got, c.want)
+			}
+			if c.want == "" && strings.Contains(sheetXML(t, path, "xl/worksheets/sheet1.xml"), "x14:dataValidations") {
+				t.Errorf("an empty x14 validation list is left")
+			}
+		})
+	}
+}

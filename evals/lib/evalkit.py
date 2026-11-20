@@ -2,14 +2,19 @@
 
 Values come from `sheets read --json`, which computes formulas a file
 stores no result for, so a formula is judged by what it computes whoever
-wrote it. Stored results (what pandas or a preview shows) are read
-separately with openpyxl, data_only.
+wrote it. Checks that must not depend on the tool under test (the claim
+tasks, 19 and 20) read formula values with `lo_values` instead: a copy
+recalculated by LibreOffice, as ssb.py's grading does. Stored results (what
+pandas or a preview shows) are read separately with openpyxl, data_only.
 """
+import atexit
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 
 import openpyxl
@@ -32,6 +37,93 @@ def value(path, sheet, cell):
     rows, _ = values(path, f"'{sheet}'!{cell}")
     for vals in rows.values():
         return vals[0] if vals else None
+    return None
+
+
+_LO = {"profile": None, "cache": {}, "dir": None}
+_RECALC_ALWAYS = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n<oor:items xmlns:oor="http://openoffice.org/2001/registry" '
+    'xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\n'
+    '<item oor:path="/org.openoffice.Office.Calc/Formula/Load"><prop oor:name="OOXMLRecalcMode" oor:op="fuse">'
+    '<value>0</value></prop></item>\n</oor:items>\n')
+
+
+def _lo_recalculated(path):
+    """A copy of PATH that LibreOffice (headless) recalculated, as an
+    openpyxl workbook with data_only. One conversion per file state and
+    process; the profile is the process's own, so concurrent checks do not
+    share one."""
+    st = os.stat(path)
+    key = (os.path.realpath(path), st.st_mtime_ns, st.st_size)
+    if key in _LO["cache"]:
+        return _LO["cache"][key]
+    if _LO["dir"] is None:
+        _LO["dir"] = tempfile.mkdtemp(prefix="evalkit-lo-")
+        atexit.register(shutil.rmtree, _LO["dir"], True)
+        _LO["profile"] = os.path.join(_LO["dir"], "profile")
+        xcu = os.path.join(_LO["profile"], "user", "registrymodifications.xcu")
+        os.makedirs(os.path.dirname(xcu))
+        with open(xcu, "w") as f:
+            f.write(_RECALC_ALWAYS)
+    # Folders named by a counter that every attempt advances, so a conversion
+    # that failed leaves nothing a later call collides with.
+    _LO["n"] = _LO.get("n", 0) + 1
+    src = os.path.join(_LO["dir"], f"in{_LO['n']}")
+    dst = os.path.join(_LO["dir"], f"out{_LO['n']}")
+    os.makedirs(src)
+    shutil.copyfile(path, os.path.join(src, "book.xlsx"))
+    soffice = os.environ.get("EVAL_SOFFICE") or shutil.which("soffice") or "/opt/homebrew/bin/soffice"
+    cmd = [soffice, f"-env:UserInstallation=file://{_LO['profile']}", "--headless", "--calc", "--convert-to",
+           "xlsx:Calc MS Excel 2007 XML", "--outdir", dst, os.path.join(src, "book.xlsx")]
+    # A second try, for a conversion LibreOffice drops under load.
+    for _ in range(2):
+        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        try:
+            p.wait(timeout=180)
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, 9)
+            p.wait()
+        if os.path.exists(os.path.join(dst, "book.xlsx")):
+            break
+    else:
+        raise RuntimeError("LibreOffice could not convert " + os.path.basename(path))
+    wb = openpyxl.load_workbook(os.path.join(dst, "book.xlsx"), data_only=True)
+    _LO["cache"][key] = wb
+    return wb
+
+
+def lo_values(path, ref):
+    """Rows of computed values of a range, as {row: [values...]} and the
+    column letters, the way `values` gives them, but computed by LibreOffice
+    on a copy of the file instead of by sheets. REF is `Sheet!A1:C5`,
+    `'My sheet'!B2` or a sheet name alone (its used range, trimmed). Numbers come
+    back as numbers, dates as datetimes, text as text, errors as their text
+    (`#DIV/0!`) and empty cells as None. Use this where a check must not
+    depend on the tool under test."""
+    sheet, _, rng = ref.rpartition("!")
+    if not sheet:
+        sheet, rng = rng, ""
+    sheet = sheet[1:-1].replace("''", "'") if sheet[:1] == "'" else sheet
+    ws = _lo_recalculated(path)[sheet]
+    if rng:
+        cells = ws[rng]
+    else:  # the used range, less the empty rows and columns a validation or a format leaves at its end
+        cells = ws[ws.dimensions]
+        filled = [c for row in cells for c in row if c.value is not None]
+        if filled:
+            last_row, last_col = max(c.row for c in filled), max(c.column for c in filled)
+            cells = tuple(tuple(c for c in row if c.column <= last_col) for row in cells if row[0].row <= last_row)
+    if not isinstance(cells, tuple):  # one cell
+        cells = ((cells,),)
+    rows = {r[0].row: [c.value for c in r] for r in cells}
+    return rows, [c.column_letter for c in cells[0]]
+
+
+def lo_value(path, sheet, cell):
+    """The value of one cell as LibreOffice computes it (None when empty)."""
+    rows, _ = lo_values(path, f"'{sheet}'!{cell}")
+    for vals in rows.values():
+        return vals[0]
     return None
 
 

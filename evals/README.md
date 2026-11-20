@@ -1,12 +1,23 @@
 # A/B evaluation
 
 Does `sheets` make agents better at spreadsheet work? Each task is done by
-fresh agents in up to four arms:
+fresh agents in up to six arms:
 
 - `sheets`: the CLI and its agent skill's instructions (what `sheets agent-docs` prints).
 - `python`: openpyxl and pandas, the way agents work without it.
-- `skill`: Python with a spreadsheet skill. `EVAL_BASELINE_SKILL` names its SKILL.md, for example Anthropic's xlsx skill.
+- `python-hint`: `python`, plus one line on writing newer functions with
+  their `_xlfn.` prefix (`arms/python-hint.md`).
+- `skill`: Python with Anthropic's xlsx skill, committed in
+  `arms/xlsx-skill` (Apache 2.0; `NOTICE` names the upstream commit), with
+  no LibreOffice. Only this arm follows `EVAL_BASELINE_SKILL`, which names
+  another skill's SKILL.md instead.
+- `skill-lo`: the same committed skill, never `EVAL_BASELINE_SKILL`, in its own setting: LibreOffice is there
+  (`soffice` on the PATH, no stand-ins), so its `scripts/recalc.py` can
+  store formula results (`arms/skill-lo.md`).
 - `mcp`: the tools of haris-musa/excel-mcp-server, run with `uvx`.
+
+`report.md` names the skill file each skill arm loaded. Both skill arms get the skill's folder (copied to `OUT/skills`) and its
+instructions, as Claude Code loads a skill.
 
 Checks grade the results; the report compares pass rates, turns, tokens,
 cost and time.
@@ -17,17 +28,61 @@ evals/run.py run OUT --arms sheets python skill mcp --jobs 8
 evals/run.py run OUT --tasks 03 09 --model haiku      # some tasks, another model
 evals/run.py prepare OUT                              # inputs and prompts only, to run agents another way
 evals/run.py check OUT                                # grade OUT/*/*/work, write OUT/report.md
+evals/run.py run OUT --tasks 13 --arms sheets --timeout 40  # a longer limit per agent
+evals/run.py run OUT --arms sheets python --more      # only the runs not finished yet
+evals/run.py run OUT --redo 13/sheets 02/python       # rerun these two
+evals/run.py validate OUT --tasks 10                  # check the checks with known solutions
 ```
 
 `run` builds `sheets` into `OUT/bin`, puts it on the `sheets` arm's PATH
 (and keeps it off the others'), and runs each agent in its own folder with
 a spending cap (`--budget`, USD per run) and a model (`--model`, default
-`sonnet`). An agent still running after 20 minutes is stopped, with its
-tools, and counts as failed (an MCP server once hung for three hours).
+`sonnet`). An agent still running after 20 minutes (`--timeout MIN`) is
+stopped, with its tools, and counts as failed (an MCP server once hung for
+three hours).
 Agents run without user or project settings, skills or MCP
 servers, so each arm gets only what it is given. Each agent's transcript
 is kept in `transcript.jsonl` beside its work, and `meta.json` counts its
 tool calls (shell commands by program).
+
+A run is finished once its agent has written `meta.json` (a stopped or
+failed agent writes one too). `run --more` prepares and runs only the
+task/arm folders of `--tasks` and `--arms` without one, and leaves
+finished runs untouched: after an interruption, or to add an arm.
+`run --redo TASK/ARM …` (a task prefix naming one task, then an arm)
+re-prepares and reruns only those runs, keeping the old `meta.json` as
+`meta.prev.json`. Either way `check` then grades every run of the tasks,
+so the report holds the kept results beside the new ones.
+
+### The silent column
+
+`report.md` counts *silent* failures per arm: a failed run whose final
+answer claims success, the defect a user would not notice. `run.claim`
+sorts each final answer (`answer.txt`) by this rule:
+
+1. An empty answer, or a run that ended in an error (stopped, out of
+   budget), makes no claim.
+2. An answer admits failure when it says the work could not be done or
+   checked (*could not*, *unable to*, *failed to*, *unfortunately*, *not
+   sure*, …) or carries a caveat about the result (*may not update*,
+   *until it is opened*, *open the file in Excel*,
+   *not recalculated*, *caveat*, …), says nothing was done (*Nothing was
+   changed*, *did not modify X because …*, *protected*, *errored*), or
+   negates the work (*not done*, *haven't changed*, *was not preserved*).
+   Formulas *not modified* or *not touched* are no admission, nor is
+   *when you open the file the total shows 358*. *Couldn't find any* and
+   *cannot see any* report a clean check, not a failure.
+3. Otherwise it claims success when it reports work done or gives an
+   answer: a success word not negated (*done*, *changed*, *updated*, *saved*,
+   *added*, *now*, *total*, …) or a number (a cell reference or
+   sheet name such as *B2* or *Sheet1* is not one).
+4. Otherwise it makes no claim.
+
+Admitting wins over claiming: an answer that does both is not silent. A
+run is silent when it failed (the task's checks) and its answer claims
+success. The rule's examples are doctests
+(`python3 -m doctest evals/run.py`); it errs on the side of not calling a
+run silent.
 
 ## Tasks
 
@@ -51,13 +106,16 @@ tool calls (shell commands by program).
 | 16-debug-budget | finding five planted errors in a budget (a short total, a broken row, text for a number, a wrong reference, double counting) |
 | 17-large-dedupe | removing a repeated import from 150,000 rows and reporting the corrected totals |
 | 18-csv-dialect | a price change in a German ERP export (semicolons, decimal commas, Windows-1252, CRLF), kept in its format |
+| 19-living-workbook | twenty ordered edits in one prompt to a workbook of five sheets (two Excel tables, named cells, a chart, conditional formats, validations, cross-sheet formulas, dynamic arrays), graded on the end state |
+| 20-feature-loss | six edits, one of them a row inserted mid-table, to a budget holding a chart, a shape, validations, conditional formats and a note, each feature checked on the end state |
 
 Each task folder has `prompt.md` (the request, the same for both arms),
 `setup.py` (writes the inputs, and the true answers to a file the agent
 does not see) and `check.py` (grades the result with `evals/lib/evalkit.py`).
 
-Checks judge values by computing formulas (with `sheets read`), so a
-correct formula counts whoever wrote it. A separate kind of check, *stored
+Checks judge values by computing formulas (with `sheets read`, or for the
+claim tasks 19 and 20 with `lo_values`, below), so a correct formula counts
+whoever wrote it. A separate kind of check, *stored
 results*, asks whether the file stores formula results, as pandas and
 previews read them; it is reported apart from the task's pass or fail.
 
@@ -66,6 +124,46 @@ previews read them; it is reported apart from the task's pass or fail.
 Write the three files; then check the check both ways before trusting it:
 untouched inputs must fail (`prepare`, then `check`), and a correct
 solution, by either tool, must pass.
+
+To keep that check, add `solutions/right.py` (a correct solution) and
+`solutions/wrong.py` (a plausible mistake the check must catch).
+`validate OUT --tasks …` runs each task's setup, then each solution as
+`uv run --with openpyxl --with xlsxwriter python SOLUTION WORK_DIR` on a
+fresh copy of the inputs (in `OUT/<task>/solution-right` and `solution-wrong`),
+with this checkout's `sheets` first on the PATH and in `SHEETS_BIN`. The
+solution's stdout is saved as `answer.txt` and graded as an agent's reply.
+It prints a line per task and solution, and exits 0 only when every right
+solution passes and every wrong one fails (a solution that exits non-zero
+counts as a failure of `validate`). Tasks without `solutions/` are
+skipped; `10-downstream-values` has the first pair.
+
+### The claim tasks (19 and 20)
+
+Tasks 19 and 20 test the claim that sheets keeps a workbook whole across
+many edits, so their grading must not depend on sheets. Their checks read a
+formula's value only through `evalkit.lo_values(path, ref)`: a copy of the
+file recalculated by LibreOffice headless (the profile that recomputes every
+formula on load, as `ssb.py` grades), read with openpyxl `data_only`.
+`ref` is `Sheet!A1:C5`, `'My sheet'!B2` or a sheet name; the result has the
+shape of `evalkit.values` (rows by number, and the column letters). Neither
+`check.py` uses `SHEETS_BIN` or `evalkit.values`. Each computes the
+expected values itself, in Python, from the inputs `setup.py` saved to the
+truth file, applying the edits to them. Features (tables, names, the chart,
+the shape, validations, conditional formats, spills, the note, panes,
+number formats) are read from the package's XML or with openpyxl.
+Stored-result checks keep kind `stored`.
+
+Both tasks use only functions LibreOffice computes as Excel does (SUMIFS,
+INDEX, MATCH, COUNTIFS, SUMPRODUCT, AVERAGE, LARGE, and SORT, SORTBY and
+UNIQUE as dynamic arrays whose size does not change), no language-dependent
+TEXT formats. A function that LibreOffice computes unlike Excel is dropped
+from the task, never the expected value changed. Each task's items count
+as defects when they fail (task 19 has 43 task items and 3 stored, task 20
+has 24 and 2); one slip can fail an edit's item and its sheet's item.
+Both have `solutions/right.py` (the sheets CLI, with direct package edits
+where it has no command) and `wrong.py` (openpyxl, which drops the shape
+and the dynamic arrays' metadata and cannot follow a rename). The
+pre-registration of how they are used is `results/wave2-claims.md`.
 
 ## Does the skill trigger?
 

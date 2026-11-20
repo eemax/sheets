@@ -1,0 +1,1028 @@
+// Package fuzz does by machine what wave 1's audits did by hand. It runs
+// the sheets CLI in process (cli.Main) over random workbooks from openpyxl
+// and XlsxWriter, makes random edits, and checks fixed invariants on the
+// files after each one:
+//
+//   - xml: every part is well-formed XML, and every worksheet lists its
+//     rows and the cells of each row in order, each once (xlsxtest); a text
+//     with spaces at its ends says xml:space="preserve";
+//   - kinds: every formula keeps its kind (plain, legacy array, dynamic
+//     array) and goes where the edit puts it, by a model of what each edit
+//     does to formulas (check.go, model.go);
+//   - reach: nothing outside the edit's reach changes, its value or its
+//     number format, by a model of the cells each edit may change, but
+//     references an edit that moves cells rewrites, as its shift puts them,
+//     and the values of formulas that read what changed (reach.go);
+//   - editors: the streaming and the full editor give the same cells,
+//     formulas, kinds and values (and both take the edit, or both refuse);
+//   - undo: undo restores the bytes from before the edit, and an edit
+//     refused leaves them as they were;
+//   - text: a text a set or write typed is stored as typed (a slip in the
+//     code both editors share, that escapes it, gives the same file twice).
+//
+// Invariants judge files, never a command's output text. A panic in a
+// command is reported too: nothing after it can be judged. So is a command
+// that hangs: an edit has editTimeout, and one that does not finish is a
+// finding with the seed, the workbook and the edits, and ends the run.
+//
+// A run is a list of sequences, each with its own seed: the seed picks a
+// workbook from the pool and the edits, each made from the state the
+// edits before it left. A sequence ends at its first finding. Its
+// signature (edit class, invariant, the sequence's seed) is what
+// known.txt lists; long mode, whose fresh seeds no list can hold, knows a
+// finding too by the face of a bug known.txt names (known.go).
+package fuzz
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"runtime/debug"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/eemax/sheets/internal/cli"
+	"github.com/eemax/sheets/internal/grid"
+	"github.com/eemax/sheets/internal/words"
+	"github.com/eemax/sheets/internal/xlsx"
+)
+
+// FileArg stands for the workbook in an Edit's arguments.
+const FileArg = "{file}"
+
+// Edit is one sheets command on the workbook.
+type Edit struct {
+	Class string   // set, write, clear, copy, move, sort, replace, rows-insert, ...
+	Args  []string // the command line after "sheets"; FileArg is the workbook
+	Stdin string
+}
+
+// String renders the edit as a shell command on book.xlsx.
+func (e Edit) String() string {
+	args := make([]string, len(e.Args))
+	for i, a := range e.Args {
+		if a == FileArg {
+			a = "book.xlsx"
+		}
+		args[i] = shellWord(a)
+	}
+	s := "sheets " + strings.Join(args, " ")
+	if e.Stdin != "" {
+		s += " <<'EOF'\n" + strings.TrimSuffix(e.Stdin, "\n") + "\nEOF"
+	}
+	return s
+}
+
+// shellWord quotes an argument for a shell. One with a control character
+// (a line break, a tab) is written in the $'...' form, which a report's
+// indentation cannot change.
+func shellWord(a string) string {
+	if !strings.ContainsFunc(a, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return words.Quote(a)
+	}
+	var b strings.Builder
+	b.WriteString("$'")
+	for _, r := range a {
+		switch {
+		case r == '\\' || r == '\'':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('\'')
+	return b.String()
+}
+
+// Signature identifies a finding exactly: the class of the edit that broke
+// an invariant, the invariant, and the seed of the sequence it ended, and
+// whether the sequence ran on a pool long mode generated (long) or on the
+// committed one.
+type Signature struct {
+	Class     string
+	Invariant string
+	Seed      uint64
+	// Long: the sequence started from a pool long mode generated with
+	// fuzzgen.py, from a seed the sequence's own gives (see PoolSeed).
+	Long bool
+}
+
+func (s Signature) String() string {
+	t := fmt.Sprintf("%s %s %d", s.Class, s.Invariant, s.Seed)
+	if s.Long {
+		return "long " + t
+	}
+	return t
+}
+
+// Finding is an invariant an edit broke.
+type Finding struct {
+	Signature
+	Pool     uint64 // the seed fuzzgen.py made the pool from; 0 for the committed pool (testdata/pool)
+	Workbook string // the pool file the sequence started from
+	Edits    []Edit // the sequence, ending with the edit that broke it
+	// Taken says, for each edit of Edits, whether both editors took it (an
+	// edit refused changes nothing: a sheet copy refused made no copy). Nil:
+	// not known, and every edit counts as taken.
+	Taken  []bool
+	Detail string
+	After  time.Duration // how long the run had run when it made it
+}
+
+// Report prints the finding as a repro: seed, workbook, edits, detail.
+func (f Finding) Report() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "finding %s\n", f.Signature)
+	if f.Pool == 0 {
+		fmt.Fprintf(&b, "  workbook: testdata/pool/%s (copy it to book.xlsx)\n", f.Workbook)
+	} else {
+		fmt.Fprintf(&b, "  workbook: %s of the pool `%s` makes in DIR/pool (copy it to book.xlsx)\n", f.Workbook, GenerateCommand(f.Pool, "DIR"))
+	}
+	for i, e := range f.Edits {
+		fmt.Fprintf(&b, "  %d. %s\n", i+1, strings.ReplaceAll(e.String(), "\n", "\n     "))
+	}
+	fmt.Fprintf(&b, "  broke %s: %s\n", f.Invariant, strings.ReplaceAll(f.Detail, "\n", "\n    "))
+	return b.String()
+}
+
+// Workbook is a pool file.
+type Workbook struct {
+	Name string
+	Data []byte
+}
+
+// LoadPool reads every .xlsx file of dir, by name.
+func LoadPool(dir string) ([]Workbook, error) {
+	names, err := filepath.Glob(filepath.Join(dir, "*.xlsx"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(names)
+	var pool []Workbook
+	for _, n := range names {
+		data, err := os.ReadFile(n)
+		if err != nil {
+			return nil, err
+		}
+		pool = append(pool, Workbook{filepath.Base(n), data})
+	}
+	if len(pool) == 0 {
+		return nil, fmt.Errorf("no workbooks in %s", dir)
+	}
+	return pool, nil
+}
+
+// Options set a run.
+type Options struct {
+	Seed  uint64        // the run's seed; sequence i has seed Seed*100000+i
+	Edits int           // stop after this many edits
+	Time  time.Duration // stop once this much time has passed (0: no cap)...
+	Min   int           // ...and at least this many edits are made
+	Steps int           // the most edits in a sequence (default 12)
+	Dir   string        // scratch directory
+	// Pools gives the pool sequence i starts from (long mode: a fresh one for
+	// each round of sequences); nil: the pool Run is given, for every one.
+	Pools func(i int) (Pool, error)
+	// Stop ends the run after a finding it returns true for (the mutants: the
+	// first one known.txt does not list).
+	Stop func(Finding) bool
+	// Sample is given the workbook each sequence that made no finding leaves
+	// (the streaming editor's copy), with the pool and file it started from:
+	// long mode's second opinion on its values (see opinion.go).
+	Sample func(seq uint64, p Pool, workbook string, data []byte)
+}
+
+// Pool is the workbooks sequences start from.
+type Pool struct {
+	Seed  uint64 // the seed fuzzgen.py made it from; 0 for the committed pool (testdata/pool)
+	Files []Workbook
+}
+
+// Result is what a run did.
+type Result struct {
+	Edits     int // edits made (each on both editors)
+	Applied   int // edits both editors took
+	Sequences int
+	Capped    bool // stopped by the time cap before Edits
+	Hung      bool // stopped by an edit that did not finish (see editTimeout)
+	Stopped   bool // stopped by Options.Stop, after a finding
+	// Truncated: the last sequence made fewer edits than its seed asked for,
+	// cut short by Options.Edits (the others ran in full).
+	Truncated bool
+	// Pools are the seeds of the generated pools the run started sequences
+	// from, in order (none: the committed pool only).
+	Pools []uint64
+	// Fallback are the sequences that started from the committed pool in
+	// place of a generated one, which could not be made (long mode without
+	// uv): their findings are not long ones, and a long entry of known.txt
+	// for one of them was not put to the test.
+	Fallback map[int]bool
+	Elapsed  time.Duration
+	Findings []Finding
+	// Saved counts the files the editors saved (an edit, two editors) that
+	// hold a formula result of each stored form, and a shared formula (see
+	// Results): the forms the invariants were put to.
+	Saved map[string]int
+	// Repeated counts the edits that removed a dynamic array and were made
+	// again, by each editor, on the bytes they first found (see repeatFrom).
+	Repeated int
+	// Taken counts, by edit class, the edits both editors took; Streamed
+	// those of them the streaming editor could do itself (see streamed). The
+	// other edits are full-editor code in both copies, so the editors
+	// invariant compares that code with itself.
+	Taken, Streamed map[string]int
+	// Made counts, by edit class, the edits made, applied or refused: Taken
+	// over Made is the share both editors took (the sorts are judged only when
+	// they are).
+	Made map[string]int
+	// Escaped counts, by what needs escaping (see escapeKinds), the texts the
+	// streaming editor could write itself (the set and write edits streamed
+	// counts): the texts that put its own text writer (xlsx/stream_sheet.go
+	// newCell) to the escapes.
+	Escaped map[string]int
+}
+
+// seedMix is the second word of each sequence's random generator, mixed with
+// its seed: the golden ratio's bits, and 797, which was picked so that
+// sequence 100139 is a paste over dynamic arrays that sheets lays out
+// differently from one run to the next (copy repeat 100139 in known.txt).
+// That is the sequence wave 2's audit replays hundreds of times, to see
+// whether the repeat check ever misses it. Another mix makes other
+// sequences; the default run's findings in known.txt are then made again.
+var seedMix uint64 = 0x9e3779b97f4a7c15 + 797
+
+// SequenceSeed is the seed of sequence i of a run.
+func SequenceSeed(run uint64, i int) uint64 { return run*100000 + uint64(i) }
+
+// Run runs sequences until the edit count or the time cap is reached.
+func Run(pool []Workbook, o Options) (*Result, error) {
+	start := time.Now()
+	r := &Result{Saved: map[string]int{}, Taken: map[string]int{}, Streamed: map[string]int{}, Made: map[string]int{}, Escaped: map[string]int{}}
+	for i := 0; r.Edits < o.Edits; i++ {
+		if o.Time > 0 && r.Edits >= o.Min && time.Since(start) > o.Time {
+			r.Capped = true
+			break
+		}
+		p := Pool{Files: pool}
+		if o.Pools != nil {
+			var err error
+			if p, err = o.Pools(i); err != nil {
+				return r, err
+			}
+			if n := len(r.Pools); p.Seed != 0 && (n == 0 || r.Pools[n-1] != p.Seed) {
+				r.Pools = append(r.Pools, p.Seed)
+			}
+			if p.Seed == 0 {
+				if r.Fallback == nil {
+					r.Fallback = map[int]bool{}
+				}
+				r.Fallback[i] = true
+			}
+		}
+		seed := SequenceSeed(o.Seed, i)
+		var sample func(string, []byte)
+		if o.Sample != nil {
+			sample = func(name string, data []byte) { o.Sample(seed, p, name, data) }
+		}
+		f, made, applied, err := sequence(p.Files, seed, o.Dir, o.steps(), o.Edits-r.Edits, nil, r, sample)
+		if err != nil {
+			return r, err
+		}
+		r.Sequences++
+		r.Edits += made
+		r.Applied += applied
+		if f != nil {
+			f.Pool, f.Long, f.After = p.Seed, p.Seed != 0, time.Since(start)
+			r.Findings = append(r.Findings, *f)
+			if f.Invariant == "hang" {
+				// The edit's goroutine is still running, in the process and on
+				// the run's files: nothing after it can be trusted.
+				r.Hung = true
+				break
+			}
+			if o.Stop != nil && o.Stop(*f) {
+				r.Stopped = true
+				break
+			}
+		}
+	}
+	r.Elapsed = time.Since(start)
+	return r, nil
+}
+
+func (o Options) steps() int {
+	if o.Steps > 0 {
+		return o.Steps
+	}
+	return 12
+}
+
+// Replay runs the sequence of one seed again, logging every edit and its
+// outcome, and returns its finding, if any.
+func Replay(pool []Workbook, seed uint64, dir string, steps int, log func(string)) (*Finding, error) {
+	if steps <= 0 {
+		steps = 12
+	}
+	f, _, _, err := sequence(pool, seed, dir, steps, steps, log, nil, nil)
+	return f, err
+}
+
+// sequence makes up to steps edits (at most budget) on a workbook the seed
+// picks, and stops at the first finding. It counts what it saves and repeats
+// into res, when not nil, and gives sample the workbook it leaves, when it
+// made no finding.
+func sequence(pool []Workbook, seed uint64, dir string, steps, budget int, log func(string), res *Result, sample func(workbook string, data []byte)) (f *Finding, made, applied int, err error) {
+	rng := rand.New(rand.NewPCG(seed, seed^seedMix))
+	wb := pool[rng.IntN(len(pool))]
+	n := 1 + rng.IntN(steps)
+	if n > budget {
+		n = budget
+		if res != nil {
+			res.Truncated = true
+		}
+	}
+	s, err := newSession(dir, wb.Data)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	defer s.close()
+	s.res = res
+	var edits []Edit
+	var taken []bool
+	for i := 0; i < n; i++ {
+		e, v, err := s.generate(rng)
+		if err != nil {
+			return nil, made, applied, err
+		}
+		if v != nil {
+			if len(edits) == 0 {
+				return nil, made, applied, fmt.Errorf("the pool file %s: %s", wb.Name, v.detail)
+			}
+			last := edits[len(edits)-1]
+			return &Finding{Signature: Signature{Class: last.Class, Invariant: v.invariant, Seed: seed}, Workbook: wb.Name, Edits: edits, Taken: taken, Detail: v.detail}, made, applied, nil
+		}
+		edits = append(edits, e)
+		out, err := s.step(e, i)
+		if err != nil {
+			return nil, made, applied, err
+		}
+		made++
+		if res != nil {
+			res.Made[e.Class]++
+		}
+		taken = append(taken, out.applied)
+		if out.applied {
+			applied++
+		}
+		if log != nil {
+			log(fmt.Sprintf("%d. %s\n   -> %s", i+1, e, out.summary()))
+		}
+		if len(out.broken) > 0 {
+			v := out.broken[0]
+			detail := v.detail
+			for _, w := range out.broken[1:] {
+				detail += "\nalso " + w.invariant + ": " + w.detail
+			}
+			return &Finding{Signature: Signature{Class: e.Class, Invariant: v.invariant, Seed: seed}, Workbook: wb.Name, Edits: edits, Taken: taken, Detail: detail}, made, applied, nil
+		}
+	}
+	if sample != nil && made > 0 {
+		if data, err := os.ReadFile(s.paths[0]); err == nil {
+			sample(wb.Name, data)
+		}
+	}
+	return nil, made, applied, nil
+}
+
+// Shrink removes the edits a finding does not need, one at a time, keeping
+// each removal after which the last edit still breaks the same invariant.
+//
+// A hang is not shrunk: every replay would wait out editTimeout, and leave
+// another goroutine running.
+func Shrink(pool []Workbook, f Finding, dir string) (Finding, error) {
+	if f.Invariant == "hang" {
+		return f, nil
+	}
+	var wb []byte
+	for _, w := range pool {
+		if w.Name == f.Workbook {
+			wb = w.Data
+		}
+	}
+	if wb == nil {
+		return f, fmt.Errorf("workbook %s not in the pool", f.Workbook)
+	}
+	edits := f.Edits
+	same := func(try []Edit) (bool, error) {
+		g, err := replayEdits(wb, try, dir)
+		if err != nil {
+			return false, err
+		}
+		if g != nil && g.edit == len(try)-1 && try[g.edit].Class == f.Class && g.invariant == f.Invariant {
+			f.Detail, f.Taken = g.detail, g.taken
+			return true, nil
+		}
+		return false, nil
+	}
+	for i := len(edits) - 2; i >= 0; i-- {
+		try := append(append([]Edit{}, edits[:i]...), edits[i+1:]...)
+		if ok, err := same(try); err != nil {
+			return f, err
+		} else if ok {
+			edits = try
+		}
+	}
+	// Then the lines of batches and scripts.
+	for i := range edits {
+		for j := len(lines(edits[i])) - 1; j >= 0; j-- {
+			e, ok := withoutLine(edits[i], j)
+			if !ok {
+				continue
+			}
+			try := append([]Edit{}, edits...)
+			try[i] = e
+			if ok, err := same(try); err != nil {
+				return f, err
+			} else if ok {
+				edits = try
+			}
+		}
+	}
+	f.Edits = edits
+	return f, nil
+}
+
+// lines are the commands of a do batch, or the statements of a script
+// after its first (which names the sheet).
+func lines(e Edit) []string {
+	switch e.Class {
+	case "do":
+		return strings.Split(strings.TrimSuffix(e.Stdin, "\n"), "\n")
+	case "script":
+		return strings.Split(strings.TrimSuffix(e.Args[len(e.Args)-1], "\n"), "\n")[1:]
+	}
+	return nil
+}
+
+// withoutLine is a batch or script without one of its lines; false when it
+// would have none left.
+func withoutLine(e Edit, j int) (Edit, bool) {
+	ls := lines(e)
+	if len(ls) < 2 {
+		return e, false
+	}
+	rest := strings.Join(append(append([]string{}, ls[:j]...), ls[j+1:]...), "\n") + "\n"
+	switch e.Class {
+	case "do":
+		e.Stdin = rest
+	case "script":
+		code := e.Args[len(e.Args)-1]
+		head := code[:strings.IndexByte(code, '\n')+1]
+		e.Args = append(append([]string{}, e.Args[:len(e.Args)-1]...), head+rest)
+	}
+	return e, true
+}
+
+type broke struct {
+	edit      int
+	invariant string
+	detail    string
+	taken     []bool // which edits up to it both editors took
+}
+
+// replayEdits makes the given edits on a workbook and returns the first
+// invariant broken.
+func replayEdits(wb []byte, edits []Edit, dir string) (*broke, error) {
+	s, err := newSession(dir, wb)
+	if err != nil {
+		return nil, err
+	}
+	defer s.close()
+	var taken []bool
+	for i, e := range edits {
+		out, err := s.step(e, i)
+		if err != nil {
+			return nil, err
+		}
+		taken = append(taken, out.applied)
+		if len(out.broken) > 0 {
+			return &broke{i, out.broken[0].invariant, out.broken[0].detail, taken}, nil
+		}
+	}
+	return nil, nil
+}
+
+// editors names the two editors: SHEETS_STREAM's value for each.
+var editors = [2]struct{ name, env string }{{"stream", "always"}, {"full", "never"}}
+
+// session holds one workbook twice, a copy per editor.
+type session struct {
+	root  string
+	paths [2]string
+	cur   *grid.Workbook // the streaming copy, parsed: what the next edit is made from
+	// objs are the validations, conditional formats and looks of the streaming
+	// copy (file objects), read from objsFor: the next edit's before.
+	objs    *fileObjects
+	objsFor []byte
+	res     *Result // counts the stored forms saved and the edits repeated, when not nil
+}
+
+func newSession(dir string, data []byte) (*session, error) {
+	root, err := os.MkdirTemp(dir, "seq-")
+	if err != nil {
+		return nil, err
+	}
+	s := &session{root: root}
+	for k, ed := range editors {
+		d := filepath.Join(root, ed.name)
+		if err := os.Mkdir(d, 0o755); err != nil {
+			return nil, err
+		}
+		s.paths[k] = filepath.Join(d, "book.xlsx")
+		if err := os.WriteFile(s.paths[k], data, 0o644); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
+func (s *session) close() { os.RemoveAll(s.root) }
+
+// readBytes is sheets' reader on a saved file, and makeEdit the generator; both
+// are variables so a test can put one that panics in its place.
+var (
+	readBytes = xlsx.ReadBytes
+	makeEdit  = generate
+)
+
+// generate makes the next edit, from the streaming copy. A panic in it, or in
+// the reader on the file it reads, is returned as a violation of the
+// invariant panic: the workbook the last edit saved cannot be edited, and the
+// finding is that edit's (see sequence).
+func (s *session) generate(rng *rand.Rand) (e Edit, v *violation, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			v = &violation{"panic", fmt.Sprintf("making the next edit, on the workbook as the last edit saved it: %v\n%s", p, debug.Stack())}
+		}
+	}()
+	if s.cur == nil {
+		data, err := os.ReadFile(s.paths[0])
+		if err != nil {
+			return Edit{}, nil, err
+		}
+		if s.cur, err = readBytes(data); err != nil {
+			return Edit{}, nil, fmt.Errorf("the workbook does not read: %w", err)
+		}
+	}
+	return makeEdit(rng, s.cur), nil, nil
+}
+
+type violation struct{ invariant, detail string }
+
+type outcome struct {
+	codes   [2]int
+	errs    [2]string
+	applied bool
+	broken  []violation
+}
+
+func (o outcome) summary() string {
+	var b strings.Builder
+	for k, ed := range editors {
+		if k > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "%s exit %d", ed.name, o.codes[k])
+		if o.errs[k] != "" {
+			fmt.Fprintf(&b, " (%s)", firstLine(o.errs[k]))
+		}
+	}
+	if len(o.broken) > 0 {
+		fmt.Fprintf(&b, "; broke %s: %s", o.broken[0].invariant, o.broken[0].detail)
+	}
+	return b.String()
+}
+
+// editTimeout is the longest an edit may take, with the checks made after
+// it: edits take milliseconds (180 ms under -race), so an edit that takes
+// this long is a hang. Without a limit, a command that hangs runs until go
+// test's timeout (10 minutes, 30 in check.sh's race step), which prints a
+// dump of goroutines and no workbook, no edits and no seed. It is a variable
+// for the test of the watchdog.
+var editTimeout = 30 * time.Second
+
+// step makes one edit and checks it (stepNow) within editTimeout. An edit
+// that does not finish is a finding of the invariant hang, with the edit
+// the sequence ended at, so the failure prints the seed, the workbook and
+// the edits like any other. Its goroutine cannot be stopped, and goes on
+// running: the finding ends the run (see Run).
+func (s *session) step(e Edit, i int) (outcome, error) {
+	type result struct {
+		o   outcome
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		// A panic in the goroutine would end the whole test binary, with a
+		// dump of goroutines and no seed, no workbook and no edits. The commands
+		// are guarded by run; this guards the rest of the step: the fuzzer's own
+		// judging, and sheets' reader on the files the editors saved.
+		defer func() {
+			if p := recover(); p != nil {
+				done <- result{outcome{broken: []violation{{"panic", fmt.Sprintf("judging the files the editors saved: %v\n%s", p, debug.Stack())}}}, nil}
+			}
+		}()
+		o, err := s.stepNow(e, i)
+		done <- result{o, err}
+	}()
+	t := time.NewTimer(editTimeout)
+	defer t.Stop()
+	select {
+	case r := <-done:
+		return r.o, r.err
+	case <-t.C:
+		return outcome{broken: []violation{{"hang", fmt.Sprintf("the edit, with both editors and the checks, did not finish in %s", editTimeout)}}}, nil
+	}
+}
+
+// stepNow makes one edit with both editors and checks the invariants. Edit i
+// checks undo on the streaming copy when even, on the full one when odd;
+// the other copy's edit runs with the journal off (SHEETS_UNDO=off), so
+// each journal holds the one change undo takes back.
+func (s *session) stepNow(e Edit, i int) (outcome, error) {
+	var o outcome
+	var before, after [2][]byte
+	u := i % 2
+	for k, ed := range editors {
+		var err error
+		if before[k], err = os.ReadFile(s.paths[k]); err != nil {
+			return o, err
+		}
+		o.codes[k], o.errs[k] = run(ed.env, k == u, e, s.paths[k])
+		if after[k], err = os.ReadFile(s.paths[k]); err != nil {
+			// An edit that deletes or moves the workbook, or puts something
+			// else at its path, is data loss: a finding like any other, with the
+			// seed, the workbook and the edits (both editors are made, so the
+			// finding names each that did it).
+			o.broken = append(o.broken, violation{"missing", fmt.Sprintf("%s editor: the edit (exit %d) left no workbook at book.xlsx: %s", ed.name, o.codes[k], unpath(err, s.paths[k]))})
+		}
+	}
+	for k, ed := range editors {
+		if o.codes[k] == panicked {
+			o.broken = append(o.broken, violation{"panic", ed.name + " editor: " + o.errs[k]})
+		}
+	}
+	if len(o.broken) > 0 {
+		return o, nil
+	}
+	if (o.codes[0] == 0) != (o.codes[1] == 0) {
+		o.broken = append(o.broken, violation{"editors", fmt.Sprintf("stream exit %d (%s), full exit %d (%s)",
+			o.codes[0], firstLine(o.errs[0]), o.codes[1], firstLine(o.errs[1]))})
+		return o, nil
+	}
+	if o.codes[0] != 0 {
+		for k, ed := range editors {
+			if !bytes.Equal(before[k], after[k]) {
+				o.broken = append(o.broken, violation{"undo", ed.name + " editor: the edit was refused (" + firstLine(o.errs[k]) + ") but the file changed"})
+			}
+		}
+		return o, nil
+	}
+	o.applied = true
+	wb, d := compareEditors(after[0], after[1])
+	prev, err := s.before(before[0])
+	if err != nil {
+		return o, err
+	}
+	if s.res != nil {
+		s.res.Taken[e.Class]++
+		if streamed(e, prev) {
+			s.res.Streamed[e.Class]++
+			for _, t := range typed(e) {
+				for _, k := range escapeKinds(t) {
+					s.res.Escaped[k]++
+				}
+			}
+		}
+	}
+	// An edit that removes a dynamic array is made again (see repeatFrom).
+	if wb != nil && arraysGone(prev, wb) >= repeatFrom {
+		v, err := s.repeat(e, before, after)
+		if err != nil {
+			return o, err
+		}
+		if v != nil {
+			s.cur = wb
+			o.broken = append(o.broken, *v)
+			return o, nil
+		}
+	}
+	for k, ed := range editors {
+		vs, cells := inspect(after[k])
+		for _, v := range vs {
+			v.detail = ed.name + " editor: " + v.detail
+			o.broken = append(o.broken, v)
+		}
+		s.count(cells)
+	}
+	if d != "" {
+		o.broken = append(o.broken, violation{"editors", d})
+	} else if wb != nil {
+		// Where the formulas went: the model of kinds, followed through the edit.
+		m := newModel(prev)
+		m.r = newReach(prev)
+		m.apply(e)
+		if msg := m.check(wb); msg != "" {
+			o.broken = append(o.broken, violation{"kinds", msg})
+		} else if msg := checkTyped(e, wb, prev); msg != "" {
+			o.broken = append(o.broken, violation{"text", msg})
+		} else if msg := m.reached(wb); msg != "" {
+			// Nothing outside the edit's reach changed (see reach.go).
+			o.broken = append(o.broken, violation{"reach", msg})
+		} else if msg := s.reachedFile(m, prev, wb, before[0], after[0]); msg != "" {
+			o.broken = append(o.broken, violation{"reach", msg})
+		} else if msg := s.editorsFile(wb, after); msg != "" {
+			o.broken = append(o.broken, violation{"editors", msg})
+		}
+	}
+	s.cur = wb
+	if k := u; !bytes.Equal(before[k], after[k]) {
+		v, err := checkUndo(k, s.paths[k], before[k], after[k])
+		if err != nil {
+			return o, err
+		}
+		if v != nil {
+			o.broken = append(o.broken, *v)
+		}
+	}
+	return o, nil
+}
+
+// fileChecks says whether the objects the reader gives no cells for
+// (validations, conditional formats, looks) are read from the file after each
+// edit, for the reach invariant and the editors': TestMain turns it off under
+// -race (README, Timings).
+var fileChecks = true
+
+// reachedFile judges the objects the reader gives no cells for (validations,
+// conditional formats, looks) of the streaming copy before the edit and after
+// it (model.reachedFile). The file before is the one read after the last
+// edit, when the sequence goes on from it. A file that does not open for
+// editing is not judged here (the next edit would refuse it).
+func (s *session) reachedFile(m *model, prev, wb *grid.Workbook, before, after []byte) string {
+	if !fileChecks {
+		return ""
+	}
+	b := s.objs
+	if b == nil || !bytes.Equal(s.objsFor, before) {
+		var err error
+		if b, err = readFileObjects(before, prev); err != nil {
+			return ""
+		}
+	}
+	a, err := readFileObjects(after, wb)
+	if err != nil {
+		return ""
+	}
+	s.objs, s.objsFor = a, after
+	return m.reachedFile(wb, b, a) // "" when the model cannot read the edit
+}
+
+// editorsFile compares the validations, conditional formats and looks of the
+// two editors' files (the editors invariant, for what the reader gives no
+// cells for). A file that does not open for editing is not judged here.
+func (s *session) editorsFile(wb *grid.Workbook, after [2][]byte) string {
+	a := s.objs // the streaming copy's, read by reachedFile
+	if a == nil || !bytes.Equal(s.objsFor, after[0]) {
+		return ""
+	}
+	full, err := readBytes(after[1])
+	if err != nil {
+		return ""
+	}
+	b, err := readFileObjects(after[1], full)
+	if err != nil {
+		return ""
+	}
+	name := func(k string) string {
+		for _, sh := range wb.Sheets {
+			if strings.ToLower(sh.Name) == k {
+				return sh.Name
+			}
+		}
+		return k
+	}
+	return compareFileObjects(a, b, name)
+}
+
+// streamed tells whether the streaming editor could take an edit itself, on
+// the workbook it was made on: a set or a write on a sheet that exists and
+// adds no dynamic array, or the insert or delete of rows, on a workbook that
+// holds no dynamic array and no legacy array over several cells (see
+// streamable). It is the fuzzer's estimate from the edit and the workbook,
+// not what the editor reported (that is the count in README.md): a set or
+// rows edit inside a do batch or a script is not counted.
+func streamed(e Edit, wb *grid.Workbook) bool {
+	switch e.Class {
+	case "set", "write":
+		if strings.Contains(e.Stdin, `N("d")`) {
+			return false
+		}
+		for i, a := range e.Args[2:] {
+			if marker(a) == Dynamic {
+				return false
+			}
+			// A cell to write: a sheet that is new needs the full editor.
+			if e.Class == "write" && i == 0 || e.Class == "set" && i%2 == 0 {
+				p, err := grid.ParseRef(a, func(n string) bool { return wb.Sheet(n) != nil })
+				if err != nil || p.Sheet != "" && wb.Sheet(p.Sheet) == nil {
+					return false
+				}
+			}
+			if e.Class == "write" {
+				break
+			}
+		}
+	case "rows-insert", "rows-delete":
+	default:
+		return false
+	}
+	return streamable(wb)
+}
+
+// before is the streaming copy's workbook as the next edit finds it, given
+// its bytes.
+func (s *session) before(data []byte) (*grid.Workbook, error) {
+	if s.cur != nil {
+		return s.cur, nil
+	}
+	wb, err := readBytes(data)
+	if err != nil {
+		return nil, fmt.Errorf("the workbook does not read: %w", err)
+	}
+	return wb, nil
+}
+
+// arraysGone counts the dynamic arrays an edit removed from the workbook: how
+// many fewer each sheet holds (arrays that only moved are not gone), on the
+// sheets at the same position in both.
+func arraysGone(a, b *grid.Workbook) int {
+	gone := 0
+	for i := 0; i < min(len(a.Sheets), len(b.Sheets)); i++ {
+		gone += max(0, len(a.Sheets[i].Spills)-len(b.Sheets[i].Spills))
+	}
+	return gone
+}
+
+// An edit that removes a dynamic array (one or more: net of those it adds on
+// the sheet) is made again on the bytes it first found, repeats times by each
+// editor. Sheets lays the results of dynamic arrays out in map order
+// (spillResults), so a paste over arrays can give a different workbook from
+// one run to the next (see known.txt), by chance: the shrunk paste of
+// copy repeat 100139 gives one workbook 73% of the time and two others about
+// 14% each. A finding that came and went would make two runs of one seed
+// differ, so the repeats are enough to see such an edit nearly every time:
+// the chance that all (1+repeats)*2 runs give the common workbook is below
+// 0.0002% (0.73 to the 42nd power).
+const repeatFrom = 1
+
+// repeats is the repeats by each editor: 20, and 3 under -race, where each
+// takes ten times as long and a miss only drops a finding the run lists as
+// stale.
+var repeats = 20
+
+// repeatWords name the two workbooks a repeat compares, which compareEditors
+// calls the stream's and the full editor's.
+var repeatWords = strings.NewReplacer("stream has", "the first run has", "full has", "the repeat has", "stream holds", "the first run holds", "full holds", "the repeat holds")
+
+// repeat makes the edit again on the bytes it first found, repeats times
+// with each editor, and reports a file that holds other cells, formulas or
+// values than the first one saved. (The bytes may differ: the order of the
+// shared strings a spill adds varies, and means nothing.) Both files are
+// put back as the first run left them.
+func (s *session) repeat(e Edit, before, after [2][]byte) (*violation, error) {
+	if s.res != nil {
+		s.res.Repeated++
+	}
+	var v *violation
+	for k, ed := range editors {
+		for n := 0; n < repeats && v == nil; n++ {
+			if err := os.WriteFile(s.paths[k], before[k], 0o644); err != nil {
+				return nil, err
+			}
+			code, msg := run(ed.env, false, e, s.paths[k])
+			got, err := os.ReadFile(s.paths[k])
+			if err != nil {
+				v = &violation{"repeat", fmt.Sprintf("%s editor: the same edit on the same bytes left no workbook at book.xlsx: %s", ed.name, unpath(err, s.paths[k]))}
+			} else if code != 0 {
+				v = &violation{"repeat", fmt.Sprintf("%s editor: the same edit on the same bytes worked once and failed once (exit %d: %s)", ed.name, code, firstLine(msg))}
+			} else if _, d := compareEditors(after[k], got); d != "" {
+				v = &violation{"repeat", fmt.Sprintf("%s editor: the same edit on the same bytes saved two different workbooks: %s", ed.name, repeatWords.Replace(d))}
+			}
+		}
+		if err := os.WriteFile(s.paths[k], after[k], 0o644); err != nil {
+			return nil, err
+		}
+	}
+	return v, nil
+}
+
+// count adds a saved file's formulas to the count of stored forms: each form
+// the file holds, once.
+func (s *session) count(cells []formulaCell) {
+	if s.res == nil {
+		return
+	}
+	held := map[string]bool{}
+	for _, f := range cells {
+		held[f.result()] = true
+		if f.shared {
+			held[resShared] = true
+		}
+	}
+	for form := range held {
+		s.res.Saved[form]++
+	}
+}
+
+// checkUndo runs sheets undo on the file an edit with editor k changed
+// from before to after, checks it restores before, and puts after back.
+func checkUndo(k int, path string, before, after []byte) (*violation, error) {
+	code, msg := run(editors[k].env, true, Edit{Args: []string{"undo", FileArg}}, path)
+	got, err := os.ReadFile(path)
+	var v *violation
+	switch {
+	case err != nil:
+		v = &violation{"undo", fmt.Sprintf("%s editor: undo (exit %d) left no workbook at book.xlsx: %s", editors[k].name, code, unpath(err, path))}
+	case code != 0:
+		v = &violation{"undo", editors[k].name + " editor: undo failed: " + firstLine(msg)}
+	case !bytes.Equal(got, before):
+		v = &violation{"undo", editors[k].name + " editor: undo did not restore the bytes: " + partsDiffer(before, got)}
+	}
+	// The edit's bytes are put back whatever undo did. A finding ends the
+	// sequence, so that is a courtesy when there is one, and an error when not.
+	if err := os.WriteFile(path, after, 0o644); err != nil && v == nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// unpath is an error's text with the workbook's path as a report names it.
+func unpath(err error, path string) string {
+	return strings.ReplaceAll(err.Error(), path, "book.xlsx")
+}
+
+// cliMain is the command line; a variable so a test can put a hang in its
+// place.
+var cliMain = cli.Main
+
+// panicked is the exit code run gives a command that panicked.
+const panicked = -1
+
+// run runs one command with an editor, in process, with the undo journal
+// on or off.
+func run(env string, journal bool, e Edit, path string) (code int, stderr string) {
+	args := make([]string, len(e.Args))
+	for i, a := range e.Args {
+		if a == FileArg {
+			a = path
+		}
+		args[i] = a
+	}
+	os.Setenv("SHEETS_STREAM", env)
+	if journal {
+		os.Unsetenv("SHEETS_UNDO")
+	} else {
+		os.Setenv("SHEETS_UNDO", "off")
+	}
+	var errb bytes.Buffer
+	defer func() {
+		if p := recover(); p != nil {
+			code, stderr = panicked, fmt.Sprintf("%v\n%s", p, debug.Stack())
+		}
+	}()
+	code = cliMain(args, strings.NewReader(e.Stdin), io.Discard, &errb)
+	return code, strings.TrimSpace(strings.ReplaceAll(errb.String(), path, "book.xlsx"))
+}
+
+func firstLine(s string) string {
+	s = strings.TrimPrefix(s, "error: ")
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 160 {
+		s = s[:160] + "…"
+	}
+	return s
+}

@@ -121,6 +121,48 @@ func ruleFormulas(el []byte, fn func(string) string) []byte {
 	return el
 }
 
+var (
+	x14DvEl     = regexp.MustCompile(`(?s)<x14:dataValidation\b[^>]*>.*?</x14:dataValidation>`)
+	x14DvList   = regexp.MustCompile(`(?s)(<x14:dataValidations\b[^>]*>)(.*?)(</x14:dataValidations>)`)
+	x14DvCount  = regexp.MustCompile(`(\scount=")[0-9]*(")`)
+	x14DvsEmpty = regexp.MustCompile(`(?s)<ext\b[^>]*>\s*<x14:dataValidations\b[^>]*>\s*</x14:dataValidations>\s*</ext>`)
+)
+
+// x14Rule notes, for every sheet, what an edit of lines or sheets does to
+// its validations in Excel 2010's extension list (see patches.x14Rules).
+func (e *Editor) x14Rule(of func(home string) func([]byte) []byte) {
+	for _, name := range e.f.GetSheetList() {
+		if fn := of(name); fn != nil {
+			e.patches.x14Rules[name] = append(e.patches.x14Rules[name], fn)
+		}
+	}
+}
+
+// moveX14Validations applies a sheet's x14Rules to the validations in its
+// part's extension list, in order: their cells and formulas move as Excel
+// moves them, and one whose cells all went is dropped.
+func moveX14Validations(b []byte, fns []func([]byte) []byte) []byte {
+	if !bytes.Contains(b, []byte("<x14:dataValidation")) {
+		return b
+	}
+	b = x14DvList.ReplaceAllFunc(b, func(m []byte) []byte {
+		g := x14DvList.FindSubmatch(m)
+		n := 0
+		inner := x14DvEl.ReplaceAllFunc(g[2], func(el []byte) []byte {
+			for _, fn := range fns {
+				if el = fn(el); el == nil {
+					return nil
+				}
+			}
+			n++
+			return el
+		})
+		open := x14DvCount.ReplaceAll(g[1], []byte("${1}"+strconv.Itoa(n)+"${2}"))
+		return append(append(append([]byte{}, open...), inner...), g[3]...)
+	})
+	return emptyExtLst.ReplaceAll(x14DvsEmpty.ReplaceAll(b, nil), nil)
+}
+
 // heldValidations are a sheet's validations, off the sheet while its lines
 // move.
 type heldValidations []*excelize.DataValidation

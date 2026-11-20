@@ -1,74 +1,62 @@
-# Handover (2026-11-03)
+# Handover (2026-11-20)
 
-For the next orchestrator session. Read [AGENTS.md](../AGENTS.md),
-[vision.md](vision.md), [roadmap.md](roadmap.md) and
-[orchestration.md](orchestration.md) first. This note covers only what
-those don't: where things stand, and what was learned running wave 1.
+For the next session. Read [AGENTS.md](../AGENTS.md),
+[vision.md](vision.md) and [roadmap.md](roadmap.md) first. This note
+covers only where things stand, where the data lives, and what wave 1
+taught.
 
 ## Where things stand
 
-- **On `main`, pushed (ccc788d):** wave 1 and WP-16.
-  - WP-01 `sheets check`;
-  - WP-07a, round 2 of the Excel check pack;
-  - WP-12, the corrupt new sheet;
-  - WP-16, edits inside legacy arrays.
-- **Everything is clean:** no worktrees, branches or uncommitted work are
-  left, and every package was audited before its push.
-- **The roadmap board is current.** The open fixes are WP-13, WP-14,
-  WP-15 and WP-18.
-- **Usage:** the weekly limit stood at about 61% before WP-16 and resets
-  on 2026-11-04 at 22:00 UTC. The budget rule is in orchestration.md.
-
-## Proposed next, waiting on Max's go
-
-- **Wave 2:**
-  - **The gate: WP-02 with WP-08's silent-defect measure.** Rerun Python
-    and Python + skill on the same 90 SpreadsheetBench tasks (the union
-    of `ssb.py --sample 40` and `--sample 80`, seed 2026). Score each as
-    is, after `check --fix`, and with the agent told to finish with
-    `check`. Then answer the kill criterion.
-  - **WP-14:** the engine gives unknown where it computes unlike Excel.
-    The list is in the roadmap; the data is in
-    `~/sheets-evals/wp01/corpus-op-out/unlike-excel.txt`. Do this before
-    any doc tells agents to always finish with `check`.
-  - **WP-17,** proposed but not yet agreed by Max: random workbooks from
-    openpyxl and XlsxWriter, random sheets edits, checked against
-    LibreOffice and fixed rules (rows in order, formula kinds kept,
-    nothing outside the edit changed). It turns what the auditor found
-    by hand into a machine.
-- **Small fixes that fit between waves:** WP-18, WP-13, WP-15.
-- **Waiting on Max:** WP-11, the Excel oracle. The route is decided (a
-  Business Basic tenant of his own), but he hasn't set it up. Anything
-  needing Excel installed is parked.
-
-## Lessons from running wave 1
-
-- **Builders compare old and new on real files when they touch shared
-  code.** Run the last pushed binary and the new one over corpus files,
-  with the edits the change could affect, and compare formulas, their
-  kinds and values. Include the files the change is about: for arrays,
-  all 151 corpus files that hold one, not a sample.
-  - Two regressions (empty-text results, and formulas becoming arrays on
-    a row insert) were caught only by the auditor.
-  - Both would have shown up in such a comparison.
-- **`check --fix` raises the stakes of every engine gap,** because it
-  vouches for what it stores. So trust comes first: WP-14 before WP-10.
-- **The auditor's tools are worth keeping.** Its repro files and its
-  formula-kind checker are in `~/sheets-evals/wave1-audit/` (`bin/` holds
-  the checker). Give a new auditor that path.
-- **Briefs should name the corpus checks** (`~/sheets-evals/wp01/*.py`,
-  `~/sheets-evals/wp16/compare3.py`) so builders reuse them rather than
-  writing new ones.
-- **Sub-sessions:** the old session couldn't call `start_session`, so
-  builders ran as background subagents in worktrees. A fresh Code
-  session with `/orchestrate` can start real sessions that Max can watch
-  and steer.
+- **Wave 2 has landed** (2026-11-20), as Fable 5.2's review of sheets
+  planned it (`~/sheets-evals/fable-review/review.md`; Max accepted it
+  whole on 2026-11-18). On `main`: A (the engine's unknowns, formula
+  kinds and spills), D (`check --against`, the short change report after
+  each edit, the Markdown receipt, `sheets diff` as git's diff driver),
+  E (the fuzzer: `SHEETS_FUZZ=long`, `scripts/fuzz-mutants.sh`), and the
+  evals B and C.
+- **The gate waits on Max.** The verdicts, from their results files:
+  - **B** ([wave2-claims.md](../evals/results/wave2-claims.md)): fail.
+    sheets' defect rate is 5/201 (2.5%); the best Python arm, `skill-lo`,
+    is 7/201 (3.5%), and half of that is 1.74%. The cost condition holds
+    ($1.27 against $1.85, 0.69 times; the bar is 1.3). Measured without
+    D's report.
+  - **C** ([wave2-check.md](../evals/results/wave2-check.md)): check
+    passes Max's rule: 75 to 15 over the hint under stored values
+    (p ≈ 9 × 10⁻¹⁹), 78 to 70 under the SpreadsheetBench grading
+    (p = 0.029).
+- **Open** (the roadmap's follow-ups, filed in the portal repo as
+  `repo:sheets` issues): B rerun with D's report; the fuzzer's 14 known
+  bugs (`internal/fuzz/known.txt`; last long run 156.9 findings per
+  10,000 edits, 0 new); `check --against`'s report-regress f3.1 to f3.5
+  (next step: use the session's recorded ops when sheets made the
+  edits); the spot-check of the silent-defect rule (fixed in `evals/run.py`, counts regraded) under its landed form. WP-13 is still open.
+- **Waiting on Max:** the gate, and WP-11, the Excel oracle (a Business
+  Basic tenant). WP-07b stays parked.
 
 ## Data
 
-- **Eval data:** in `~/sheets-evals`. Never use the session scratchpad;
-  macOS empties `/private/tmp` after three days.
+- **Eval data** is in `~/sheets-evals`. Never use the session scratchpad;
+  macOS empties `/private/tmp`.
   - SpreadsheetBench Verified: `~/sheets-evals/data/ssb/`.
-  - WP-01's corpus scripts and logs: `~/sheets-evals/wp01/`.
-  - WP-16's comparisons: `~/sheets-evals/wp16/`.
-  - The auditor's files: `~/sheets-evals/wave1-audit/`.
+  - Wave 2's raw run outputs: `~/sheets-evals/wave2/`; results files go
+    in `evals/results/`.
+  - The fuzzer's runs: `~/sheets-evals/wave2/fuzz/`; the mutant runs:
+    `~/sheets-evals/wave2/fuzz-mutants-final/`.
+  - The review: `~/sheets-evals/fable-review/`.
+  - Wave 1: `~/sheets-evals/wp01/` (corpus scripts), `wp16/` (comparisons)
+    and `wave1-audit/` (repro files; `bin/` holds the formula-kind
+    checker).
+- **The skill arm** is the committed Apache 2.0 xlsx skill in
+  `evals/arms/xlsx-skill/`.
+
+## Lessons from wave 1
+
+- **Compare old and new on real files** when touching shared code: the
+  last pushed binary against the new one, over the corpus files the change
+  could affect. Two regressions were caught only by the auditor.
+- **`check --fix` raises the stakes of every engine gap,** because it
+  vouches for what it stores. Trust comes first, hence piece A.
+- **Reuse the corpus checks** (`~/sheets-evals/wp01/*.py`,
+  `wp16/compare3.py`) and the auditor's tools rather than writing new ones.
+  The fuzzer (piece E) now does much of that: run its long mode on
+  shared code before an audit.

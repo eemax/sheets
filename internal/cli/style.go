@@ -29,10 +29,11 @@ func editTarget(file, ref string) (book.Editor, string, *grid.Range, error) {
 }
 
 // save saves an edit (or not, on a dry run) and prints its warnings.
-func (a *app) save(ed book.Editor) error {
+func (a *app) save(file string, ed book.Editor) error {
 	if err := ed.Save(a.dryRun); err != nil {
 		return err
 	}
+	a.track(file, ed)
 	if !a.json {
 		a.printDryRun()
 	}
@@ -148,7 +149,7 @@ entries (the styling stays until fmt runs again); fmt --reset clears it.
 					totals = &tres
 				}
 			}
-			if err := a.save(ed); err != nil {
+			if err := a.save(args[0], ed); err != nil {
 				return err
 			}
 			if a.json {
@@ -226,7 +227,7 @@ func (a *app) records(args []string, list bool, unrecord []string) error {
 		if err := ed.Unrecord(seqs); err != nil {
 			return err
 		}
-		if err := a.save(ed); err != nil {
+		if err := a.save(args[0], ed); err != nil {
 			return err
 		}
 		if a.json {
@@ -366,7 +367,7 @@ those within the target.`,
 				if err != nil {
 					return err
 				}
-				if err := a.save(ed); err != nil {
+				if err := a.save(args[0], ed); err != nil {
 					return err
 				}
 				if a.json {
@@ -382,7 +383,7 @@ those within the target.`,
 			if err != nil {
 				return err
 			}
-			if err := a.save(ed); err != nil {
+			if err := a.save(args[0], ed); err != nil {
 				return err
 			}
 			if a.json {
@@ -494,7 +495,7 @@ within the target. fmt leaves validation alone.`,
 				if err != nil {
 					return err
 				}
-				if err := a.save(ed); err != nil {
+				if err := a.save(args[0], ed); err != nil {
 					return err
 				}
 				if a.json {
@@ -510,7 +511,7 @@ within the target. fmt leaves validation alone.`,
 			if err != nil {
 				return err
 			}
-			if err := a.save(ed); err != nil {
+			if err := a.save(args[0], ed); err != nil {
 				return err
 			}
 			if a.json {
@@ -634,7 +635,7 @@ header and sets gridlines and filters itself; it keeps what view sets.`,
 				if err := ed.View(sheet, o); err != nil {
 					return err
 				}
-				if err := a.save(ed); err != nil {
+				if err := a.save(args[0], ed); err != nil {
 					return err
 				}
 			}

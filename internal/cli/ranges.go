@@ -24,6 +24,7 @@ func (a *app) report(ed book.Editor, file, done string, res book.RangeResult) er
 	if err := ed.Save(a.dryRun); err != nil {
 		return err
 	}
+	a.track(file, ed)
 	out := rangeResult{File: file, RangeResult: res, Warnings: ed.Warnings(), DryRun: a.dryRun}
 	if a.json {
 		return a.printJSON(out)
@@ -219,6 +220,7 @@ sheets rows/cols insert and delete; to reorder rows, sheets sort.`,
 			if err != nil {
 				return err
 			}
+			a.movedCells(args[0], from, r, to, at.R1-r.R1, at.C1-r.C1)
 			done := fmt.Sprintf("moved %s to %s", res.From, res.To)
 			if created {
 				done += " (new sheet)"
@@ -317,6 +319,7 @@ rows are listed, since they now read whatever row is there.`,
 			if err := ed.Save(a.dryRun); err != nil {
 				return err
 			}
+			a.track(args[0], ed)
 			out := sortResult{File: args[0], By: by, SortResult: res, Warnings: ed.Warnings(), DryRun: a.dryRun}
 			if header > 0 {
 				out.Header = fmt.Sprint(header)
@@ -506,6 +509,7 @@ replaces in formula text instead (=SUM(B2:B9)).
 			if err := ed.Save(a.dryRun); err != nil {
 				return err
 			}
+			a.track(args[0], ed)
 			out := replaceResult{File: args[0], Changed: changed, Total: len(changed), Warnings: ed.Warnings(), DryRun: a.dryRun}
 			if limit > 0 && len(out.Changed) > limit {
 				out.Changed = out.Changed[:limit]

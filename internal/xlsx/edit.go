@@ -53,6 +53,17 @@ type Editor struct {
 	// it (where they are now), which recorded styling reaches (see
 	// restyleWritten).
 	wasEmpty map[cellKey]bool
+	// carried are formulas a sort or a move put where they stand that
+	// showed an error (or had no result) where they came from: a problem
+	// already there, not a new one. spilled are the cells a dynamic array's result fills or
+	// leaves: not cells the command wrote, and values it may have moved.
+	// Both are for the change report (see effects.go).
+	carried map[cellKey]carryKind
+	spilled map[cellKey]*spillCell
+	// regrown are formulas whose references the session grew as Excel
+	// grows them (a table taking in rows written below it), not formulas
+	// the command wrote: their results moved downstream (see effects.go).
+	regrown map[cellKey]bool
 	// merges are sheets' merged cells (by lower-cased name), read when
 	// first needed; whatever merges, unmerges or moves cells drops them.
 	merges map[string][]grid.Range
@@ -78,6 +89,12 @@ type Editor struct {
 	resFormulas map[cellKey]*formulaAt
 	calcWB      *grid.Workbook // the workbook as it stood after calcAt changes
 	calcAt      int
+
+	// lineOps are the rows, columns and sheets inserted, deleted or
+	// renamed, and out the file as last rendered, for the change report
+	// (see effects.go).
+	lineOps []LineOp
+	out     []byte
 }
 
 // OpenEditor opens path for editing, or starts a new workbook when the file
@@ -601,6 +618,7 @@ func (e *Editor) Render() ([]byte, error) {
 			}
 		}
 	}
+	e.out = buf
 	return buf, nil
 }
 

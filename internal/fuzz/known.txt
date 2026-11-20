@@ -1,0 +1,265 @@
+# Findings of the default mode (seed 1) on today's code, one per line:
+# <edit class> <invariant> <sequence seed> (or several seeds of one class and
+# invariant). The default mode passes only on findings listed here; replay one
+# with
+#   SHEETS_FUZZ_REPRO=<seed> go test ./internal/fuzz -run 'TestFuzz$' -v
+# A fix removes its lines (the run lists those it no longer makes, as fixed).
+#
+# Long mode runs fresh seeds on fresh pools, whose findings no list of seeds
+# can hold: it takes a finding as known when it shows one of the bugs named
+# at the end, by its face (bug lines: the edit classes, the invariant, a
+# pattern on the finding's detail, and on the last edit when given; see
+# known.go, ReadKnown). Each bug has a repro, a sequence that shows it, which
+# a long run replays at its end: one that no longer shows it is reported
+# fixed, and never fails a run.
+
+# New: sheets saves a different workbook from one run to the next when a
+# paste lands on dynamic arrays (copy over the arrays of a sheet): values it
+# pasted are missing at random (Q 2026!H7: "Pear" or nothing), by either
+# editor. It lays the results of dynamic arrays out in map order
+# (xlsx/spill.go, spillResults). The fuzzer makes an edit that removes a
+# dynamic array again, 20 times by each editor, on the same bytes, to see it
+# every run.
+copy repeat 100061
+copy repeat 100139
+copy repeat 100202
+
+# New: after a sort the streaming editor stores the results of the formulas on
+# the sheet it sorted (it computes them), and the full editor leaves them as
+# they were: pending, or the 0 XlsxWriter stores. The two save different
+# cells, whether the sort moved rows or found them in order (Q 2026!B2 is
+# 2088 in the streaming editor's file and has no result in the full
+# editor's). The default run reaches it now that most of its sorts are ones
+# sheets does (see sortable in edits.go): the first version's, refused, never
+# did.
+sort editors 100035
+sort editors 100047
+sort editors 100098
+sort editors 100172
+sort editors 100219
+sort editors 100228
+sort editors 100315
+
+# New: a text typed with two escape-like sequences that share an underscore
+# (_x005F_x0041_) is stored as another text. ooxmlText (xlsx/stream_sheet.go)
+# escapes each _xHHHH_ with a regular expression, and the match for the first
+# (_x005F_) uses the underscore the second starts with, so the second is left
+# as it is: the file holds _x005F_x005F_x0041_, which Excel reads as _x005FA.
+# Both editors store it so (the code is shared), so only the text invariant,
+# which reads the text back, sees it.
+set text 100046
+set text 100123
+set text 100134
+write text 100006
+write text 100042
+write text 100067
+write text 100136
+write text 100262
+write text 100272
+write text 100317
+
+# Known (fix round 4: the committed pool holds notes now, in 14 of its 40
+# files, so the default mode judges a note outside an edit's reach and what
+# the editors save of one). Five sequences lose the note of a sheet they
+# copied before (the bug sheet-copy-note, below; seed 100103, shrunk: sheets
+# sheet copy book.xlsx Data 'Q1 "draft"', then sheets clear book.xlsx 'Q1
+# "draft"!I9:K11' leaves Data!B1's note nowhere), and one writes the drawing of
+# a note with a prefix its file does not declare after a row is inserted (the
+# bug stream-note-prefix: seed 100099, sheets rows insert book.xlsx 'Data!16').
+clear reach 100103
+do reach 100085 100310
+move reach 100217
+script reach 100011
+rows-insert xml 100099
+
+# Long mode: the bugs its findings show, by their face. A bug's patterns are
+# Go regular expressions: detail on the first line of the finding's detail,
+# edit on the last edit as a shell command. repro is a sequence that shows it
+# (long: on the pool long mode makes from its seed). Replay one with
+#   SHEETS_FUZZ=long SHEETS_FUZZ_REPRO=<seed> go test ./internal/fuzz -run 'TestFuzz$' -v
+# (without SHEETS_FUZZ=long for a repro on the committed pool). A face kept
+# narrow lets a new bug of the same class and invariant through as new.
+
+# Known (the default mode's set text and write text): a text with two
+# escape-like sequences that share an underscore (_x005F_x0041_) is stored as
+# another (_x005FA): ooxmlText escapes each _xHHHH_ with a regular expression
+# whose first match takes the underscore the second starts with. And a formula
+# reading such a text (=A3&"-x", =UPPER(A2)) gives another text in each
+# editor, the streaming one computing from the text typed, the full one from
+# the text stored.
+bug escape: set,write text; repro 100046; detail typed the text "(?:[^"\\]|\\.)*_[xX][0-9A-Fa-f]{4}_[xX][0-9A-Fa-f]{4}_(?:[^"\\]|\\.)*", and the cell holds text "
+bug escape: set,write,do,script editors; repro long 702637; detail : stream holds text "(?:[^"\\]|\\.)*_[xX][0-9A-Fa-f]{4}_[xX][0-9A-Fa-f]{4}_(?:[^"\\]|\\.)*", full holds text "
+
+# Known (the default mode's sort editors): after a sort the streaming editor
+# stores the results of the formulas on the sheet it sorted (it computes
+# them), and the full editor leaves them as they were: pending, XlsxWriter's
+# 0, or an empty result (seed 757171: sort 'Summary!A1:A2' A, B2 6 in the
+# streaming editor's file and nothing in the full one's). A batch or a script
+# holding a sort shows it too.
+bug sort-editors: sort editors; repro 100047; detail : stream holds .+, full holds (nothing( \(pending\))?|number 0)$
+bug sort-editors: do,script editors; repro long 701600; detail : stream holds .+, full holds (nothing( \(pending\))?|number 0)$; edit (?m)^sort |getSort\(\)
+
+# Known (the default mode's copy repeat): sheets saves a different workbook
+# from one run to the next when an edit lands on dynamic arrays, a paste, a
+# move or a batch (spillResults lays them out in map order). Shrunk, long move
+# repeat 700890 is sheets move book.xlsx 'Model!A4:C6' 'Model!D1' over the
+# array in E2:E3: the formula in E3 is there in one run and not in the other.
+# An edit that lays out two dynamic arrays whose results meet, or one and a
+# paste over it, shows it through the editors invariant: no array is removed
+# net, so the repeat check does not run, and the cells where they meet hold
+# one array's value or the other's, or nothing, at random, in one editor's
+# file or the other's. A script that sets C2 (=A2:A4&"!") and pastes over it
+# (ws.getRange("C2").copyFrom("A1:C4")): Q 2026!C4 holds "Lime" or nothing;
+# its repro shows it about one replay in two, so a repro is replayed up to
+# 10 times. A script setting E4 (=SEQUENCE(1,2)) and F2 (=A2:A4&"!"), and a
+# write of three arrays over E4 (seed 62001), the same. A script's paste over
+# a dynamic array an earlier edit set shows it as a formula in one editor's
+# file and none in the other's (seed 720212: a set lays =B2:B4*2 at Data!H5,
+# over H5:H7, and a script's ws.getRange("F4").copyFrom("H5:J8") pastes J8's
+# formula onto H7: H7 holds it in the streaming editor's file and not in the
+# full one's, or the other way, in two replays of four). When both editors
+# lose it, the kinds invariant sees it, as a formula lost in the array's old
+# results (the same sequence, the run again: Data!H6 holds no formula, in the
+# results of the dynamic array at H5:H7).
+bug map-order: copy,move,do,script repeat; repro 100139; detail editor: the same edit on the same bytes saved two different workbooks: 
+bug map-order: set,write,do,script editors; repro long 701746; detail : stream holds .*, full holds ; edit (?s)N\(\\*"d\\*"\).*(N\(\\*"d\\*"\)|copyFrom\(|\ncopy )
+bug map-order: script editors; repro long 72021203186; detail ![A-Z]+[0-9]+: stream has =(, full has =.+|.+, full has =)$; edit copyFrom\(
+bug map-order: script kinds; repro long 72021203186; detail : the edit should leave a [a-z ]+ there, and it holds no formula \(it was lost\), in the results of the dynamic array at [A-Z]+[0-9]+:[A-Z]+[0-9]+$; edit copyFrom\(
+
+# Known (README, other seeds' findings: script kinds): a script that inserts
+# rows or columns leaves a legacy array with a dynamic array's cell metadata:
+# it is stored as a dynamic array. One that deletes them does too (seed
+# 366284: a script sets Data!I3 to =B2:B4*2 and deletes column C, and the
+# legacy array that moves into I3, =SUM(B2:B9*#REF!), is stored as a dynamic
+# array).
+bug script-legacy-dynamic: script kinds; repro long 702888; detail =IF\(N\("l"\)=0,.*\) is stored as a dynamic array, not a legacy array$; edit \.(insert|delete)\(
+
+# New (long mode, seed 7): a control character typed into an Excel table's
+# header (set 'Data!B1' $'ctl\x01x') is written raw into the table's part:
+# xl/tables/table1.xml is not XML (illegal character code U+0001). Excel
+# stores it as _x0001_.
+bug table-header-control: set,script xml; repro long 700021; detail xl/tables/table[0-9]+\.xml: XML syntax error on line [0-9]+: illegal character code U\+00[01][0-9A-F]$
+
+# New (long mode, seeds 7, 40016, 61001, 61004 and 341566): a dynamic
+# array's results overwrite what stands in their way, where Excel keeps it
+# and shows #SPILL! at the array. A text typed into them is lost (write
+# 'Data!N2' typing _x0041_ into O3, which the dynamic array in O2, =C2:C3*2,
+# fills: O3 is saved as the array's 18; set 'Data!U3:W5' N/A: U3 holds the
+# array's "R&D!"; or nothing, set 'Model!F6' into the results of F4). And a
+# formula a set types is lost when a cell the same set types after it lays
+# out a dynamic array over it (set 'Calc!E3' '=IF(N("d")=0,SUM(IF(B2:B6>3,
+# B2:B6)))' … 'Calc!E2' '=IF(N("d")=0,B2:B5>3)') or replaces one whose
+# results covered it (set 'Summary!E3' … 'Summary!E2' …, over the array in
+# E2:E3): E3 is saved with no formula. The text and kinds invariants say when
+# the cell is in a dynamic array's results, before or after the edit, and
+# these faces read that. A text is quoted as Go quotes it, so a quote in it
+# reads as \" (seed 402252: write 'Data!T2' typing say "hi" into U3, which the
+# array in U2 fills: U3 holds its "Fig!"); each text in a face takes that.
+# A number typed into an array's results is lost to it the same way, which no
+# invariant judges (only a text typed is read back), but the cell takes the
+# number's format; once the array no longer covers it, sheets drops the cell,
+# format and all, which the reach invariant sees (seed 718113: set 'Data!M3'
+# 1,200 into the array at M2, then set M2 to =SEQUENCE(1,2): M3, shown as
+# #,##0 before, is General now).
+bug spill-overwrites: set,write text; repro long 711157; detail typed the text "(?:[^"\\]|\\.)*", and the cell holds .*, in the results of the dynamic array at [A-Z]+[0-9]+:[A-Z]+[0-9]+$
+bug spill-overwrites: set,write,do kinds; repro long 4001600827; detail : the edit should leave a [a-z ]+ there, and it holds no formula \(it was lost\), in the results of the dynamic array at [A-Z]+[0-9]+:[A-Z]+[0-9]+$
+bug spill-overwrites: set,write,do reach; repro long 71811303084; detail : outside the edit's reach, it held number .* shown as .*, and is shown as General now, in the results of the dynamic array at [A-Z]+[0-9]+:[A-Z]+[0-9]+$
+
+# New (long mode, seeds 61002 and 341566): an edit of rows or columns turns a
+# plain formula that reads no range (or one only through an aggregate) into a
+# dynamic array, where a dynamic array's cell was written over before: set 'Model!C2' to a dynamic array and
+# then a date in one command, write a plain formula there (=Data!A2&"!"), and
+# rows insert 'Q 2027!2' -n 3 stores it in C5 as a dynamic array (or a script
+# that deletes and inserts column C over a copied array, then a rows delete
+# elsewhere). Likely script-legacy-dynamic's cause: the array's cell metadata
+# left on the cell. A batch or a script holding an insert or a delete of rows
+# or columns shows it too (seed 664355, the audit's: a script sets
+# 'Bob''s Plan'!E2 to a plain formula and deletes column A, and a batch's cols
+# insert 'Data 2!A' -n 2 stores D2 as a dynamic array), and so does a formula
+# whose ranges are all an aggregate's to read (seed 548657: a write lays a
+# dynamic array at Calc!B2, a script sets B2 to =MIN(B2:D2) and inserts column
+# A, and rows insert 'Data!7' -n 3 stores C2, =MIN(C2:E2), as a dynamic
+# array). A formula reading a range where one value goes (=B3:B4*2), turned
+# dynamic, is another bug, the mutant rows-insert-arrays: the face takes no
+# range outside a SUM, MIN, MAX, COUNTIF or AVERAGE.
+bug insert-turns-dynamic: rows-insert,rows-delete,cols-insert,cols-delete kinds; repro long 6100201614; detail =IF\(N\("p"\)=0,([^:(]|\([^():]*\)|(SUM|MIN|MAX|COUNTIF|AVERAGE)\([^()]*\))*\) is stored as a dynamic array, not a plain formula$
+bug insert-turns-dynamic: do,script kinds; repro long 66435500849; detail =IF\(N\("p"\)=0,([^:(]|\([^():]*\)|(SUM|MIN|MAX|COUNTIF|AVERAGE)\([^()]*\))*\) is stored as a dynamic array, not a plain formula$; edit (?m)^(rows|cols) (insert|delete) |\.(insert|delete)\(
+
+# New (long mode, seed 341566): a replace that gives an Excel table's header
+# the name of another column renames that other column: replace Date 1,200,
+# then replace Item 1,200 Data, and E1 ("1200", the first) is saved as
+# "Column5", outside the replace's reach. (Excel keeps a table's column
+# names apart by numbering the header just typed; the other column keeps its
+# name. To confirm with the Excel oracle, WP-11.)
+bug table-header-renamed: replace reach; repro long 34156604779; detail : outside the edit's reach, it held text "(?:[^"\\]|\\.)*", and holds text "Column[0-9]+" now$
+
+# New (long mode, seed 63002): replace in formulas writes a dynamic array back
+# as a plain formula when its references are #REF!: copy 'Data!N2' 'Data!K12'
+# moves =SUM(IF(B2:B6>3,B2:B6)) three columns left of column B (#REF!:#REF!),
+# and replace 'SUM(' 'PRODUCT(' --formulas stores K12 plain (the kind read
+# off the text, which holds no range now). A move that rewrites a formula and
+# changes its kind is another bug: the mutant rewrite-loses-kind.
+bug replace-loses-kind: replace kinds; repro long 6300201846; detail =IF\(N\("d"\)=0,.*#REF!.*\) is stored as a plain formula, not a dynamic array$
+
+# New (long mode, seed 702553): where a dynamic array's cell was written over
+# and moved, the full editor keeps the array's cell metadata on a plain
+# formula typed there, and stores it as a dynamic array; the streaming editor
+# stores it plain. A batch sets 'Bob''s Plan'!F2 to a dynamic array and then
+# 1,200 in one command, a script inserts rows 2:3, and a write of a plain
+# formula at F4 leaves F4 a dynamic array in the full editor's file alone.
+# (The editors' difference ends with the arrays one editor has alone, which
+# this face reads: one more array in the full editor's file, none fewer.)
+bug full-keeps-array-metadata: write,set,do editors; repro long 70255300604; detail ![^!]*dynamic arrays: stream has [^(]*, full has [^(]* \(the full editor's alone: [A-Z]+[0-9]+(:[A-Z]+[0-9]+)?\)$; edit N\("p"\)
+
+# New (long mode, seed 915488): a plain formula whose range gives it one value,
+# by its row (implicit intersection: R&D!C2 =IF(N("p")=0,'Data'!C2:C3*2) reads
+# Data!C2), keeps the result it had when an insert moves it to another row,
+# where it reads another (C3: Data!C3*2, 0.58, not 6). A set that computes it
+# and a rows insert after it leave 6 in both editors' files, so only a script
+# shows it: the full editor's computes the sheet again at its end, and the
+# streaming editor's does not (a script sets 'R&D!H7' and inserts row 1:
+# R&D!C3 is 6 in the streaming editor's file, 0.58 in the full one's). The
+# editors' difference in a value names the formula, which this face reads: no
+# function call around the range. Moved to a row its range does not cross, it
+# is #VALUE! (seed 771942: a script deletes row 1 of Notes, and C1, from C2,
+# =IF(N("p")=0,'Data'!C2:C3*10), is #VALUE! in the full editor's file and
+# 637.4 in the streaming one's).
+bug intersection-kept: script editors; repro long 91548805029; detail ![A-Z]+[0-9]+ \(=IF\(N\("p"\)=0,[^()]*:[^()]*\)\): stream holds (number [^,]*|error "#VALUE!"), full holds (number [^,]*|error "#VALUE!")$; edit \.(insert|delete)\(
+
+# New (fix round 3: the pools of runs from seed 2,000,000 hold notes, and the
+# reach invariant judges what a sheet holds besides cells). Two bugs of notes,
+# found by the first long runs on them.
+#
+# The streaming editor writes the Excel 2010 elements of a note's drawing
+# (<x:Anchor>, <x:AutoFill>, <x:Row>, <x:Column>) with the prefix x, where
+# openpyxl's file declares the namespace as ns2 (the whole drawing uses ns0,
+# ns1 and ns2): after rows or columns are inserted or deleted, the part is not
+# well-formed (the prefix "x" is not declared), and Excel calls the file
+# corrupt. Seed 2000031's run: `sheets rows insert book.xlsx 'Data!3' -n 3` on
+# a workbook whose notes openpyxl wrote. About a seventh of long mode's
+# findings in a 4-minute run: it ends each sequence that reaches it.
+bug stream-note-prefix: rows-insert,rows-delete,cols-insert,cols-delete,script,do xml; repro long 200003100051; detail stream editor: xl/drawings/commentsDrawing[0-9]+\.vml: <v:shape>: the prefix "[vx]" is not declared$
+# A sheet copied that holds a note: the next edit of the workbook, or a later
+# line of the batch that copies it, loses the note of the sheet it was copied
+# from (both sheets keep the one comments part, and the next edit saves one of
+# them: the sheet copied, or its copy), by either editor, or by only the full
+# one (the editors invariant's face). After `sheets sheet copy book.xlsx Data
+# Backup`, `sheets set book.xlsx 'Backup!K2' x` leaves Data!C1's note nowhere.
+# The face needs the copy: a finding is this bug only when an edit of its
+# sequence that the editors took copied the sheet the finding names (or made
+# it as a copy, and a rename since follows it), `copied` below; a note lost
+# in a workbook where no sheet was copied, by a clear, a rows insert or any
+# edit, is a bug of its own (the audit's mutation that drops the notes a rows
+# or columns edit moves was taken for this one: fix round 4, f3.1).
+bug sheet-copy-note: set,write,clear,copy,move,sort,replace,rows-insert,rows-delete,cols-insert,cols-delete,sheet-rename,sheet-add,sheet-copy,script,do reach; repro long 200003100025; detail ^(?P<sheet>.*?): outside the edit's reach, the note "(?:[^"\\]|\\.)*" on [A-Z]+[0-9]+ is not there as it was: the edit's shifts give the note "(?:[^"\\]|\\.)*" on [A-Z]+[0-9]+, and the sheet holds nothing of its kind$; copied
+bug sheet-copy-note: set,write,clear,copy,move,sort,replace,rows-insert,rows-delete,cols-insert,cols-delete,sheet-rename,sheet-add,sheet-copy,script,do editors; repro long 200003100415; detail ^(?P<sheet>[^!]*)!the (streaming|full) editor's file holds note [A-Z]+[0-9]+ ".*", the (streaming|full) editor's does not$; copied
+
+# A dynamic array whose results reach a merged range: sheets writes the result
+# of the merged cells into the merge's first cell, and the text the merge held
+# is gone (Excel gives #SPILL!: a merged cell blocks a spill). After
+# `sheets rows delete book.xlsx 'Data!8:8'` on a workbook with a merge over
+# A13:C13 (text "Remarks"), `sheets set book.xlsx 'Data!B10' '=B2:B4*2'` spills
+# over B10:B12, and A12, the merge's, holds 60: the result of B12. Either
+# editor; the finding names the merge's text, which fuzzgen --objects writes
+# ("Remarks"). Found by the reach invariant on pools with merges (fix round 3).
+bug spill-into-merge: set,write,copy,move,do,script reach; repro long 239451800769; detail Data!A[0-9]+: outside the edit's reach, it held text "Remarks", and holds (boolean (true|false)|number .*|text ".*") now$
