@@ -58,7 +58,7 @@ func TestLostFeatures(t *testing.T) {
 	}
 	got := lostFeatures(before, after, map[string]string{"data": "Data", "old": "New", "removed": ""}, nil, nil)
 	want := []lostFeature{
-		{Kind: xlsx.FeatureValidation, Where: "Data!C2:C6", What: "list validation"},
+		{Kind: xlsx.FeatureValidation, Where: "Data!C2:C6", What: "list validation: list Summary!$D$2:$D$6"},
 		{Kind: xlsx.FeatureName, Where: "Gone", What: "Data!$B$2"},
 		{Kind: xlsx.FeatureShape, Where: "Removed!A1", What: "TextBox 1"},
 	}
@@ -72,7 +72,7 @@ func TestLostFeatures(t *testing.T) {
 	// cleared: the one lost is the whole one, not the decimal one, which is
 	// now in another place.
 	got = lostFeatures([]xlsx.Feature{whole("B2:B6"), decimal("C2:C6")}, []xlsx.Feature{decimal("C2:C7")}, map[string]string{"data": "Data"}, nil, nil)
-	if want := []lostFeature{{Kind: xlsx.FeatureValidation, Where: "Data!B2:B6", What: "whole validation"}}; !reflect.DeepEqual(got, want) {
+	if want := []lostFeature{{Kind: xlsx.FeatureValidation, Where: "Data!B2:B6", What: "whole validation: whole between 0 100"}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("lost after a move\n got %+v\nwant %+v", got, want)
 	}
 	// A column deleted took the whole validation: the decimal one now where it
@@ -81,7 +81,7 @@ func TestLostFeatures(t *testing.T) {
 		return map[string]string{"B2:B6": "", "C2:C6": "B2:B6"}[ref]
 	}
 	got = lostFeatures([]xlsx.Feature{whole("B2:B6"), decimal("C2:C6")}, []xlsx.Feature{decimal("B2:B6")}, map[string]string{"data": "Data"}, nil, deleted)
-	if want := []lostFeature{{Kind: xlsx.FeatureValidation, Where: "Data!B2:B6", What: "whole validation"}}; !reflect.DeepEqual(got, want) {
+	if want := []lostFeature{{Kind: xlsx.FeatureValidation, Where: "Data!B2:B6", What: "whole validation: whole between 0 100"}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("lost with a column\n got %+v\nwant %+v", got, want)
 	}
 	// Three alike, the middle column deleted: the one lost is the one that was
@@ -90,18 +90,24 @@ func TestLostFeatures(t *testing.T) {
 		return map[string]string{"B2:B6": "B2:B6", "C2:C6": "", "D2:D6": "C2:C6"}[ref]
 	}
 	got = lostFeatures([]xlsx.Feature{whole("B2:B6"), whole("C2:C6"), whole("D2:D6")}, []xlsx.Feature{whole("B2:B6"), whole("C2:C6")}, map[string]string{"data": "Data"}, nil, middle)
-	if want := []lostFeature{{Kind: xlsx.FeatureValidation, Where: "Data!C2:C6", What: "whole validation"}}; !reflect.DeepEqual(got, want) {
+	if want := []lostFeature{{Kind: xlsx.FeatureValidation, Where: "Data!C2:C6", What: "whole validation: whole between 0 100"}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("lost of three alike\n got %+v\nwant %+v", got, want)
 	}
 	// Another of its kind is no reason to say nothing of the one that is gone:
-	// a validation that changed its type, or its formula, is not the one it was.
+	// a validation of another type on other cells is not the one it was. One
+	// on the same cells whose formula, operator or type changed is it,
+	// edited: changed, not lost.
+	if got := lostFeatures([]xlsx.Feature{whole("B2:B6")}, []xlsx.Feature{decimal("B2:B7")}, nil, nil, nil); len(got) != 1 {
+		t.Errorf("another type on other cells: %+v", got)
+	}
 	for name, now := range map[string]xlsx.Feature{
-		"its type":     decimal("B2:B7"),
+		"its type":     decimal("B2:B6"),
 		"its formula":  rule(xlsx.FeatureValidation, "Data", "B2:B6", "whole validation", "whole", "between|0|200"),
 		"its operator": rule(xlsx.FeatureValidation, "Data", "B2:B6", "whole validation", "whole", "notBetween|0|100"),
 	} {
-		if got := lostFeatures([]xlsx.Feature{whole("B2:B6")}, []xlsx.Feature{now}, nil, nil, nil); len(got) != 1 {
-			t.Errorf("changed %s: %+v", name, got)
+		lost, changed := compareFeatures([]xlsx.Feature{whole("B2:B6")}, []xlsx.Feature{now}, nil, nil, nil)
+		if len(lost) != 0 || len(changed) != 1 || changed[0].Where != "Data!B2:B6" || changed[0].Before == changed[0].After {
+			t.Errorf("changed %s: lost %+v, changed %+v", name, lost, changed)
 		}
 	}
 	// A conditional format replaced by another kind (a banding rule) is lost,
@@ -475,7 +481,7 @@ func TestFolded(t *testing.T) {
 
 func TestPairReplaced(t *testing.T) {
 	p := func(o, n int) diff.Pair { return diff.Pair{Old: o, New: n} }
-	got := pairReplaced([]diff.Pair{p(1, 1), p(2, 0), p(3, 0), p(0, 2), p(4, 3), p(0, 4), p(5, 5)})
+	got := pairReplaced([]diff.Pair{p(1, 1), p(2, 0), p(3, 0), p(0, 2), p(4, 3), p(0, 4), p(5, 5)}, nil)
 	want := []diff.Pair{p(1, 1), p(2, 2), p(3, 0), p(4, 3), p(0, 4), p(5, 5)}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("pairs %v", got)

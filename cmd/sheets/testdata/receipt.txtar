@@ -106,7 +106,7 @@ What changed in `against_openpyxl.xlsx` since `against_before.xlsx`, and why, as
 
 | Kind | Where | What |
 |---|---|---|
-| validation | `Data!A2:A6` | list validation |
+| validation | `Data!A2:A6` | list validation: list Summary!$D$2:$D$6 |
 | chart | `Data!F2` | column chart |
 | shape | `Data!F2` | TextBox 2 |
 
@@ -163,6 +163,6 @@ Here: 5 values moved (B2, B3, B4, B5, B7).
 
 No picture can show these:
 
-- validation Data!A2:A6 (list validation): a validation shows in no picture
+- validation Data!A2:A6 (list validation: list Summary!$D$2:$D$6): a validation shows in no picture
 - shape Data!F2 (TextBox 2): sheets render draws no shapes or pictures
 

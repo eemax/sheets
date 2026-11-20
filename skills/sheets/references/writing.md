@@ -63,11 +63,22 @@
   showed before: an error the edit reached is counted and marked
   `no result stored before`); formulas whose result sheets cannot
   know now (`unknown:`, by reason); charts, validations, conditional
-  formats, shapes, pictures, names and tables lost (`lost:`); and the
-  lint findings that changed, by rule. A value you did not mean to move, a
-  new error or a feature lost is a mistake: fix it, or `sheets undo`
-  (whose own report leaves the cells uncompared and gives the features
-  lost and the lint). The results come from what the save computed
+  formats, shapes, pictures, names and tables lost (`lost:`); the
+  validations and conditional formats the command replaced on the same
+  cells with another of their kind, a dropdown's items or a bound edited,
+  or the cells a rule reads (a dropdown pointed at another range, a
+  highlight testing another column, a threshold in another cell:
+  `0 features lost (1 changed)`, and a `changed:` line: an edit, not a
+  loss); and the lint findings that changed, by rule. A feature that went
+  with its cells (`sheets move`, to another sheet too) or with its sheet
+  is not lost. A value you did not mean to move, a new error or a feature
+  lost is a mistake: fix it, or `sheets undo` (whose own report leaves the
+  cells uncompared and gives the features lost and the lint, the two
+  versions paired as `check --against` pairs them, and a feature found
+  either that way or by the lines it knows moved is not lost, nor a
+  validation or conditional format found by what it is (its kind, type and
+  rule) on another sheet that nothing else pairs with, so undoing a rename,
+  an insert or a move loses no chart and no rule). The results come from what the save computed
   anyway; the features and lint are read off the file before and after.
   The lint only when the sheets hold up to 512 KB of XML (about 3,500 rows
   of four columns): on a larger workbook it says `lint not compared` and

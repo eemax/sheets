@@ -3,6 +3,7 @@ package cli
 import (
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/eemax/sheets/internal/grid"
@@ -16,7 +17,135 @@ import (
 // in the same place or by the same name, a name or table by its name. Never
 // one of its kind alone: another validation, another chart on the sheet is
 // no reason to say nothing of the one that is gone. Where a feature was is
-// where the rows and columns added and removed since put it.
+// where the rows and columns added and removed since put it. A validation
+// or conditional format whose cells hold another of its kind now, its rule
+// edited (a bound, a list's items, a threshold: the same type, and a
+// formula's own of the same shape), is changed, not lost; another type, or a
+// formula of another shape (the banding sheets fmt writes over a highlight),
+// is the old rule lost.
+
+// changedFeature is a validation or conditional format the new version
+// holds on the same cells as one of the old version (where the rows and
+// columns added and removed put them), of the same kind, whose rule is
+// another: an edit of it (a dropdown's items, a bound, a threshold), not a
+// loss.
+type changedFeature struct {
+	Kind   string `json:"kind"` // validation, conditional_format
+	Where  string `json:"where"`
+	What   string `json:"what,omitempty"` // as it is now
+	Before string `json:"before"`         // its rule, as it was
+	After  string `json:"after"`
+}
+
+// dollars gives where a reference is absolute: its text with the letters and
+// numbers of each cell left out (as $.$. for $B$2, . for B2).
+func dollars(ref string) string {
+	if i := strings.LastIndex(ref, "!"); i >= 0 {
+		ref = ref[i+1:]
+	}
+	var b strings.Builder
+	in := false
+	for i := 0; i < len(ref); i++ {
+		if c := ref[i]; c == '$' || c == ':' {
+			b.WriteByte(c)
+			in = false
+		} else if !in {
+			b.WriteByte('.')
+			in = true
+		}
+	}
+	return b.String()
+}
+
+// cellPart finds a cell of a reference: its column and row, each with a $
+// when absolute.
+var cellPart = regexp.MustCompile(`(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)`)
+
+// offsetRef moves the relative parts of a reference's cells dr rows and dc
+// columns on (a sheet's name before the ! is left as it is).
+func offsetRef(ref string, dr, dc int) string {
+	if dr == 0 && dc == 0 {
+		return ref
+	}
+	head, body := "", ref
+	if i := strings.LastIndex(ref, "!"); i >= 0 {
+		head, body = ref[:i+1], ref[i+1:]
+	}
+	return head + cellPart.ReplaceAllStringFunc(body, func(m string) string {
+		p := cellPart.FindStringSubmatch(m)
+		col, row := p[2], p[4]
+		if p[1] == "" {
+			if n, ok := grid.ColIndex(col); ok && n+dc > 0 {
+				col = grid.ColName(n + dc)
+			}
+		}
+		if p[3] == "" {
+			if n, err := strconv.Atoi(row); err == nil && n+dr > 0 {
+				row = strconv.Itoa(n + dr)
+			}
+		}
+		return p[1] + col + p[3] + row
+	})
+}
+
+// firstLeft gives how many rows and columns on the first cell of a feature's
+// cells that the lines removed left is from where its first cell was (zero
+// when that is still there).
+func firstLeft(f xlsx.Feature, home string, shift shiftFunc) (int, int) {
+	first := strings.Fields(strings.ReplaceAll(f.Where, "$", ""))
+	if len(first) == 0 {
+		return 0, 0
+	}
+	rg, err := grid.ParseRange(first[0])
+	if err != nil {
+		return 0, 0
+	}
+	dr, dc := 0, 0
+	// Whole rows and columns, so that what happened to the other axis is not
+	// asked of.
+	for ; dr < rg.Rows()-1 && shift(home, strconv.Itoa(rg.R1+dr)+":"+strconv.Itoa(rg.R1+dr)) == ""; dr++ {
+	}
+	for ; dc < rg.Cols()-1 && shift(home, grid.ColName(rg.C1+dc)+":"+grid.ColName(rg.C1+dc)) == ""; dc++ {
+	}
+	return dr, dc
+}
+
+// ruleReads tells of a rule of the new version (g) that is an old one (f)
+// reading other cells than the rows and columns added and removed put it on
+// (home is its sheet as now named): its rule edited. One left as it was where
+// those rows and columns moved what it reads (a script that inserts rows
+// without rewriting the rules) shows what Excel writes.
+func ruleReads(f, g xlsx.Feature, home string, shift shiftFunc) changedFeature {
+	c := changedFeature{Kind: f.Kind, Where: grid.QuoteSheet(g.Sheet) + "!" + g.Where, What: g.What, Before: ruleText(f), After: ruleText(g)}
+	if c.Before == c.After {
+		want := f
+		want.Rule = scanRule(f.Rule, false, func(ref string) string {
+			if s := shift(home, ref); s != "" && !strings.Contains(s, "#REF!") {
+				return s
+			}
+			return ref
+		}, func(t string) string { return t })
+		if w := ruleText(want); w != c.After {
+			c.After += " (as it was, though rows or columns added or removed moved what it reads: Excel writes " + w + ")"
+		}
+	}
+	return c
+}
+
+// ruleText shows a rule: its type, operator and formulas; a validation of no
+// type allows any value.
+func ruleText(f xlsx.Feature) string {
+	if f.Kind == xlsx.FeatureValidation && typeKey(f.Type) == "none" {
+		return "any value"
+	}
+	var parts []string
+	for _, p := range strings.Split(f.Rule, "|") {
+		if p = strings.TrimSpace(p); p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return strings.TrimSpace(typeKey(f.Type) + " " + strings.Join(parts, " "))
+}
 
 // shiftFunc gives a reference of the old version (a range, a cell, or a
 // chart's series as Sheet!$B$2:$B$9; unqualified ones are on home, a sheet
@@ -24,10 +153,27 @@ import (
 // "" when it was removed.
 type shiftFunc func(home, ref string) string
 
-// lostFeatures are what the old version carries that the new one lost. renamed
-// maps each old sheet (lower-cased) to its new name ("" for a sheet removed),
-// tables each Excel table renamed (old name lower-cased) to its new name.
+// lostFeatures are what the old version carries that the new one lost (see
+// compareFeatures).
 func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]string, shift shiftFunc) []lostFeature {
+	lost, _ := compareFeatures(before, after, renamed, tables, shift)
+	return lost
+}
+
+// compareFeatures gives what the old version carries that the new one lost,
+// and the validations and conditional formats changed. renamed maps each old
+// sheet (lower-cased) to its new name ("" for a sheet removed), tables each
+// Excel table renamed (old name lower-cased) to its new name.
+func compareFeatures(before, after []xlsx.Feature, renamed, tables map[string]string, shift shiftFunc) ([]lostFeature, []changedFeature) {
+	return compareFeaturesAcross(before, after, renamed, tables, shift, false)
+}
+
+// compareFeaturesAcross is compareFeatures; with across, a validation or
+// conditional format not found where it was is found by its kind, type and
+// rule on any sheet where the new version holds one nothing else paired with
+// (an undo of cells moved to another sheet, which restored them: nothing is
+// known of the sheet or the places they went to).
+func compareFeaturesAcross(before, after []xlsx.Feature, renamed, tables map[string]string, shift shiftFunc, across bool) ([]lostFeature, []changedFeature) {
 	if shift == nil {
 		shift = func(_, ref string) string { return ref }
 	}
@@ -46,16 +192,33 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 		}
 		return to, true
 	}
-	// moved gives the places a feature of the old version is now, by the
-	// rows and columns added and removed ("" when they took it).
-	moved := func(f xlsx.Feature, home string) string {
+	// movedTo gives the sheet (lower-cased) and places a feature of the old
+	// version is on now, by the rows and columns added and removed, and the
+	// cells cut and pasted, perhaps to another sheet ("" when they took it).
+	movedTo := func(f xlsx.Feature, home string) (string, string) {
 		var out []string
+		sheet := strings.ToLower(home)
 		for _, w := range strings.Fields(f.Where) {
-			if s := shift(home, w); s != "" && !strings.Contains(s, "#REF!") {
-				out = append(out, s)
+			s := shift(home, w)
+			if s == "" || strings.Contains(s, "#REF!") {
+				continue
 			}
+			on := strings.ToLower(home)
+			if k := strings.LastIndex(s, "!"); k >= 0 && !strings.Contains(w, "!") {
+				on, s = strings.ToLower(strings.ReplaceAll(strings.Trim(s[:k], "'"), "''", "'")), s[k+1:]
+			}
+			if len(out) == 0 {
+				sheet = on
+			} else if on != sheet {
+				return "", "" // split between sheets: not the feature it was
+			}
+			out = append(out, s)
 		}
-		return placeKey(strings.Join(out, " "))
+		return sheet, placeKey(strings.Join(out, " "))
+	}
+	moved := func(f xlsx.Feature, home string) string {
+		_, p := movedTo(f, home)
+		return p
 	}
 	seriesMoved := func(f xlsx.Feature, home string) []string {
 		out := make([]string, len(f.Series))
@@ -89,21 +252,66 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 	// first pass, place), so each old feature costs one lookup, not a scan
 	// of the new ones: a sheet with tens of thousands of rules is the case.
 	// pass 0 matches the same place, 1 the same feature anywhere on the
-	// sheet (it moved or grew).
+	// sheet (it moved or grew). Of a validation or conditional format the
+	// passes 0 and 1 find the same rule only, the cells it reads as the rows
+	// and columns added and removed put them (rules are not what they read
+	// alone); pass 2 is as 0 and takes one that reads others (a dropdown pointed
+	// at another list, a formula testing another column) on the cells it was
+	// on: its rule edited. A rule that moved or grew is not paired with one
+	// that reads other cells (pass 3 is for what is no rule): another dropdown
+	// on other cells is no edit of the one that was, which is lost.
 	type bucket struct {
 		idx  []int
 		head int
 	}
-	var index [2]map[string]*bucket
+	var index [4]map[string]*bucket
 	cs := func(f xlsx.Feature) string {
 		if f.Chartsheet {
 			return "cs"
 		}
 		return "-"
 	}
+	// The rule of a feature with the cells it reads (and the tables it reads)
+	// as they are: those of the old version as the lines added and removed put
+	// them, those of the new as written. A cell is told by the sheet it is on.
+	cellKey := func(ref, home string) string {
+		k := refKey(ref)
+		if !strings.Contains(k, "!") {
+			k = strings.ToLower(home) + "!" + k
+		}
+		return k
+	}
+	readsAfter := func(g xlsx.Feature) string {
+		return scanRule(g.Rule, true, func(ref string) string { return cellKey(ref, g.Sheet) + dollars(ref) }, strings.ToLower)
+	}
+	// A rule's formula is written for the first cell of its cells: what it reads
+	// by a relative reference is where that cell stands. When the lines removed
+	// took the first cell (the first row of the cells deleted), the rule is the
+	// one of the first cell left, a row or a column on: the old rule is read as
+	// written for that cell, with what it reads relative to it moved as far.
+	readsBefore := func(f xlsx.Feature, home string) string {
+		dr, dc := firstLeft(f, home, shift)
+		return scanRule(f.Rule, true, func(ref string) string {
+			at := offsetRef(ref, dr, dc)
+			if s := shift(home, at); s != "" && !strings.Contains(s, "#REF!") {
+				return cellKey(s, home) + dollars(ref)
+			}
+			return "#ref!"
+		}, func(t string) string {
+			for old, now := range tables {
+				t = renameTable(t, old, now)
+			}
+			return strings.ToLower(t)
+		})
+	}
+	ruled := func(k xlsx.Feature) bool { return k.Kind == xlsx.FeatureValidation || k.Kind == xlsx.FeatureCond }
 	// afterKey is the key of a feature of the new version.
 	afterKey := func(g xlsx.Feature, pass int) string {
-		sheet := strings.ToLower(g.Sheet)
+		if pass < 2 && !ruled(g) || pass == 3 && ruled(g) {
+			return "" // only rules are told by the cells they read, and an edit stays where it was
+		}
+		sheet, strict := strings.ToLower(g.Sheet), pass < 2
+		pass %= 2
 		head := g.Kind + "\x00" + cs(g) + "\x00"
 		switch {
 		case g.Kind == xlsx.FeatureName:
@@ -117,6 +325,9 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 			return head + typeKey(g.Type)
 		case g.Kind == xlsx.FeatureValidation || g.Kind == xlsx.FeatureCond:
 			k := head + sheet + "\x00" + typeKey(g.Type) + "\x00" + ruleKey(g.Rule)
+			if strict {
+				k += "\x00" + readsAfter(g)
+			}
 			if pass == 0 {
 				k += "\x00" + placeKey(g.Where)
 			}
@@ -132,7 +343,15 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 	// beforeKey is the key an old feature looks for, and what else must hold
 	// of the one it finds (nil: nothing).
 	beforeKey := func(f xlsx.Feature, home string, pass int) (string, func(xlsx.Feature) bool, bool) {
-		sheet := strings.ToLower(home)
+		if pass < 2 && !ruled(f) || pass == 3 && ruled(f) {
+			return "", nil, false
+		}
+		sheet, strict := strings.ToLower(home), pass < 2
+		pass %= 2
+		reads := ""
+		if strict {
+			reads = "\x00" + readsBefore(f, home)
+		}
 		head := f.Kind + "\x00" + cs(f) + "\x00"
 		switch {
 		case f.Kind == xlsx.FeatureName:
@@ -152,12 +371,11 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 			}
 			return head + typeKey(f.Type), nil, true
 		case f.Kind == xlsx.FeatureValidation || f.Kind == xlsx.FeatureCond:
-			k := head + sheet + "\x00" + typeKey(f.Type) + "\x00" + ruleKey(f.Rule)
 			if pass == 0 {
-				p := moved(f, home)
-				return k + "\x00" + p, nil, p != ""
+				on, p := movedTo(f, home)
+				return head + on + "\x00" + typeKey(f.Type) + "\x00" + ruleKey(f.Rule) + reads + "\x00" + p, nil, p != ""
 			}
-			return k, nil, true
+			return head + sheet + "\x00" + typeKey(f.Type) + "\x00" + ruleKey(f.Rule) + reads, nil, true
 		case f.Kind == xlsx.FeatureChart:
 			return head + sheet + "\x00" + typeKey(f.Type), func(g xlsx.Feature) bool {
 				if pass == 0 {
@@ -172,19 +390,23 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 		}
 		return head + sheet + "\x00" + strings.ToLower(f.What), nil, true
 	}
-	match := func(f xlsx.Feature, pass int) bool {
+	// match finds the feature of the new version an old one is (-1: none).
+	match := func(f xlsx.Feature, pass int) int {
 		home, ok := nowOf(f)
 		if !ok {
-			return false
+			return -1
 		}
 		key, pred, ok := beforeKey(f, home, pass)
 		if !ok {
-			return false
+			return -1
 		}
 		if index[pass] == nil {
 			index[pass] = map[string]*bucket{}
 			for i, g := range after {
 				k := afterKey(g, pass)
+				if k == "" {
+					continue
+				}
 				bk := index[pass][k]
 				if bk == nil {
 					bk = &bucket{}
@@ -195,7 +417,7 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 		}
 		bk := index[pass][key]
 		if bk == nil {
-			return false
+			return -1
 		}
 		for bk.head < len(bk.idx) && used[bk.idx[bk.head]] {
 			bk.head++
@@ -205,15 +427,99 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 				continue
 			}
 			used[i] = true
-			return true
+			return i
 		}
-		return false
+		return -1
 	}
 	kept := make([]bool, len(before))
-	for pass := 0; pass < 2; pass++ {
+	var changed []changedFeature
+	for pass := 0; pass < 4; pass++ {
 		for i, f := range before {
-			if !kept[i] {
-				kept[i] = match(f, pass)
+			if kept[i] {
+				continue
+			}
+			j := match(f, pass)
+			if kept[i] = j >= 0; !kept[i] {
+				continue
+			}
+			if pass >= 2 && ruled(f) {
+				// The same rule reading other cells than the rows and columns
+				// added and removed put it on (a dropdown pointed at another
+				// list, a formula testing another column, a threshold cell
+				// changed): the rule edited.
+				home, _ := nowOf(f)
+				changed = append(changed, ruleReads(f, after[j], home, shift))
+			}
+		}
+	}
+	// A rule not kept whose cells hold another of its kind now was edited:
+	// changed, the other of its type first, and of those the one whose text is
+	// the closest to its own (of two highlights on the same cells, one cleared
+	// and the other's threshold edited, the edit is the one it resembles).
+	byPlace := map[string][]int{}
+	for i, g := range after {
+		if !used[i] && (g.Kind == xlsx.FeatureValidation || g.Kind == xlsx.FeatureCond) {
+			k := g.Kind + "\x00" + strings.ToLower(g.Sheet) + "\x00" + placeKey(g.Where)
+			byPlace[k] = append(byPlace[k], i)
+		}
+	}
+	edit := func(f, g xlsx.Feature) {
+		changed = append(changed, changedFeature{Kind: f.Kind, Where: grid.QuoteSheet(g.Sheet) + "!" + g.Where, What: g.What, Before: ruleText(f), After: ruleText(g)})
+	}
+	for _, sameType := range []bool{true, false} {
+		type pair struct{ i, j, apart int }
+		var pairs []pair
+		for i, f := range before {
+			if kept[i] || f.Kind != xlsx.FeatureValidation && f.Kind != xlsx.FeatureCond {
+				continue
+			}
+			home, ok := nowOf(f)
+			on, p := movedTo(f, home)
+			if !ok || p == "" {
+				continue
+			}
+			here := byPlace[f.Kind+"\x00"+on+"\x00"+p]
+			for _, j := range here {
+				g := after[j]
+				if used[j] || !ruleEdited(f, g, sameType) {
+					continue
+				}
+				if len(here) > closestMax {
+					// Too many on the cells to tell the closest of each: the first.
+					used[j], kept[i] = true, true
+					edit(f, g)
+					break
+				}
+				pairs = append(pairs, pair{i, j, textApart(ruleText(f), ruleText(g))})
+			}
+		}
+		sort.SliceStable(pairs, func(a, b int) bool { return pairs[a].apart < pairs[b].apart })
+		for _, q := range pairs {
+			if kept[q.i] || used[q.j] {
+				continue
+			}
+			used[q.j], kept[q.i] = true, true
+			edit(before[q.i], after[q.j])
+		}
+	}
+	if changed == nil {
+		changed = []changedFeature{}
+	}
+	if across {
+		rest := map[string][]int{} // the rules of the new version nothing paired with, by what they are
+		ruleOf := func(f xlsx.Feature) string { return f.Kind + "\x00" + typeKey(f.Type) + "\x00" + ruleKey(f.Rule) }
+		for i, g := range after {
+			if !used[i] && (g.Kind == xlsx.FeatureValidation || g.Kind == xlsx.FeatureCond) {
+				rest[ruleOf(g)] = append(rest[ruleOf(g)], i)
+			}
+		}
+		for i, f := range before {
+			if kept[i] || f.Kind != xlsx.FeatureValidation && f.Kind != xlsx.FeatureCond {
+				continue
+			}
+			if idx := rest[ruleOf(f)]; len(idx) > 0 {
+				used[idx[0]], kept[i] = true, true
+				rest[ruleOf(f)] = idx[1:]
 			}
 		}
 	}
@@ -229,12 +535,116 @@ func lostFeatures(before, after []xlsx.Feature, renamed, tables map[string]strin
 		if f.Chartsheet {
 			where, what = grid.QuoteSheet(f.Sheet), strings.TrimSpace(what+" on a chart sheet")
 		}
+		if f.Kind == xlsx.FeatureValidation || f.Kind == xlsx.FeatureCond {
+			// Which rule it was (its operator and values), where several of a kind
+			// were on the cells.
+			what = strings.TrimSpace(what + ": " + ruleText(f))
+		}
 		out = append(out, lostFeature{Kind: f.Kind, Where: where, What: what})
 	}
 	if out == nil {
 		out = []lostFeature{}
 	}
-	return out
+	return out, changed
+}
+
+// closestMax is how many rules of one kind on the same cells compareFeatures
+// tells the closest pairs of; with more, an edited rule is paired with the
+// first of them it could be.
+const closestMax = 12
+
+// textApart is how far two texts are from each other: the edits (a letter
+// added, removed or changed) it takes to write one as the other, of their
+// first 200 letters.
+func textApart(a, b string) int {
+	x, y := []rune(a), []rune(b)
+	x, y = x[:min(len(x), 200)], y[:min(len(y), 200)]
+	row := make([]int, len(y)+1)
+	for j := range row {
+		row[j] = j
+	}
+	for i := 1; i <= len(x); i++ {
+		prev := row[0]
+		row[0] = i
+		for j := 1; j <= len(y); j++ {
+			cur := row[j]
+			if x[i-1] == y[j-1] {
+				row[j] = prev
+			} else {
+				row[j] = 1 + min(prev, row[j], row[j-1])
+			}
+			prev = cur
+		}
+	}
+	return row[len(y)]
+}
+
+// ruleEdited tells whether a rule of the new version, on the cells of one of
+// the old, is the old one edited: of its type, or, when sameType is not
+// asked, of a kindred one (a whole-number validation made a decimal one, a
+// date, a text length: all a bound on a value) or a validation of no type,
+// which allows any value and stands in for any (the rule cleared, its message
+// kept); and, for a rule that is a formula of its own (a conditional format
+// by expression, a custom validation), of the same shape, as a threshold
+// edited is and the banding that replaced a highlight is not. Another rule on
+// the same cells (a list where a number was, data bars for a highlight) is
+// the old one lost.
+func ruleEdited(f, g xlsx.Feature, sameType bool) bool {
+	tf, tg := typeKey(f.Type), typeKey(g.Type)
+	if tf != tg {
+		if sameType || f.Kind != xlsx.FeatureValidation {
+			return false
+		}
+		return tf == "none" || tg == "none" || bounded[tf] && bounded[tg]
+	}
+	if tf == "expression" || tf == "custom" {
+		return ruleShape(f.Rule) == ruleShape(g.Rule)
+	}
+	return true
+}
+
+// bounded are the validations that bound a value (operator and limits).
+var bounded = map[string]bool{"whole": true, "decimal": true, "date": true, "time": true, "textLength": true}
+
+// ruleShape writes a rule's formulas with what an edit changes left out: the
+// numbers and texts in them and the comparison made, as well as what ruleKey
+// leaves out (the cells read, case, spaces).
+func ruleShape(rule string) string {
+	k := ruleKey(rule)
+	var b strings.Builder
+	for i := 0; i < len(k); {
+		c := k[i]
+		switch {
+		case c == '"':
+			j := i + 1
+			for j < len(k) {
+				if k[j] == '"' {
+					if j+1 < len(k) && k[j+1] == '"' {
+						j += 2
+						continue
+					}
+					break
+				}
+				j++
+			}
+			b.WriteString(`"s"`)
+			i = j + 1
+		case c >= '0' && c <= '9' && (i == 0 || !nameChar(k[i-1])):
+			for i < len(k) && (k[i] >= '0' && k[i] <= '9' || k[i] == '.') {
+				i++
+			}
+			b.WriteByte('#')
+		case c == '<' || c == '>' || c == '=':
+			for i < len(k) && (k[i] == '<' || k[i] == '>' || k[i] == '=') {
+				i++
+			}
+			b.WriteByte('~')
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return b.String()
 }
 
 // typeKey names a rule's type: a validation of no type allows any value.
@@ -274,6 +684,15 @@ func nameChar(b byte) bool {
 // added or removed rewrite those, a sheet renamed the sheet's name), their
 // case and spaces too. A text in quotes stays as it is.
 func ruleKey(rule string) string {
+	return scanRule(rule, true, func(string) string { return "{ref}" }, func(string) string { return "{table}" })
+}
+
+// scanRule goes through a rule's formulas giving each reference (a cell, a
+// range, with its sheet) to ref and each structured reference to table,
+// whatever they answer standing in its place; the rest is written folded
+// (case and spaces left out), or as it is when fold is not asked. A text in
+// quotes stays as it is.
+func scanRule(rule string, fold bool, ref, table func(string) string) string {
 	var b strings.Builder
 	for i := 0; i < len(rule); {
 		c := rule[i]
@@ -293,12 +712,12 @@ func ruleKey(rule string) string {
 			b.WriteString(rule[i:min(j+1, len(rule))])
 			i = j + 1
 			continue
-		case c == ' ' || c == '\t' || c == '\n':
+		case fold && (c == ' ' || c == '\t' || c == '\n'):
 			i++
 			continue
 		case i == 0 || !nameChar(rule[i-1]) && rule[i-1] != '!':
 			if m := refAt.FindString(rule[i:]); m != "" && (i+len(m) == len(rule) || !nameChar(rule[i+len(m)]) && rule[i+len(m)] != '(' && rule[i+len(m)] != '[') {
-				b.WriteString("{ref}")
+				b.WriteString(ref(m))
 				i += len(m)
 				continue
 			}
@@ -314,12 +733,16 @@ func ruleKey(rule string) string {
 						}
 					}
 				}
-				b.WriteString("{table}")
+				b.WriteString(table(rule[i:min(j+1, len(rule))]))
 				i = j + 1
 				continue
 			}
 		}
-		b.WriteString(strings.ToLower(rule[i : i+1]))
+		if fold {
+			b.WriteString(strings.ToLower(rule[i : i+1]))
+		} else {
+			b.WriteByte(c)
+		}
 		i++
 	}
 	return b.String()

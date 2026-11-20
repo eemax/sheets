@@ -25,12 +25,7 @@ type blockAlign struct {
 // blocksOf splits the column pairs into blocks: runs of columns with
 // something in them, apart where a column is empty in both versions.
 func blocksOf(A, B side, pairs [][2]int) [][][2]int {
-	used := func(x side) map[int]bool {
-		m := map[int]bool{}
-		x.s.Each(x.s.Used(), func(_, col int, _ *grid.Cell) { m[col] = true })
-		return m
-	}
-	ua, ub := used(A), used(B)
+	ua, ub := A.heldCols(), B.heldCols()
 	var out [][][2]int
 	var cur [][2]int
 	for _, p := range pairs {
@@ -47,6 +42,13 @@ func blocksOf(A, B side, pairs [][2]int) [][][2]int {
 		out = append(out, cur)
 	}
 	return out
+}
+
+// heldCols gives the columns of a side with something in them.
+func (x side) heldCols() map[int]bool {
+	m := map[int]bool{}
+	x.s.Each(x.s.Used(), func(_, col int, _ *grid.Cell) { m[col] = true })
+	return m
 }
 
 // rowSigs describes each row of a side over some columns, for alignment,
@@ -248,7 +250,16 @@ func alignBlocks(A, B side, opts Options, full sheetAlign) sheetAlign {
 	for _, bl := range blocks {
 		cost += cellsChanged(A, B, append(append(stepPairs(bl.rows), bl.placed...), bl.moved...), bl.cols)
 	}
-	if cost >= cellsChanged(A, B, append(append(stepPairs(full.rows), full.placed...), full.moved...), pairs) {
+	// (A column empty in both versions has nothing changed in it: the
+	// columns of a sheet whose used range spans the grid are not all counted.)
+	ha, hb := A.heldCols(), B.heldCols()
+	var held [][2]int
+	for _, p := range pairs {
+		if ha[p[0]] || hb[p[1]] {
+			held = append(held, p)
+		}
+	}
+	if cost >= cellsChanged(A, B, append(append(stepPairs(full.rows), full.placed...), full.moved...), held) {
 		return full
 	}
 	return sheetAlign{cols: full.cols, rows: skeleton, blocks: blocks}

@@ -734,3 +734,24 @@ ws["B1"] = "=1/A1"
 ws["C1"] = "=1/0"
 ws["D1"] = "=A1+1"
 wb.save(f"{out}/noresults.xlsx")
+
+# against_totals.xlsx: totals that read the same five numbers (Data!B2:B6) by
+# an Excel table's column (Sales[Units]) and by a defined name (Units), no
+# result stored: Sum!A1:A2 and A5 over the table, A3:A4 over the name.
+# check --against reads them to tell what a row removed or added can move.
+from openpyxl.workbook.defined_name import DefinedName
+
+wb = openpyxl.Workbook()
+ws = wb.active
+ws.title = "Data"
+for row in (("Region", "Units"), ("North", 5), ("South", 7), ("East", 3), ("West", 9), ("Mid", 4)):
+    ws.append(row)
+ws.add_table(Table(displayName="Sales", ref="A1:B6"))
+wb.defined_names["Units"] = DefinedName("Units", attr_text="Data!$B$2:$B$6")
+total = wb.create_sheet("Sum")
+total["A1"] = "=SUM(Sales[Units])"
+total["A2"] = "=MAX(Sales[Units])"
+total["A3"] = "=SUM(Units)"
+total["A4"] = "=MAX(Units)"
+total["A5"] = "=COUNT(Sales[Units])"
+wb.save(f"{out}/against_totals.xlsx")
