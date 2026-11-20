@@ -172,6 +172,7 @@ type resultTrack struct {
 	reached bool // the change reached it (not only computed for lack of a result)
 	before  grid.Cell
 	was     bool
+	stale   bool // a result was stored but stale when opened
 	after   grid.Cell
 	now     bool
 	why     string
@@ -274,7 +275,7 @@ func (s *session) effects(ef xlsx.Effects) {
 			r.reached = r.reached || rc.Reached
 			continue
 		}
-		s.results[p] = &resultTrack{sheet: rc.Sheet, written: rc.Written, carried: rc.Carried, blank: rc.Blank, reached: rc.Reached, before: rc.Before, was: rc.Was, after: rc.After, now: rc.Now, why: rc.Why}
+		s.results[p] = &resultTrack{sheet: rc.Sheet, written: rc.Written, carried: rc.Carried, blank: rc.Blank, reached: rc.Reached, before: rc.Before, was: rc.Was, stale: rc.Stale, after: rc.After, now: rc.Now, why: rc.Why}
 	}
 	for _, w := range ef.Written {
 		p := cellPos{strings.ToLower(w.Sheet), w.Row, w.Col}
@@ -513,7 +514,7 @@ func (s *session) report() *changeReport {
 				u.Cells = append(u.Cells, ref)
 			}
 			continue
-		case !w && t.was && !xlsx.SameResult(t.before, t.after):
+		case !w && (t.was || t.stale && t.reached) && !xlsx.SameResult(t.before, t.after):
 			r.Moved++
 			if len(r.MovedList) < changeListed {
 				r.MovedList = append(r.MovedList, cv)
@@ -526,7 +527,7 @@ func (s *session) report() *changeReport {
 		// before, so it is counted, and told so.
 		if t.after.Kind == grid.Error && !t.carried && (w || t.was || t.reached) && !(t.was && t.before.Kind == grid.Error) {
 			r.Errors++
-			if !w && !t.was {
+			if !w && !t.was && !t.stale {
 				cv.NoResultBefore = true
 			}
 			if len(r.ErrorList) < changeListed {

@@ -46,7 +46,7 @@ func (c *calc) analyse() {
 			if cell.Formula == "" {
 				return
 			}
-			f := &formulaAt{sheet: s.Name, row: r, col: col, text: cell.Formula, pending: cell.Pending, stored: valueOf(*cell), unprefixed: cell.Unprefixed}
+			f := &formulaAt{sheet: s.Name, row: r, col: col, text: cell.Formula, pending: cell.Pending, stored: valueOf(*cell), staleRes: staleOf(*cell), unprefixed: cell.Unprefixed}
 			c.at[keyOf(s.Name, r, col)] = f
 			list = append(list, f)
 			if cell.Pending {

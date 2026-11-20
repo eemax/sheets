@@ -298,7 +298,7 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 		if err := e.f.SetCellFormula(f.sheet, grid.CellName(f.row, f.col), ""); err != nil {
 			return err
 		}
-		m := formulaAt{sheet: f.sheet, row: f.row, col: f.col, text: rewrite(f.text, f.sheet), pending: f.pending, stored: f.stored, unprefixed: f.unprefixed,
+		m := formulaAt{sheet: f.sheet, row: f.row, col: f.col, text: rewrite(f.text, f.sheet), pending: f.pending, stored: f.stored, staleRes: f.staleRes, unprefixed: f.unprefixed,
 			written: f.written, prior: f.prior, priorKnown: f.priorKnown, priorBlank: f.priorBlank}
 		rg, isArray := arrays[keyOf(f.sheet, f.row, f.col)]
 		if strings.EqualFold(f.sheet, target) {

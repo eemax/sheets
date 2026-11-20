@@ -38,6 +38,7 @@ type formulaAt struct {
 	row, col int
 	text     string
 	pending  bool      // its stored result was missing or stale when opened
+	staleRes grid.Cell // the stale result a pending formula stored (it says nothing of what Excel shows)
 	stored   grid.Cell // its stored result when opened, if any (Empty if none)
 	// written: the formula is one this session wrote. prior is the stored
 	// result of the formula it replaced (priorKnown), or priorBlank: that
@@ -128,7 +129,7 @@ func (e *Editor) formulasNow() (map[cellKey]*formulaAt, error) {
 		for _, s := range e.wb.Sheets {
 			s.Each(s.Used(), func(r, c int, cell *grid.Cell) {
 				if cell.Formula != "" {
-					all[keyOf(s.Name, r, c)] = &formulaAt{sheet: s.Name, row: r, col: c, text: cell.Formula, pending: cell.Pending, stored: valueOf(*cell), unprefixed: cell.Unprefixed}
+					all[keyOf(s.Name, r, c)] = &formulaAt{sheet: s.Name, row: r, col: c, text: cell.Formula, pending: cell.Pending, stored: valueOf(*cell), staleRes: staleOf(*cell), unprefixed: cell.Unprefixed}
 				}
 			})
 		}
@@ -941,6 +942,15 @@ func computeResults(st calcState) (calcResult, error) {
 }
 
 // valueOf is the stored result of a formula cell as read (Empty if none).
+// staleOf is the result a formula stored that the file marks for
+// recalculation: kept for the change report, never trusted.
+func staleOf(c grid.Cell) grid.Cell {
+	if !c.Pending {
+		return grid.Cell{}
+	}
+	return grid.Cell{Kind: c.Kind, Bool: c.Bool, Num: c.Num, Text: c.Text}
+}
+
 func valueOf(c grid.Cell) grid.Cell {
 	if c.Pending {
 		return grid.Cell{}

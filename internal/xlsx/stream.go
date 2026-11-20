@@ -346,14 +346,14 @@ func (s *StreamEditor) formulasNow() map[cellKey]*formulaAt {
 				return
 			}
 			if s.edit(sh.Name, now, c) != nil {
-				replaced[keyOf(sh.Name, now, c)] = &formulaAt{pending: cell.Pending, stored: valueOf(*cell)}
+				replaced[keyOf(sh.Name, now, c)] = &formulaAt{pending: cell.Pending, stored: valueOf(*cell), staleRes: staleOf(*cell)}
 				return
 			}
 			text := cell.Formula
 			if len(s.ops) > 0 {
 				text = s.rewrite(text, sh.Name)
 			}
-			all[keyOf(sh.Name, now, c)] = &formulaAt{sheet: sh.Name, row: now, col: c, text: text, pending: cell.Pending, stored: valueOf(*cell), unprefixed: cell.Unprefixed}
+			all[keyOf(sh.Name, now, c)] = &formulaAt{sheet: sh.Name, row: now, col: c, text: text, pending: cell.Pending, stored: valueOf(*cell), staleRes: staleOf(*cell), unprefixed: cell.Unprefixed}
 		})
 	}
 	for _, sh := range s.wb.Sheets {

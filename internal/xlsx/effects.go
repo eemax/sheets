@@ -42,6 +42,10 @@ type ResultChange struct {
 	// known (a result stored and current).
 	Before grid.Cell
 	Was    bool
+	// Stale: the formula's result stored when opened was not current (the
+	// file marks it for recalculation, as XlsxWriter's do): Before holds that
+	// result and Was is false, since it says nothing of what Excel showed.
+	Stale bool
 	// After is the result stored now; Now says there is one. Why says why
 	// there is none.
 	After grid.Cell
@@ -108,6 +112,9 @@ func effectOf(f *formulaAt, written bool, carried carryKind, must bool, v grid.C
 	}
 	if !written && f.stored.Kind != grid.Empty && !f.pending {
 		rc.Before, rc.Was = valueOnly(f.stored), true
+	}
+	if !written && f.pending && f.staleRes.Kind != grid.Empty {
+		rc.Before, rc.Stale = valueOnly(f.staleRes), true
 	}
 	if !written && f.written && f.priorKnown {
 		// A formula regrown as Excel would (Editor.regrown): read back as

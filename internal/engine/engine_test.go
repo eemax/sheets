@@ -263,7 +263,7 @@ func TestExcelAnswers(t *testing.T) {
 		{"TEXT(1234567,\"#,##0,\")", `"1,235"`},
 		{"TEXT(4,\"[<3]\"\"dog\"\"0;\")", `""`},
 		{"FIXED(1234.5,1)", `"1,234.5"`},
-		{"DOLLAR(-1234.5)", `"($1,234.50)"`},
+		{"DOLLAR(-1234.5)", "unknown: DOLLAR's currency symbol and its place depend on Excel's language setting"},
 		{"CHAR(65)&CODE(\"a\")", `"A97"`},
 		// Dates.
 		{"DATE(2024,2,30)", "45352"},

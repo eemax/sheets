@@ -361,12 +361,10 @@ func init() {
 		if err != nil {
 			return *err
 		}
-		code := "$#,##0"
-		if d > 0 {
-			code += "." + strings.Repeat("0", int(d))
-		}
-		x = roundDigits(x, int(d), 0)
-		return str(FormatNumber(x, code+";("+code+")", false))
+		_ = x
+		_ = d
+		// The currency symbol and where it stands come from Excel's language.
+		return unsupported("DOLLAR's currency symbol and its place depend on Excel's language setting")
 	}})
 	reg("CHAR", fn1(func(x float64) Value {
 		n := int(x)
