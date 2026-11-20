@@ -1,0 +1,175 @@
+# Every changing command ends with the short form of the change report:
+# cells written, values moved downstream, new errors, new unknowns, features
+# lost and how the lint changed, in under 15 lines; --json carries it as
+# "change".
+stdin data.tsv
+exec sheets write book.xlsx Data
+stdout '^change: 25 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before$'
+shortform 15
+exec sheets set book.xlsx Summary!A1 '=SUM(Data!D:D)' Summary!A2 '=1/Data!B2'
+stdout '^change: 2 cells written, 0 values moved'
+
+# An input change: what it moved downstream, the error it brought, and the
+# lint finding with it. The next-step hints come after the report.
+exec sheets set book.xlsx Data!B2 0
+stdout '^change: 1 cell written, 3 values moved, 1 new error, 0 new unknowns, 0 features lost, lint \+1 error$'
+stdout '^moved: Data!D2 6 → 0, Summary!A1 33 → 27, Summary!A2 0.5 → #DIV/0!$'
+stdout '^new errors: Summary!A2 #DIV/0! \(was 0.5\)$'
+stdout '^lint: error-value 0 → 1: Summary!A2: 1 cell shows #DIV/0!$'
+shortform 15
+
+# --json: the same, as a field.
+exec sheets --json set book.xlsx Data!B2 2
+stdout '"change":\{"cells":1,"moved":3,"moved_values":\[\{"cell":"Data!D2","before":"0","after":"6"\}'
+stdout '"new_errors":0'
+stdout '"lint":\{"compared":true,"errors":-1'
+
+# A dry run reports what the change would do, and saves nothing.
+exec sheets --dry-run set book.xlsx Data!C3 10
+stdout 'dry run: nothing was saved'
+stdout '^change: 1 cell written, 2 values moved'
+stdout '^moved: Data!D3 20 → 40, Summary!A1 33 → 53$'
+exec sheets read book.xlsx Data!C3
+stdout '^3\t5$'
+
+# A formula sheets cannot compute is a new unknown, with why.
+exec sheets set book.xlsx Summary!B1 '=INFO("osversion")'
+stdout '^change: 1 cell written, 0 values moved, 0 new errors, 1 new unknown, '
+stdout '^unknown: Summary!B1: INFO is not supported by the sheets calculator$'
+exec sheets set book.xlsx Summary!B1 ''
+stdout '^change: 1 cell written, 0 values moved, 0 new errors, 0 new unknowns'
+
+# Features: rows inserted move a validation, which is not lost; deleting
+# its rows loses it.
+exec sheets validate book.xlsx Data!E2:E3 list a,b
+stdout '^change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before$'
+exec sheets rows insert book.xlsx Data!2
+stdout '^change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before$'
+exec sheets cols insert book.xlsx Data!A
+stdout ', 0 features lost, '
+exec sheets rows delete book.xlsx Data!3:4
+stdout '^change: 0 cells written, 2 values moved, 1 new error, 0 new unknowns, 1 feature lost, lint \+1 error$'
+stdout '^lost: validation Data!F3:F4 \(list validation\)$'
+stdout '^lint: broken-reference 0 → 1: '
+shortform 15
+exec sheets undo book.xlsx
+exec sheets cols delete book.xlsx Data!A
+exec sheets rows delete book.xlsx Data!2
+stdout ', 0 features lost, '
+
+# A renamed sheet keeps its validation; a deleted one loses it.
+exec sheets sheet rename book.xlsx Data Facts
+stdout '^change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before$'
+exec sheets sheet add book.xlsx Spare
+exec sheets validate book.xlsx Spare!A1:A3 whole '>= 0'
+exec sheets sheet delete book.xlsx Spare
+stdout '^change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, 1 feature lost, lint as before$'
+stdout '^lost: validation Spare!A1:A3 \(whole validation\)$'
+
+# Range commands, a sort, a replace and a style each report.
+exec sheets sort book.xlsx Facts Qty:desc
+stdout '^change: 20 cells written, 1 value moved'
+stdout '^moved: Summary!A2 0.5 → '
+exec sheets copy book.xlsx Facts!B2 Facts!B5
+stdout '^change: 1 cell written, 2 values moved'
+stdout '^moved: Facts!D5 1 → 4, Summary!A1 33 → 36$'
+exec sheets clear book.xlsx Facts!B5
+stdout '^change: 1 cell written, 2 values moved'
+exec sheets replace book.xlsx a A Facts --exact
+stdout '^change: 1 cell written, 0 values moved'
+exec sheets style book.xlsx Facts!A1:E1 bold
+stdout '^change: 0 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before$'
+exec sheets fmt book.xlsx
+stdout '^change: 0 cells written'
+
+# A script reports once, for all it did.
+exec sheets script book.xlsx -e 'function main(wb: ExcelScript.Workbook) { wb.getWorksheet("Facts").getRange("C2").setValue(0); wb.getWorksheet("Facts").getRange("C3").setValue(0) }'
+stdout '^change: 2 cells written, 3 values moved'
+shortform 15
+
+# A batch reports once, after its last command, for the whole batch: 50
+# edits that move many values, bring errors and unknowns of several kinds
+# and lose validations stay under 15 lines.
+exec sheets validate book.xlsx Facts!F2 list x,y
+exec sheets validate book.xlsx Facts!F3 whole '>= 1'
+exec sheets validate book.xlsx Facts!F4 number '>= 2'
+exec sheets validate book.xlsx Facts!F5 length '<= 3'
+exec sheets validate book.xlsx Facts!F6 date '>= 2026-01-01'
+exec sheets validate book.xlsx Facts!F7 whole '<= 9'
+exec sheets do book.xlsx -f batch.txt
+stdout '^saved book.xlsx: 50 commands, one undo step$'
+stdout '^change: 40 cells written, 6 values moved, 6 new errors, 9 new unknowns, 6 features lost, lint \+6 errors$'
+stdout '^moved: Facts!D2 0 → 5, Facts!D3 0 → 12, Facts!D4 6 → 21, Facts!D5 0 → 32, Summary!A1 6 → 70 and 1 more$'
+stdout '^new errors: Facts!J4 #DIV/0!, Facts!J5 #DIV/0!, Facts!J6 #N/A, Facts!J7 #DIV/0!, Facts!J8 #NUM! and 1 more$'
+stdout '^unknown: .*: circular reference'
+stdout '^unknown: 2 more for other reasons$'
+stdout '^lost: .* and 1 more$'
+! stdout '^> .*\n(change|moved|unknown|lost):'
+shortform 15
+exec sheets --json do book.xlsx 'set Facts!B2 1'
+stdout '"change":\{"cells":1,'
+
+# CSV: cells written only.
+exec sheets write prices.csv A1 -i data.tsv
+stdout '^change: 25 cells written \(a CSV file holds values only\)$'
+exec sheets set prices.csv B2 7
+stdout '^change: 1 cell written \(a CSV file holds values only\)$'
+shortform 15
+
+-- data.tsv --
+Item	Qty	Price	Total	Pick
+a	2	3	=B{r}*C{r}	x
+b	4	5	=B{r}*C{r}	y
+c	1	1	=B{r}*C{r}	x
+d	3	2	=B{r}*C{r}	y
+-- batch.txt --
+set Facts!B2 0
+set Facts!B3 0
+set Facts!B4 0
+set Facts!B5 0
+set Facts!C2 1
+set Facts!C3 2
+set Facts!C4 3
+set Facts!C5 4
+set Facts!G2 '=1/Facts!B2'
+set Facts!G3 '=1/Facts!B3'
+set Facts!G4 '=1/Facts!B4'
+set Facts!G5 '=1/Facts!B5'
+set Facts!H2 '=H2+1'
+set Facts!H3 '=H3+1'
+set Facts!H4 '=H4+1'
+set Facts!H5 '=H5+1'
+set Facts!H6 '=H6+1'
+set Facts!I2 '=INFO("osversion")'
+set Facts!I3 '=WEBSERVICE("http://example.com")'
+set Facts!I4 '=CELL("filename")'
+set Facts!I5 '=RTD("x",,"y")'
+set Facts!J2 '=Summary!A1*2'
+set Facts!J3 '=Summary!A1*3'
+set Facts!J4 '=1/0'
+set Facts!J5 '=1/0'
+set Facts!J6 '=NA()'
+set Facts!J7 '=1/0'
+set Facts!J8 '=SQRT(-1)'
+set Facts!J9 '=1/0'
+set Facts!B2 5
+set Facts!B3 6
+set Facts!B4 7
+set Facts!B5 8
+set Facts!K1 note
+rows insert Facts!2
+rows delete Facts!2
+cols insert Facts!L
+cols delete Facts!L
+set Facts!K2 a
+set Facts!K3 b
+set Facts!K4 c
+set Facts!K5 d
+clear Facts!K2:K5
+validate Facts!F2:F7 --clear
+set Facts!L1 1
+set Facts!L2 2
+set Facts!L3 3
+set Facts!L4 4
+set Facts!L5 5
+set Facts!L6 6

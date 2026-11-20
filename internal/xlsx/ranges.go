@@ -1256,6 +1256,7 @@ func (e *Editor) MoveRange(from string, src grid.Range, to string, at grid.Range
 		if err := e.put(to, dst.R1+k[0], dst.C1+k[1], h, text, pasteAll); err != nil {
 			return res, err
 		}
+		e.carry(keyOf(to, dst.R1+k[0], dst.C1+k[1]), h, text)
 	}
 	left := []grid.Range{src}
 	if same {

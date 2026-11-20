@@ -1,0 +1,25 @@
+Fixed in 4410f38: a cell a move empties keeps the formula it held, so a moved
+array formula stands in two places. Then, excelize kept an array formula when
+put set the cell empty, and the fix took the formula away first. excelize
+v2.11 takes it away itself (SetCellDefault calls removeFormula), so undoing
+the fix changes nothing today. This is the nearest patch that puts the same
+bug back: the cells the move empties keep the array formulas it took (legacy
+ones in one cell, and dynamic ones), as the old excelize kept them.
+
+--- a/internal/xlsx/ranges.go
++++ b/internal/xlsx/ranges.go
+@@ -1262,7 +1262,13 @@
+ 		left = subtract(src, dst)
+ 	}
+ 	for _, r := range left {
+-		if err := e.wipe(from, r, nil, pasteAll); err != nil {
++		stay := map[[2]int]*taken{}
++		for k, h := range b.cells {
++			if h.formula != "" && (h.array || h.dynamic) {
++				stay[[2]int{src.R1 + k[0] - r.R1, src.C1 + k[1] - r.C1}] = h
++			}
++		}
++		if err := e.wipe(from, r, stay, pasteAll); err != nil {
+ 			return res, err
+ 		}
+ 	}

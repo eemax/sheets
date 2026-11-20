@@ -36,6 +36,10 @@ type Override struct {
 // FormatResult describes what fmt did, so agents can check the inference.
 type FormatResult struct {
 	Sheets []FormattedSheet `json:"sheets"`
+	// Before and After are the file before and as formatted, for the
+	// change report.
+	Before []byte `json:"-"`
+	After  []byte `json:"-"`
 }
 
 // FormattedSheet is the outcome for one sheet.
@@ -71,10 +75,15 @@ func Format(path string, opts FormatOptions) (*FormatResult, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	defer fm.f.Close()
+	buf, err := serialize(fm.f, fm.patches)
+	if err != nil {
+		return nil, err
+	}
+	res.Before, res.After = data, buf
 	if opts.DryRun {
 		return res, nil
 	}
-	return res, save(fm.f, path, fm.patches)
+	return res, writeAtomic(path, buf)
 }
 
 // Check reports whether Format would change nothing.

@@ -58,6 +58,10 @@ reads give computed values, and it saves once, as one undo step.
 
 1. Read each command's output. It lists formula errors with their cells,
    and formulas only Excel can compute (shown as `?`), with the reason.
+   A command that changes the file ends with a `change:` report: cells
+   written, values moved downstream, new errors and unknowns, features
+   lost, how the lint changed. A value you did not mean to move, a new
+   error or a feature lost is a mistake to fix (or `sheets undo`).
 2. Run `sheets check book.xlsx` (`sheets lint` without the results):
    errors, `#REF!`, formulas that break their column's pattern or are
    missing from rows, totals that leave out rows or count a total twice,
@@ -67,7 +71,13 @@ reads give computed values, and it saves once, as one undo step.
    script left out and adds the prefix Excel needs to newer functions
    (`#NAME?` in Excel otherwise).
 3. `sheets diff book.xlsx` shows what the last command changed, and
-   `sheets undo book.xlsx` takes it back.
+   `sheets undo book.xlsx` takes it back. For a whole change, whoever
+   made it (a script among them), keep a copy first and run
+   `sheets check book.xlsx --against before.xlsx`: each moved value with
+   its cause, and it fails on values that moved with no cause and on
+   charts, validations or shapes lost. When a person gets the workbook
+   back, add `--receipt receipt.md` and hand them that: the report in
+   Markdown, with before and after pictures of what changed.
 4. After formatting a sheet or adding a chart, look at it:
    `sheets render book.xlsx Sales` writes a PNG.
 

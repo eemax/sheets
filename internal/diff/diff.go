@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,6 +36,7 @@ type Sheet struct {
 	RowsRemoved []Lines        `json:"rows_removed,omitempty"`
 	ColsAdded   []Lines        `json:"cols_added,omitempty"`
 	ColsRemoved []Lines        `json:"cols_removed,omitempty"`
+	RowsMoved   []Moved        `json:"rows_moved,omitempty"` // with Options.Moves
 	Cells       []Change       `json:"cells,omitempty"`
 	Formats     []FormatChange `json:"formats,omitempty"`
 	MoreCells   int            `json:"more_cells,omitempty"`
@@ -79,49 +81,204 @@ type OrderChange struct {
 // Options limit the result.
 type Options struct {
 	MaxCells int // cell changes listed per sheet; 0 means all
+	// Moves pairs rows that moved, as a sort moves them, with where they
+	// were (RowsMoved), instead of reporting them removed and added, or
+	// changed. sheets diff leaves it off; check --against turns it on.
+	Moves bool
+	// LostRefs pairs a formula that Excel rewrote with #REF! (it read what
+	// was deleted) with its old self, so a column or row of them is the
+	// same column or row, not one removed and another added. sheets diff
+	// leaves it off; check --against turns it on.
+	LostRefs bool
+	// ColumnShifts pairs formulas by what they do, not which columns they
+	// read, so a column inserted between the columns a formula reads
+	// (=B2*C2 becomes =B2*D2) leaves it paired with its old self, not one
+	// column removed and another added. sheets diff leaves it off; check
+	// --against turns it on.
+	ColumnShifts bool
+	// Dates pairs dates by the date they are, whatever date system each
+	// workbook uses (a Mac workbook counts from 1904, the rest from 1900):
+	// rows holding the same dates are the same rows. sheets diff leaves it
+	// off; check --against turns it on.
+	Dates bool
+	// Spills aligns rows without the values of array formulas' results (a
+	// FILTER, SORT or SEQUENCE spilling, an array entered with
+	// Ctrl+Shift+Enter): the cells of a result but its formula's are blank,
+	// and the rows holding nothing else pair in order between the rows that
+	// pair by what they hold. So a result that lost a row or was sorted again
+	// (an input changed) moves no row, adds none and removes none, and rows
+	// inserted through a result are the rows inserted. sheets diff leaves it
+	// off; check --against turns it on.
+	Spills bool
+	// Rewrite gives an old formula (on the old version's sheet named) as
+	// Excel would have rewritten it for what changed on other sheets (rows
+	// added there, a sheet renamed), so rows whose formulas read another
+	// sheet's shifted rows pair with their old selves. sheets diff leaves it
+	// unset; check --against sets it.
+	Rewrite func(sheet, formula string) string
+}
+
+// Moved is a run of rows that moved together: old rows From to
+// From+Rows-1 are now rows To to To+Rows-1.
+type Moved struct {
+	From int `json:"from"`
+	To   int `json:"to"`
+	Rows int `json:"rows"`
+}
+
+// Alignment pairs two versions of a workbook: their sheets, and within
+// each sheet in both, its rows and columns.
+type Alignment struct {
+	// Sheets in the new workbook's order, then those only the old one
+	// has.
+	Sheets []SheetPair
+}
+
+// SheetPair is a sheet in both versions, or in one (the other nil).
+type SheetPair struct {
+	Old, New *grid.Sheet
+	// Rows and Cols pair line numbers of the old sheet with the new one's
+	// (1-based); 0 on one side is a line only the other side has (added,
+	// or removed). Rows paired out of the others' order come last: those
+	// that moved, and those rows added or removed put where they are while
+	// others moved.
+	Rows, Cols []Pair
+	// Moved are the rows that moved (with Options.Moves), as runs.
+	Moved []Moved
+	// Blocks are columns whose rows moved on their own (with Options.Moves):
+	// a sort of a range with other cells beside it, which stay. In their
+	// columns rows pair as each block has them; elsewhere as Rows.
+	Blocks []Block
+}
+
+// Block is columns whose rows moved on their own, apart from the rest of
+// the sheet's.
+type Block struct {
+	// Cols pair the block's columns of the old sheet with the new one's.
+	Cols []Pair
+	// Rows pair its rows, as SheetPair.Rows does the sheet's; Moved are the
+	// rows that moved, as runs.
+	Rows  []Pair
+	Moved []Moved
+}
+
+// Pair is a line in the old version and the new one.
+type Pair struct{ Old, New int }
+
+// Align pairs the sheets of two versions of a workbook, then the rows
+// and columns of each sheet both have, as Workbooks compares them.
+func Align(a, b *grid.Workbook, opts Options) Alignment {
+	matchA, _ := matchSheets(a, b)
+	oldOf := map[*grid.Sheet]*grid.Sheet{}
+	for sa, sb := range matchA {
+		oldOf[sb] = sa
+	}
+	var al Alignment
+	for _, sb := range b.Sheets {
+		sa := oldOf[sb]
+		if sa == nil {
+			al.Sheets = append(al.Sheets, SheetPair{New: sb})
+			continue
+		}
+		al.Sheets = append(al.Sheets, AlignSheet(a, sa, b, sb, opts))
+	}
+	for _, sa := range a.Sheets {
+		if matchA[sa] == nil {
+			al.Sheets = append(al.Sheets, SheetPair{Old: sa})
+		}
+	}
+	return al
+}
+
+// AlignSheet pairs the rows and columns of a sheet in two versions of a
+// workbook (sa of a, sb of b), as Align does.
+func AlignSheet(a *grid.Workbook, sa *grid.Sheet, b *grid.Workbook, sb *grid.Sheet, opts Options) SheetPair {
+	A, B := prepare(side{wb: a, s: sa}, side{wb: b, s: sb}, opts)
+	sl := alignSheet(A, B, opts)
+	if opts.Moves {
+		sl = alignBlocks(A, B, opts, sl)
+	}
+	p := SheetPair{Old: sa, New: sb}
+	for _, st := range sl.cols {
+		p.Cols = append(p.Cols, Pair{st.a + 1, st.b + 1})
+	}
+	p.Rows = pairsOf(sl.rows, sl.placed, sl.moved)
+	p.Moved = movedRuns(sl.moved)
+	for _, bl := range sl.blocks {
+		k := Block{Rows: pairsOf(bl.rows, bl.placed, bl.moved), Moved: movedRuns(bl.moved)}
+		for _, c := range bl.cols {
+			k.Cols = append(k.Cols, Pair{c[0], c[1]})
+		}
+		p.Blocks = append(p.Blocks, k)
+	}
+	return p
+}
+
+// pairsOf gives an alignment's rows as pairs, 1-based: the steps in order,
+// then the rows paired out of it.
+func pairsOf(rows []step, placed, moved [][2]int) []Pair {
+	out := make([]Pair, 0, len(rows)+len(placed)+len(moved))
+	for _, st := range rows {
+		out = append(out, Pair{st.a + 1, st.b + 1})
+	}
+	for _, m := range append(append([][2]int{}, placed...), moved...) {
+		out = append(out, Pair{m[0] + 1, m[1] + 1})
+	}
+	return out
+}
+
+// MovedRows finds, among the rows paired in both versions (a Pair with both
+// numbers), those whose rank among the paired rows changed: the rows a sort
+// moved, whatever rows added or removed did to their numbers. skip names the
+// pairs that never move (blank rows). The runs come in the new numbering's
+// order.
+func MovedRows(rows []Pair, skip func(Pair) bool) []Moved {
+	var ps []Pair
+	for _, p := range rows {
+		if p.Old > 0 && p.New > 0 {
+			ps = append(ps, p)
+		}
+	}
+	sort.Slice(ps, func(i, j int) bool { return ps[i].Old < ps[j].Old })
+	byNew := make([]int, len(ps))
+	for k := range byNew {
+		byNew[k] = k
+	}
+	sort.Slice(byNew, func(x, y int) bool { return ps[byNew[x]].New < ps[byNew[y]].New })
+	rankNew := make([]int, len(ps))
+	for r, k := range byNew {
+		rankNew[k] = r
+	}
+	var moved [][2]int
+	for k, p := range ps {
+		if k != rankNew[k] && (skip == nil || !skip(p)) {
+			moved = append(moved, [2]int{p.Old - 1, p.New - 1})
+		}
+	}
+	return movedRuns(moved)
+}
+
+// movedRuns joins moved rows into runs that moved together. A row keeps its
+// number and moves all the same when rows added or removed shifted the
+// others (the number says nothing: rank does, see findMoves).
+func movedRuns(moved [][2]int) []Moved {
+	ps := append([][2]int{}, moved...)
+	sort.Slice(ps, func(i, j int) bool { return ps[i][1] < ps[j][1] })
+	var out []Moved
+	for _, p := range ps {
+		if k := len(out) - 1; k >= 0 && out[k].From+out[k].Rows == p[0]+1 && out[k].To+out[k].Rows == p[1]+1 {
+			out[k].Rows++
+			continue
+		}
+		out = append(out, Moved{From: p[0] + 1, To: p[1] + 1, Rows: 1})
+	}
+	return out
 }
 
 // Workbooks compares two versions of a workbook.
 func Workbooks(a, b *grid.Workbook, opts Options) Result {
 	res := Result{}
-	matchA := map[*grid.Sheet]*grid.Sheet{}
-	usedB := map[*grid.Sheet]bool{}
-	for _, sa := range a.Sheets {
-		if sb := b.Sheet(sa.Name); sb != nil && strings.EqualFold(sb.Name, sa.Name) {
-			matchA[sa] = sb
-			usedB[sb] = true
-		}
-	}
-	// A CSV file's one sheet is named after the file: two files' sheets
-	// are the same sheet whatever their names.
-	oneSheet := len(a.Sheets) == 1 && len(b.Sheets) == 1 && (a.Format == "csv" || b.Format == "csv")
-	if oneSheet && len(matchA) == 0 {
-		matchA[a.Sheets[0]] = b.Sheets[0]
-		usedB[b.Sheets[0]] = true
-	}
-	// Renamed sheets: an unmatched old sheet whose rows mostly reappear in
-	// an unmatched new one.
-	for _, sa := range a.Sheets {
-		if matchA[sa] != nil {
-			continue
-		}
-		best, score, samePlace := (*grid.Sheet)(nil), 0.0, false
-		for _, sb := range b.Sheets {
-			if usedB[sb] {
-				continue
-			}
-			if sc := rowOverlap(a, sa, b, sb); sc > score {
-				best, score = sb, sc
-				samePlace = indexOf(a, sa) == indexOf(b, sb)
-			}
-		}
-		// Most rows in common; half will do for a sheet in the same place.
-		if best != nil && (score >= 0.8 || samePlace && score >= 0.5) {
-			matchA[sa] = best
-			usedB[best] = true
-		}
-	}
-
+	matchA, oneSheet := matchSheets(a, b)
 	for _, sb := range b.Sheets {
 		var sa *grid.Sheet
 		for k, v := range matchA {
@@ -163,6 +320,51 @@ func Workbooks(a, b *grid.Workbook, opts Options) Result {
 	return res
 }
 
+// matchSheets pairs each old sheet with its new self, where it has one:
+// by name, or renamed (most of its rows reappear in a new sheet). oneSheet
+// tells that the two are CSV files' single sheets, the same sheet whatever
+// their names.
+func matchSheets(a, b *grid.Workbook) (matchA map[*grid.Sheet]*grid.Sheet, oneSheet bool) {
+	matchA = map[*grid.Sheet]*grid.Sheet{}
+	usedB := map[*grid.Sheet]bool{}
+	for _, sa := range a.Sheets {
+		if sb := b.Sheet(sa.Name); sb != nil && strings.EqualFold(sb.Name, sa.Name) {
+			matchA[sa] = sb
+			usedB[sb] = true
+		}
+	}
+	// A CSV file's one sheet is named after the file: two files' sheets
+	// are the same sheet whatever their names.
+	oneSheet = len(a.Sheets) == 1 && len(b.Sheets) == 1 && (a.Format == "csv" || b.Format == "csv")
+	if oneSheet && len(matchA) == 0 {
+		matchA[a.Sheets[0]] = b.Sheets[0]
+		usedB[b.Sheets[0]] = true
+	}
+	// Renamed sheets: an unmatched old sheet whose rows mostly reappear in
+	// an unmatched new one.
+	for _, sa := range a.Sheets {
+		if matchA[sa] != nil {
+			continue
+		}
+		best, score, samePlace := (*grid.Sheet)(nil), 0.0, false
+		for _, sb := range b.Sheets {
+			if usedB[sb] {
+				continue
+			}
+			if sc := rowOverlap(a, sa, b, sb); sc > score {
+				best, score = sb, sc
+				samePlace = indexOf(a, sa) == indexOf(b, sb)
+			}
+		}
+		// Most rows in common; half will do for a sheet in the same place.
+		if best != nil && (score >= 0.8 || samePlace && score >= 0.5) {
+			matchA[sa] = best
+			usedB[best] = true
+		}
+	}
+	return matchA, oneSheet
+}
+
 func indexOf(wb *grid.Workbook, s *grid.Sheet) int {
 	for i, x := range wb.Sheets {
 		if x == s {
@@ -173,7 +375,7 @@ func indexOf(wb *grid.Workbook, s *grid.Sheet) int {
 }
 
 func (d Sheet) empty() bool {
-	return len(d.RowsAdded)+len(d.RowsRemoved)+len(d.ColsAdded)+len(d.ColsRemoved)+len(d.Cells)+len(d.Formats)+d.MoreCells == 0
+	return len(d.RowsAdded)+len(d.RowsRemoved)+len(d.RowsMoved)+len(d.ColsAdded)+len(d.ColsRemoved)+len(d.Cells)+len(d.Formats)+d.MoreCells == 0
 }
 
 func usedString(s *grid.Sheet) string {
@@ -230,18 +432,123 @@ func names(a, b *grid.Workbook) []NameChange {
 type side struct {
 	wb *grid.Workbook
 	s  *grid.Sheet
+	// epoch counts the dates of a 1904 workbook as the 1900 system does,
+	// for alignment; loose describes formulas without their columns.
+	epoch, loose bool
+	// rewrite gives a formula as Excel would have rewritten it (the old
+	// side's, with Options.Rewrite), worked out once per cell in rewritten.
+	rewrite   func(string) string
+	rewritten map[[2]int]string
+	// results are the array formulas' results over several cells, by each
+	// row they span (with Options.Spills): their cells but the formula's
+	// key as blank.
+	results map[int][]grid.Range
 }
+
+// resultsOf finds a sheet's array formulas' results over several cells, by
+// each row they span.
+func resultsOf(s *grid.Sheet) map[int][]grid.Range {
+	out := map[int][]grid.Range{}
+	for _, rg := range append(append([]grid.Range{}, s.Spills...), s.Arrays...) {
+		if rg.Rows()*rg.Cols() < 2 {
+			continue
+		}
+		for r := rg.R1; r <= rg.R2; r++ {
+			out[r] = append(out[r], rg)
+		}
+	}
+	return out
+}
+
+// inResult tells whether a cell is part of an array formula's result, not
+// its formula's cell.
+func (x side) inResult(row, col int) bool {
+	for _, rg := range x.results[row] {
+		if rg.Contains(row, col) && (row != rg.R1 || col != rg.C1) {
+			return true
+		}
+	}
+	return false
+}
+
+// fillers pairs again, in a sheet with array formulas' results (with
+// Options.Spills), the rows that hold nothing but results' cells, or
+// nothing: which of them pair says nothing (a result's cells are where its
+// formula puts them, whatever rows were added or removed), so between each
+// two rows paired by what they hold they pair in order from the top, and
+// those left over are added or removed. matches pair rows in order; blank
+// tells the rows that hold nothing else.
+func fillers(matches [][2]int, blankA, blankB []bool) [][2]int {
+	var out [][2]int
+	pi, pj := 0, 0
+	gap := func(i2, j2 int) {
+		i, j := pi, pj
+		for {
+			for i < i2 && !blankA[i] {
+				i++
+			}
+			for j < j2 && !blankB[j] {
+				j++
+			}
+			if i >= i2 || j >= j2 {
+				return
+			}
+			out = append(out, [2]int{i, j})
+			i, j = i+1, j+1
+		}
+	}
+	for _, m := range matches {
+		if blankA[m[0]] || blankB[m[1]] {
+			continue
+		}
+		gap(m[0], m[1])
+		out = append(out, m)
+		pi, pj = m[0]+1, m[1]+1
+	}
+	gap(len(blankA), len(blankB))
+	return out
+}
+
+// formulaOf is a cell's formula, as rewritten.
+func (x side) formulaOf(row, col int, f string) string {
+	if x.rewrite == nil {
+		return f
+	}
+	k := [2]int{row, col}
+	g, ok := x.rewritten[k]
+	if !ok {
+		g = x.rewrite(f)
+		x.rewritten[k] = g
+	}
+	return g
+}
+
+// epochDays are the days between the 1900 and the 1904 date systems.
+const epochDays = 1462
 
 // key describes a cell for alignment: constants by value, formulas by their
 // pattern relative to the cell (so a formula moved with its row matches).
+// columnRefs finds the columns in a formula's pattern (C[-2], C3).
+var columnRefs = regexp.MustCompile(`C(?:\[-?\d+\]|\d+)`)
+
 func (x side) key(row, col int) string {
 	c := x.s.At(row, col)
-	if c == nil || c.IsEmpty() {
+	if c == nil || c.IsEmpty() || len(x.results) > 0 && x.inResult(row, col) {
 		return ""
 	}
 	if c.Formula != "" {
-		k, _ := formula.Pattern(c.Formula, row, col)
+		k, _ := formula.Pattern(x.formulaOf(row, col, c.Formula), row, col)
+		if x.loose {
+			k = columnRefs.ReplaceAllString(k, "C")
+		}
 		return "=" + k
+	}
+	if x.epoch && c.Kind == grid.Number {
+		if f := x.wb.FormatOf(c); f.Kind == grid.Date || f.Kind == grid.DateTime {
+			shifted := *c
+			shifted.Num += epochDays
+			c = &shifted
+		}
 	}
 	return strconv.Itoa(int(c.Kind)) + ":" + grid.Display(c, grid.Format{}, false)
 }
@@ -291,7 +598,7 @@ func rowOverlap(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.S
 		}
 		return m
 	}
-	ma, mb := rows(side{wa, sa}, ua), rows(side{wb, sb}, ub)
+	ma, mb := rows(side{wb: wa, s: sa}, ua), rows(side{wb: wb, s: sb}, ub)
 	common, na, nb := 0, 0, 0
 	for h, n := range ma {
 		common += min(n, mb[h])
@@ -308,10 +615,36 @@ func rowOverlap(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.S
 	return 0
 }
 
-func sheet(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.Sheet, opts Options) Sheet {
-	d := Sheet{Name: sb.Name}
-	A, B := side{wa, sa}, side{wb, sb}
-	ua, ub := sa.Used(), sb.Used()
+// sheetAlign is how a sheet's columns and rows pair up: steps in order,
+// and the rows that moved (old and new index, 0-based).
+type sheetAlign struct {
+	cols, rows    []step
+	moved, placed [][2]int
+	// blocks are columns whose rows moved on their own (alignBlocks).
+	blocks []blockAlign
+}
+
+// prepare sets how two sides key their cells for the options (once: a side
+// prepared stays so).
+func prepare(A, B side, opts Options) (side, side) {
+	A.epoch, B.epoch = opts.Dates && A.wb.Date1904, opts.Dates && B.wb.Date1904
+	A.loose, B.loose = opts.ColumnShifts, opts.ColumnShifts
+	if opts.Rewrite != nil && A.rewritten == nil {
+		name := A.s.Name
+		A.rewrite = func(f string) string { return opts.Rewrite(name, f) }
+		A.rewritten = map[[2]int]string{}
+	}
+	if opts.Spills && A.results == nil {
+		A.results, B.results = resultsOf(A.s), resultsOf(B.s)
+	}
+	return A, B
+}
+
+// alignSheet aligns a sheet's columns, then its rows over the columns
+// both have.
+func alignSheet(A, B side, opts Options) sheetAlign {
+	A, B = prepare(A, B, opts)
+	ua, ub := A.s.Used(), B.s.Used()
 	ra, rb := max(ua.R2, 0), max(ub.R2, 0)
 	ca, cb := max(ua.C2, 0), max(ub.C2, 0)
 
@@ -323,33 +656,27 @@ func sheet(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.Sheet,
 			colSteps = append(colSteps, step{c, c})
 		}
 	} else {
-		colSteps = alignColumns(A, B, ra, rb, ca, cb)
+		colSteps = alignColumns(A, B, ra, rb, ca, cb, opts.LostRefs)
 	}
-	var pairs [][2]int // matched columns, 1-based
-	for _, st := range colSteps {
-		switch {
-		case st.a >= 0 && st.b >= 0:
-			pairs = append(pairs, [2]int{st.a + 1, st.b + 1})
-		case st.b >= 0:
-			d.ColsAdded = addLine(d.ColsAdded, st.b+1, "")
-		default:
-			d.ColsRemoved = addLine(d.ColsRemoved, st.a+1, "")
-		}
-	}
+	pairs := matched(colSteps)
 
 	// Rows, over the matched columns.
-	sig := func(x side, rows int, pick int) []uint64 {
+	sig := func(x side, rows int, pick int) ([]uint64, []bool) {
 		out := make([]uint64, rows)
+		blank := make([]bool, rows)
 		parts := make([]string, len(pairs))
 		for r := 1; r <= rows; r++ {
+			empty := true
 			for k, p := range pairs {
 				parts[k] = x.key(r, p[pick])
+				empty = empty && parts[k] == ""
 			}
-			out[r-1] = hash(parts...)
+			out[r-1], blank[r-1] = hash(parts...), empty
 		}
-		return out
+		return out, blank
 	}
-	sa1, sb1 := sig(A, ra, 0), sig(B, rb, 1)
+	sa1, blankA := sig(A, ra, 0)
+	sb1, blankB := sig(B, rb, 1)
 	similar := func(i, j int) bool {
 		same, used := 0, 0
 		for _, p := range pairs {
@@ -358,13 +685,65 @@ func sheet(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.Sheet,
 				continue
 			}
 			used++
-			if ka == kb || alike(A, i+1, p[0], B, j+1, p[1]) {
+			if ka == kb || alike(A, i+1, p[0], B, j+1, p[1]) || opts.LostRefs && lostRef(ka, kb) {
 				same++
 			}
 		}
 		return used > 0 && same*2 >= used
 	}
-	rowSteps := pairUp(ra, rb, align(sa1, sb1), similar)
+	matches := align(sa1, sb1)
+	var moved, placed [][2]int
+	var skipA, skipB map[int]bool
+	if opts.Moves {
+		matches, moved, placed = findMoves(sa1, sb1, fillGaps(sa1, sb1, matches), blankA, blankB)
+	}
+	if opts.Spills && len(A.results)+len(B.results) > 0 {
+		matches = fillers(matches, blankA, blankB)
+		var kept [][2]int
+		for _, p := range placed {
+			if !blankA[p[0]] && !blankB[p[1]] {
+				kept = append(kept, p)
+			}
+		}
+		placed = kept
+	}
+	if opts.Moves {
+		skipA, skipB = map[int]bool{}, map[int]bool{}
+		for _, m := range append(append([][2]int{}, moved...), placed...) {
+			skipA[m[0]], skipB[m[1]] = true, true
+		}
+	}
+	return sheetAlign{cols: colSteps, rows: pairUpSkipping(ra, rb, matches, similar, skipA, skipB), moved: moved, placed: placed}
+}
+
+// matched are the column pairs in both versions, 1-based.
+func matched(colSteps []step) [][2]int {
+	var pairs [][2]int
+	for _, st := range colSteps {
+		if st.a >= 0 && st.b >= 0 {
+			pairs = append(pairs, [2]int{st.a + 1, st.b + 1})
+		}
+	}
+	return pairs
+}
+
+func sheet(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.Sheet, opts Options) Sheet {
+	d := Sheet{Name: sb.Name}
+	A, B := side{wb: wa, s: sa}, side{wb: wb, s: sb}
+	ua, ub := sa.Used(), sb.Used()
+	ca, cb := max(ua.C2, 0), max(ub.C2, 0)
+	al := alignSheet(A, B, opts)
+	for _, st := range al.cols {
+		switch {
+		case st.a >= 0 && st.b >= 0:
+		case st.b >= 0:
+			d.ColsAdded = addLine(d.ColsAdded, st.b+1, "")
+		default:
+			d.ColsRemoved = addLine(d.ColsRemoved, st.a+1, "")
+		}
+	}
+	pairs := matched(al.cols)
+	rowSteps := al.rows
 
 	type colRun struct {
 		r1, r2   int
@@ -419,6 +798,21 @@ func sheet(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.Sheet,
 	for _, c := range cols {
 		flushRun(c)
 	}
+	// Rows that moved, or were paired apart from the others: their cells
+	// against where they were (number formats aside).
+	for _, m := range append(append([][2]int{}, al.placed...), al.moved...) {
+		for _, p := range pairs {
+			if ch, _, _, changed := compare(A, m[0]+1, p[0], B, m[1]+1, p[1]); changed {
+				if opts.MaxCells > 0 && listed >= opts.MaxCells {
+					d.MoreCells++
+				} else {
+					d.Cells = append(d.Cells, ch)
+					listed++
+				}
+			}
+		}
+	}
+	d.RowsMoved = movedRuns(al.moved)
 	sort.SliceStable(d.Formats, func(i, j int) bool {
 		ri, _ := grid.ParseRange(d.Formats[i].Range)
 		rj, _ := grid.ParseRange(d.Formats[j].Range)
@@ -432,7 +826,7 @@ func sheet(wa *grid.Workbook, sa *grid.Sheet, wb *grid.Workbook, sb *grid.Sheet,
 
 // alignColumns aligns columns by their first values (usually the header),
 // which inserting rows further down does not disturb.
-func alignColumns(A, B side, ra, rb, ca, cb int) []step {
+func alignColumns(A, B side, ra, rb, ca, cb int, lostRefs bool) []step {
 	head := func(x side, rows, c int) []string {
 		var vals []string
 		for r := 1; r <= rows && len(vals) < 20; r++ {
@@ -459,18 +853,39 @@ func alignColumns(A, B side, ra, rb, ca, cb int) []step {
 		for _, v := range ha[i] {
 			count[v]++
 		}
-		same := 0
+		same, lost := 0, 0
 		for _, v := range hb[j] {
 			if count[v] > 0 {
 				count[v]--
 				same++
+			} else if lostRefs && refLost(v) {
+				lost++
 			}
+		}
+		if lost > 0 {
+			// Formulas that lost a reference pair with old formulas left over.
+			left := 0
+			for v, n := range count {
+				if n > 0 && formulaKey(v) && !refLost(v) {
+					left += n
+				}
+			}
+			same += min(lost, left)
 		}
 		n := max(len(ha[i]), len(hb[j]))
 		return n > 0 && same*2 >= n
 	}
 	return pairUp(ca, cb, align(sa, sb), similar)
 }
+
+// formulaKey tells whether a cell's key (as side.key gives it) is a
+// formula's; refLost whether that formula reads what was deleted.
+func formulaKey(k string) bool { return strings.HasPrefix(k, "=") }
+func refLost(k string) bool    { return formulaKey(k) && strings.Contains(k, "#REF!") }
+
+// lostRef tells whether a cell's key now is its old formula with a
+// reference lost to #REF!.
+func lostRef(old, now string) bool { return formulaKey(old) && !refLost(old) && refLost(now) }
 
 func addLine(list []Lines, n int, content string) []Lines {
 	if k := len(list); k > 0 && list[k-1].To == n-1 {
@@ -603,6 +1018,9 @@ func (d Sheet) Summary() string {
 	count(d.RowsRemoved, "row", false)
 	count(d.ColsAdded, "column", true)
 	count(d.ColsRemoved, "column", false)
+	if n := movedCount(d.RowsMoved); n > 0 {
+		parts = append(parts, plural(n, "row")+" moved")
+	}
 	if n := len(d.Cells) + d.MoreCells; n > 0 {
 		parts = append(parts, plural(n, "cell")+" changed")
 	}
@@ -623,4 +1041,12 @@ func plural(n int, word string) string {
 		return "1 " + word
 	}
 	return strconv.Itoa(n) + " " + word + "s"
+}
+
+func movedCount(ms []Moved) int {
+	n := 0
+	for _, m := range ms {
+		n += m.Rows
+	}
+	return n
 }

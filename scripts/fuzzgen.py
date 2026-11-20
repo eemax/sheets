@@ -3,7 +3,20 @@
 Half are written by openpyxl, half by XlsxWriter, each from its own seed:
 values of every type, formulas of all three kinds (plain, legacy array
 entered with Ctrl+Shift+Enter, dynamic array), Excel tables, defined names,
-charts, validations and conditional formats.
+charts, validations and conditional formats. With --objects (long mode's
+pools of runs from seed 2,000,000: fix round 3 of the fuzzer's long mode) it
+adds merges, notes, links, hidden rows and columns and a styled header, which
+the reach invariant judges outside an edit's reach. They come from a random
+stream of their own, and only with the flag, so every seed without it makes
+the files it always made, byte for byte: the pools the repros of known.txt
+replay on need no change. --notes adds only the notes of --objects (the same
+ones, for a seed), which the committed pool holds: the default mode judges a
+note outside an edit's reach too (fix round 4: a note lost went unseen in it).
+--panes adds frozen panes (a header row, a first column, both, or more rows and
+columns) to some sheets, again from a random stream of their own; --objects
+adds them too. The committed pool holds them: a rows or columns insert or
+delete moves the split as Excel does, and the fuzzer judges where it lands
+(fix round 5: a split off by one went unseen, no pool file having a pane).
 
 Every formula carries its kind in its text, as the condition N("p")=0,
 N("l")=0 or N("d")=0 of an IF that is always true: IF(N("p")=0,B2*C2). N of
@@ -38,6 +51,11 @@ byte: the dates in them (the document properties, and the time of each part
 in the package) are fixed.
 
 --seed changes the pool; --count the number of files (default 40).
+--pool-only writes the pool and no must-refuse cases: the fuzzer's long mode
+(SHEETS_FUZZ=long) makes a fresh pool this way from each seed it runs, and
+the must-refuse cases are made from the committed pool's files (another seed
+may hold none that fits a case). --objects adds the objects named above,
+--notes the notes among them alone, --panes the frozen panes alone.
 """
 import argparse
 import datetime
@@ -51,11 +69,13 @@ import zipfile
 import openpyxl
 import xlsxwriter
 from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.comments import Comment
 from openpyxl.formatting.rule import CellIsRule, FormulaRule
-from openpyxl.styles import PatternFill
+from openpyxl.styles import Font, PatternFill
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.formula import ArrayFormula
+from openpyxl.worksheet.hyperlink import Hyperlink
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 PINNED = {"openpyxl": "3.1.5", "xlsxwriter": "3.3.1"}
@@ -126,7 +146,7 @@ class Plan:
     (sheet, row, col) -> value, formula ("=...") or None, and its arrays,
     tables, names, charts, validations and conditional formats."""
 
-    def __init__(self, rng, dynamic):
+    def __init__(self, rng, dynamic, objects=False, notes=False, panes=False):
         self.rng = rng
         self.sheets = ["Data"]
         n2 = rng.choice([0, 1, 1, 2])
@@ -151,6 +171,7 @@ class Plan:
         self.arrays = rng.random() < 0.5
         self.n = rng.randint(4, 14)  # data rows on Data
         self.build(dynamic)
+        self.extras(objects, notes, panes)
 
     def build(self, dynamic):
         rng, n = self.rng, self.n
@@ -259,6 +280,64 @@ class Plan:
                 self.shared = [("G", 2, last)]
         self.typed_empty = rng.random() < 0.5
 
+    def extras(self, objects, notes=False, panes=False):
+        """What a sheet holds besides cells and the objects above, with
+        --objects: a merge, a note, a link (to the web, or to a cell), a hidden
+        row and column, and a header in bold on a fill. The fuzzer's reach
+        invariant judges these outside an edit's reach (internal/fuzz/objects.go).
+        They come from a random stream of their own, and only with the flag, so
+        the cells and objects above are the same for a seed as before they were
+        added. With --notes alone, only the notes: the ones --objects makes for
+        the seed (the draw before theirs is the merge's, taken and not used).
+        --panes (and --objects) freeze panes, from a stream of their own again:
+        a pane is a split of rows and columns, and Excel moves it when lines
+        among the frozen ones are inserted or deleted."""
+        self.panes = []  # (sheet, rows frozen, columns frozen)
+        self.freeze(objects or panes)
+        self.merges = []  # (sheet, ref)
+        self.notes = []  # (sheet, cell, text)
+        self.links = []  # (sheet, cell, target): "https://..." or "Data!B2"
+        self.hidden_cols = []  # (sheet, column letter)
+        self.hidden_rows = []  # (sheet, row)
+        self.styled = False
+        if not objects and not notes:
+            return
+        o = random.Random(str(self.rng.getstate()[1][:8]) + "objects")
+        if not objects:
+            o.random()
+            if o.random() < 0.25:
+                self.notes.append(("Data", f"{o.choice('BCDEF')}1", "check this"))
+            return
+        last = self.n + 1
+        if o.random() < 0.4:
+            r = last + 5
+            self.cells[("Data", r, 1)] = "Remarks"
+            self.merges.append(("Data", f"A{r}:C{r}"))
+        if o.random() < 0.25:
+            self.notes.append(("Data", f"{o.choice('BCDEF')}1", "check this"))
+        if o.random() < 0.4:
+            r = last + 7
+            self.cells[("Data", r, 1)] = "Source"
+            self.links.append(("Data", f"A{r}", o.choice(["https://example.com/data", "Data!B2"])))
+        if o.random() < 0.4:
+            self.hidden_cols.append(("Data", "V"))
+        if o.random() < 0.3:
+            self.hidden_rows.append(("Data", last + 9))
+        self.styled = o.random() < 0.5
+
+    def freeze(self, on):
+        """Frozen panes on some sheets: on Data about one file in three (the
+        header row most often, a first column, both, or a few rows and columns),
+        on each other sheet about one in five (a header row, a column, both)."""
+        if not on:
+            return
+        p = random.Random(str(self.rng.getstate()[1][:8]) + "panes")
+        if p.random() < 0.35:
+            self.panes.append(("Data",) + p.choice([(1, 0), (1, 0), (1, 1), (0, 1), (2, 0), (2, 1), (3, 2)]))
+        for name in self.sheets[1:]:
+            if p.random() < 0.2:
+                self.panes.append((name,) + p.choice([(1, 0), (1, 1), (0, 1)]))
+
     def value(self, sheet, c, r):
         """What the cell holds, for the results typed formulas compute."""
         v = self.cells.get((sheet, r, ord(c) - 64))
@@ -341,6 +420,26 @@ def write_openpyxl(plan, path):
         top = ref.split(":")[0]
         rule = CellIsRule(operator="greaterThan", formula=["5"], fill=fill) if kind == "cell" else FormulaRule(formula=[f"${top[0]}{top[1:]}>10"], fill=fill)
         sheets[s].conditional_formatting.add(ref, rule)
+    for s, ref in plan.merges:
+        sheets[s].merge_cells(ref)
+    for s, ref, text in plan.notes:
+        sheets[s][ref].comment = Comment(text, "fuzz")
+    for s, ref, target in plan.links:
+        if target.startswith("http"):
+            sheets[s][ref].hyperlink = target
+        else:
+            sheets[s][ref].hyperlink = Hyperlink(ref=ref, location=target)
+    for s, letter in plan.hidden_cols:
+        sheets[s].column_dimensions[letter].hidden = True
+    for s, r in plan.hidden_rows:
+        sheets[s].row_dimensions[r].hidden = True
+    if plan.styled:
+        for c in range(1, 8):
+            cell = sheets["Data"].cell(row=1, column=c)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill("solid", fgColor="DDEBF7")
+    for s, rows, cols in plan.panes:
+        sheets[s].freeze_panes = f"{col(cols + 1)}{rows + 1}"
     wb.save(path)
     # openpyxl stamps the time of saving over the property set above.
     tmp = path + ".tmp"
@@ -352,12 +451,15 @@ def write_xlsxwriter(plan, path):
     wb = xlsxwriter.Workbook(path, {"strings_to_numbers": False})
     wb.set_properties({"created": FIXED_TIME})
     date = wb.add_format({"num_format": "yyyy-mm-dd"})
+    head = wb.add_format({"bold": True, "bg_color": "#DDEBF7"}) if plan.styled else None
     sheets = {name: wb.add_worksheet(name) for name in plan.sheets}
     for (s, r, c), v in plan.cells.items():
         ws, cell = sheets[s], f"{col(c)}{r}"
         if v is None:
             continue
-        if isinstance(v, str) and v.startswith("="):
+        if head is not None and s == "Data" and r == 1 and c <= 7:
+            ws.write(cell, v, head)
+        elif isinstance(v, str) and v.startswith("="):
             ws.write_formula(cell, v, None, plan.results.get((s, cell), 0))
         elif isinstance(v, datetime.date):
             ws.write_datetime(cell, datetime.datetime(v.year, v.month, v.day), date)
@@ -393,6 +495,18 @@ def write_xlsxwriter(plan, path):
             sheets[s].conditional_format(ref, {"type": "cell", "criteria": ">", "value": 5, "format": red})
         else:
             sheets[s].conditional_format(ref, {"type": "formula", "criteria": f"=${top[0]}{top[1:]}>10", "format": red})
+    for s, ref in plan.merges:
+        sheets[s].merge_range(ref, plan.cells[(s, int(ref.split(":")[0][1:]), 1)])
+    for s, ref, text in plan.notes:
+        sheets[s].write_comment(ref, text)
+    for s, ref, target in plan.links:
+        sheets[s].write_url(ref, target if target.startswith("http") else "internal:" + target, string=plan.cells[(s, int(ref[1:]), 1)])
+    for s, letter in plan.hidden_cols:
+        sheets[s].set_column(f"{letter}:{letter}", None, None, {"hidden": True})
+    for s, r in plan.hidden_rows:
+        sheets[s].set_row(r - 1, None, None, {"hidden": True})
+    for s, rows, cols in plan.panes:
+        sheets[s].freeze_panes(rows, cols)
     wb.close()
 
 
@@ -580,6 +694,10 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--seed", type=int, default=20261118)
     ap.add_argument("--count", type=int, default=40)
+    ap.add_argument("--pool-only", action="store_true", help="no must-refuse cases (long mode's fresh pools)")
+    ap.add_argument("--objects", action="store_true", help="merges, notes, links, hidden rows and columns, a styled header (long mode's pools of runs from seed 2,000,000)")
+    ap.add_argument("--notes", action="store_true", help="the notes of --objects alone (the committed pool's)")
+    ap.add_argument("--panes", action="store_true", help="frozen panes on some sheets (--objects adds them too; the committed pool's)")
     args = ap.parse_args()
     pool = os.path.join(args.out, "pool")
     os.makedirs(pool, exist_ok=True)
@@ -587,7 +705,7 @@ def main():
     for i in range(args.count):
         rng = random.Random(args.seed * 1000 + i)
         producer = "openpyxl" if i % 2 == 0 else "xlsxwriter"
-        plan = Plan(rng, dynamic=producer == "xlsxwriter")
+        plan = Plan(rng, dynamic=producer == "xlsxwriter", objects=args.objects, notes=args.notes, panes=args.panes)
         path = os.path.join(pool, f"{producer}-{i:02d}.xlsx")
         (write_openpyxl if producer == "openpyxl" else write_xlsxwriter)(plan, path)
         if plan.shared:
@@ -599,7 +717,8 @@ def main():
             raise SystemExit(f"{path}: kinds stored unlike their markers:\n  " + "\n  ".join(bad))
         fix_dates(path)
         made.append(path)
-    refuse_cases(made, os.path.join(args.out, "refuse"))
+    if not args.pool_only:
+        refuse_cases(made, os.path.join(args.out, "refuse"))
     total = sum(os.path.getsize(p) for p in made)
     print(f"{len(made)} workbooks, {total} bytes, in {pool}")
 

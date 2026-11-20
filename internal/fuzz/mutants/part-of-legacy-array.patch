@@ -1,0 +1,16 @@
+Wave 1's WP-16 (fixed in c065389): clear, copy and move go through part of a
+legacy array formula (entered with Ctrl+Shift+Enter) over several cells, which
+Excel refuses: it changes an array whole or not at all. Put back: checkArrays
+no longer refuses a range that takes in part of one.
+
+--- a/internal/xlsx/edit.go
++++ b/internal/xlsx/edit.go
+@@ -737,7 +737,7 @@
+ 			continue
+ 		}
+ 		if !within([]grid.Range{rg}, r) {
+-			return partOfArray(grid.FormatRef(sheet, r)+" takes in part of", sheet, rg, verb+" all of "+rg.String()+", or none of it")
++			continue
+ 		}
+ 		if whole != nil {
+ 			if err := whole(rg); err != nil {

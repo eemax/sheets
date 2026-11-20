@@ -95,6 +95,7 @@ Sales!D2:D3
 2	60
 3	200
 saved report.xlsx: 7 commands, one undo step
+change: 12 cells written, 0 values moved, 0 new errors, 0 new unknowns, 0 features lost, lint as before
 -- sales.out --
 Sales!A1:D3
 	A	B	C	D

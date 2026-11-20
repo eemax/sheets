@@ -86,6 +86,7 @@ columns in different units on one axis.`,
 			if err := ed.Save(a.dryRun); err != nil {
 				return err
 			}
+			a.track(args[0], ed)
 			res.File, res.DryRun = args[0], a.dryRun
 			res.Warnings = append(repeatedCategories(ed.Workbook(), spec), ed.Warnings()...)
 			if a.json {
@@ -173,6 +174,17 @@ columns in different units on one axis.`,
 			}
 			if err := ed.Save(a.dryRun); err != nil {
 				return err
+			}
+			a.track(args[0], ed)
+			if a.json {
+				out := map[string]any{"file": args[0], "deleted": grid.QuoteSheet(r.Sheet) + "!" + cell}
+				if a.dryRun {
+					out["dry_run"] = true
+				}
+				if w := ed.Warnings(); len(w) > 0 {
+					out["warnings"] = w
+				}
+				return a.printJSON(out)
 			}
 			a.printDryRun()
 			a.printf("deleted the chart at %s\n", grid.QuoteSheet(r.Sheet)+"!"+cell)

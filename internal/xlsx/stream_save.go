@@ -294,7 +294,8 @@ func (s *StreamEditor) Render() ([]byte, error) {
 	if err := zw.Close(); err != nil {
 		return nil, err
 	}
-	return out.Bytes(), nil
+	s.out = out.Bytes()
+	return s.out, nil
 }
 
 // fingerprintSums is fingerprint, from the parts' hashes.

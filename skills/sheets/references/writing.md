@@ -48,6 +48,36 @@
 - Formulas are evaluated right away. The output shows a few values, every
   formula error (with the cell), and formulas the calculator cannot
   evaluate. Check it.
+- Every command that changes a file ends with its change report, in under
+  15 lines (before the `next:` line; in `--json`, the field `change`):
+
+      change: 1 cell written, 3 values moved, 1 new error, 0 new unknowns, 0 features lost, lint +1 error
+      moved: Data!D2 6 → 0, Summary!A1 33 → 27, Summary!A2 0.5 → #DIV/0!
+      new errors: Summary!A2 #DIV/0! (was 0.5)
+      lint: error-value 0 → 1: Summary!A2: 1 cell shows #DIV/0!
+
+  It counts the cells the command wrote; the computed values it did not
+  write whose results moved (the first five listed); formulas that show
+  an error they did not show before (a file that stored no result for a
+  formula, as openpyxl's and XlsxWriter's do not, cannot say what it
+  showed before: an error the edit reached is counted and marked
+  `no result stored before`); formulas whose result sheets cannot
+  know now (`unknown:`, by reason); charts, validations, conditional
+  formats, shapes, pictures, names and tables lost (`lost:`); and the
+  lint findings that changed, by rule. A value you did not mean to move, a
+  new error or a feature lost is a mistake: fix it, or `sheets undo`
+  (whose own report leaves the cells uncompared and gives the features
+  lost and the lint). The results come from what the save computed
+  anyway; the features and lint are read off the file before and after.
+  The lint only when the sheets hold up to 512 KB of XML (about 3,500 rows
+  of four columns): on a larger workbook it says `lint not compared` and
+  `sheets lint` does it. The validations and conditional formats only when
+  there are up to 1,000 of them (one for each cell is tens of thousands):
+  past that the head says `rules not compared` and a line gives their
+  number; the rest (charts, names, tables) is compared as ever. The head
+  line counts every lint finding that rose, even when another went away
+  (`lint +1 error -1 error`). `sheets check --against` gives the whole
+  report.
 - All Excel functions work, including XLOOKUP, IFS, TEXTJOIN, LET and
   LAMBDA. Functions that return several values (FILTER, UNIQUE, SORT,
   SEQUENCE, ...) are stored as dynamic arrays and spill: the file holds the

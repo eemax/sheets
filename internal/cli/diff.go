@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -26,7 +27,7 @@ func (a *app) diffCmd() *cobra.Command {
 		exitCode bool
 	)
 	cmd := &cobra.Command{
-		Use:   "diff <old> <new> | diff <file>",
+		Use:   "diff <old> <new> | diff <file> | diff <git's 7 arguments>",
 		Short: "Show what changed between two workbooks, or since an earlier change",
 		Long: `Compare two workbooks: sheets added, removed or renamed, rows and columns
 added or removed, and cells whose formula, value or number format changed.
@@ -37,14 +38,40 @@ With one file, compare it with its state before the last change sheets made
 (--since 3: before the last three), from the undo history. That is the way
 to check what a command did.
 
+It is git's diff driver for workbooks too: git diff then prints what
+changed in a .xlsx file, not "Binary files differ" (git show and git log -p
+with --ext-diff). Set it up once in a repository:
+
+  git config diff.sheets.command 'sheets diff'
+  echo '*.xlsx diff=sheets' >> .gitattributes
+
   sheets diff book.xlsx
   sheets diff before.xlsx after.xlsx`,
-		Args: cobra.RangeArgs(1, 2),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if _, ok := gitDiffArgs(args); ok {
+				return nil
+			}
+			return cobra.RangeArgs(1, 2)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var oldWB, newWB *grid.Workbook
 			res := diffResult{}
 			var head string
-			if len(args) == 2 {
+			if len(args) == 1 && os.Getenv("GIT_DIFF_PATH_TOTAL") != "" {
+				// git gives an unmerged path alone.
+				a.printf("* Unmerged path %s\n", args[0])
+				return nil
+			}
+			if g, ok := gitDiffArgs(args); ok {
+				var err error
+				res.Old, res.New, head = g.oldName(), g.newName(), g.head()
+				if oldWB, newWB, err = g.open(); err != nil {
+					// git stops at a driver that fails, and shows nothing for
+					// the files after it: say why this one cannot be read.
+					a.printf("%s\ncannot compare: %v\n", head, err)
+					return nil
+				}
+			} else if len(args) == 2 {
 				var err error
 				if oldWB, err = open(args[0]); err != nil {
 					return err
@@ -91,7 +118,7 @@ to check what a command did.
 			} else {
 				a.printDiff(head, res.Result)
 			}
-			if exitCode && !res.Same {
+			if exitCode && !res.Same && !isGit(args) {
 				return errSilent
 			}
 			return nil
@@ -198,4 +225,99 @@ func orEmpty(s string) string {
 		return "(empty)"
 	}
 	return s
+}
+
+// gitDiff is how git runs an external diff driver: the path, then the old
+// file, its blob's hash and mode, then the new file's (/dev/null for a
+// file added or deleted, with . for its hash and mode); a file renamed or
+// copied adds its new path and git's message of it.
+type gitDiff struct {
+	path, oldFile, oldHex, newFile, newHex, newPath string
+}
+
+// gitDiffArgs tells git's arguments from a person's.
+func gitDiffArgs(args []string) (gitDiff, bool) {
+	if len(args) != 7 && len(args) != 9 {
+		return gitDiff{}, false
+	}
+	if !gitHex(args[2]) || !gitMode(args[3]) || !gitHex(args[5]) || !gitMode(args[6]) {
+		return gitDiff{}, false
+	}
+	g := gitDiff{path: args[0], oldFile: args[1], oldHex: args[2], newFile: args[4], newHex: args[5]}
+	if len(args) == 9 {
+		g.newPath = args[7]
+	}
+	return g, true
+}
+
+func isGit(args []string) bool { _, ok := gitDiffArgs(args); return ok }
+
+func gitHex(s string) bool {
+	if s == "." {
+		return true
+	}
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	return strings.Trim(s, "0123456789abcdef") == ""
+}
+
+func gitMode(s string) bool {
+	return s == "." || len(s) == 6 && strings.Trim(s, "01234567") == ""
+}
+
+// gitNothing is git's name for the side of a file added or deleted.
+const gitNothing = "/dev/null"
+
+// open reads both sides; a side git gives as /dev/null is a workbook with
+// nothing in it.
+func (g gitDiff) open() (*grid.Workbook, *grid.Workbook, error) {
+	read := func(file string) (*grid.Workbook, error) {
+		if file == gitNothing {
+			return nil, nil
+		}
+		return open(file)
+	}
+	oldWB, err := read(g.oldFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s (before): %w", g.path, err)
+	}
+	newWB, err := read(g.newFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", g.path, err)
+	}
+	if oldWB == nil && newWB == nil {
+		return nil, nil, fmt.Errorf("%s: git gave no file on either side", g.path)
+	}
+	if oldWB == nil {
+		oldWB = &grid.Workbook{Format: newWB.Format, Formats: []grid.Format{{}}}
+	}
+	if newWB == nil {
+		newWB = &grid.Workbook{Format: oldWB.Format, Formats: []grid.Format{{}}}
+	}
+	return oldWB, newWB, nil
+}
+
+func (g gitDiff) oldName() string { return "a/" + g.path }
+
+func (g gitDiff) newName() string {
+	if g.newPath != "" {
+		return "b/" + g.newPath
+	}
+	return "b/" + g.path
+}
+
+// head is the first line git shows of a file: its name, as git names the
+// sides, and what happened to it.
+func (g gitDiff) head() string {
+	h := "sheets diff " + g.oldName() + " " + g.newName()
+	switch {
+	case g.oldFile == gitNothing:
+		h += " (new file)"
+	case g.newFile == gitNothing:
+		h += " (deleted)"
+	case g.newPath != "" && g.newPath != g.path:
+		h += " (renamed)"
+	}
+	return h
 }

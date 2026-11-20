@@ -138,6 +138,7 @@ The file and sheet are created when missing. An empty value clears a cell.`,
 			if err := ed.Save(a.dryRun); err != nil {
 				return err
 			}
+			a.track(args[0], ed)
 			// What the file now stores for them.
 			res.Formulas = evaluateFormulas(ed, toEval, true)
 			res.Warnings = ed.Warnings()

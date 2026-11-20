@@ -470,3 +470,267 @@ for r, (label, f, excel) in enumerate(cases, 1):
     c.cell(r, 3, excel)
     c.cell(r, 4, f"=B{r}")
 wb.save(f"{out}/unlike_excel.xlsx")
+
+# against_before.xlsx: a workbook as Excel saves it, results stored, for
+# sheets check --against. Data!B2:B6 are inputs Summary's formulas read
+# (through a name, TaxRate, too); a column chart grouped with a text box
+# (a shape), as Excel saves a group; validations, one of them a list read
+# from another sheet, which Excel keeps in its 2010 extension list; and a
+# conditional format.
+xw = xlsxwriter.Workbook(f"{out}/against_before.xlsx")
+data = xw.add_worksheet("Data")
+summary = xw.add_worksheet("Summary")
+data.write_row(0, 0, ["Region", "Units", "Price", "Revenue"])
+rows = [("North", 5, 30), ("South", 7, 20), ("East", 3, 50), ("West", 9, 10), ("Mid", 4, 25)]
+for i, (region, units, price) in enumerate(rows, 1):
+    data.write_row(i, 0, [region, units, price])
+    data.write_formula(i, 3, f"=B{i + 1}*C{i + 1}", None, units * price)
+units, revenue = sum(r[1] for r in rows), sum(r[1] * r[2] for r in rows)
+data.write("A7", "Total")
+data.write_formula("B7", "=SUM(B2:B6)", None, units)
+data.write_formula("D7", "=SUM(D2:D6)", None, revenue)
+red = xw.add_format({"bg_color": "#FFC7CE"})
+data.conditional_format("D2:D6", {"type": "cell", "criteria": ">", "value": 140, "format": red})
+data.data_validation("B2:B6", {"validate": "integer", "criteria": "between", "minimum": 0, "maximum": 1000})
+data.data_validation("C2:C6", {"validate": "decimal", "criteria": ">=", "value": 0})
+chart = xw.add_chart({"type": "column"})
+chart.add_series({"name": "Revenue", "categories": "=Data!$A$2:$A$6", "values": "=Data!$D$2:$D$6"})
+data.insert_chart("F2", chart)
+data.insert_textbox("F18", "Revenue by region")
+xw.define_name("TaxRate", "=Summary!$B$1")
+summary.write_row(0, 0, ["Tax rate", 0.25])
+tax = revenue * 0.25
+for r, (label, f, v) in enumerate([
+    ("Units", "=SUM(Data!B2:B6)", units),
+    ("Revenue", "=SUM(Data!D2:D6)", revenue),
+    ("Tax", "=B3*TaxRate", tax),
+    ("Net", "=B3-B4", revenue - tax),
+    ("Most units", "=MAX(Data!B2:B6)", max(r[1] for r in rows)),
+    ("North units", "=Data!B2", rows[0][1]),
+], 2):
+    summary.write(f"A{r}", label)
+    summary.write_formula(f"B{r}", f, None, v)
+summary.write("D1", "Regions")
+summary.write_column("D2", [r[0] for r in rows])
+xw.close()
+
+# As Excel saves them: no recalculation flag; the list validation read
+# from Summary in the extension list; the chart and the text box grouped.
+import re
+
+x14_list = (
+    b'<extLst><ext uri="{CCE6A557-97BC-4b89-ADB5-D3C9D4A6E9D0}" '
+    b'xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main">'
+    b'<x14:dataValidations count="1" xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">'
+    b'<x14:dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1">'
+    b"<x14:formula1><xm:f>Summary!$D$2:$D$6</xm:f></x14:formula1><xm:sqref>A2:A6</xm:sqref>"
+    b"</x14:dataValidation></x14:dataValidations></ext></extLst>"
+)
+
+
+def group(drawing):
+    """Groups a drawing's two anchors (a chart, then a shape) into one."""
+    anchors = re.findall(rb"<xdr:twoCellAnchor\b.*?</xdr:twoCellAnchor>", drawing, re.S)
+    assert len(anchors) == 2, len(anchors)
+    chart, shape = anchors
+    frame = re.search(rb"<xdr:graphicFrame\b.*?</xdr:graphicFrame>", chart, re.S).group(0)
+    sp = re.search(rb"<xdr:sp\b.*?</xdr:sp>", shape, re.S).group(0)
+    # The chart's place in EMUs (column F, row 2; 480 by 288 pixels), as
+    # a group's members carry it; the text box has its own already.
+    x, y, cx, cy = 5 * 609600, 190500, 480 * 9525, 288 * 9525
+    frame = frame.replace(b'<a:off x="0" y="0"/><a:ext cx="0" cy="0"/>', b'<a:off x="%d" y="%d"/><a:ext cx="%d" cy="%d"/>' % (x, y, cx, cy))
+    off = re.search(rb'<a:off x="(\d+)" y="(\d+)"/><a:ext cx="(\d+)" cy="(\d+)"/>', sp)
+    sx, sy, scx, scy = map(int, off.groups())
+    gx, gy = min(x, sx), min(y, sy)
+    gcx, gcy = max(x + cx, sx + scx) - gx, max(y + cy, sy + scy) - gy
+    xfrm = b'<a:off x="%d" y="%d"/><a:ext cx="%d" cy="%d"/><a:chOff x="%d" y="%d"/><a:chExt cx="%d" cy="%d"/>' % (gx, gy, gcx, gcy, gx, gy, gcx, gcy)
+    start = re.search(rb"<xdr:from>.*?</xdr:from>", chart, re.S).group(0)
+    end = re.search(rb"<xdr:to>.*?</xdr:to>", shape, re.S).group(0)
+    grouped = (
+        b"<xdr:twoCellAnchor>" + start + end + b"<xdr:grpSp><xdr:nvGrpSpPr>"
+        b'<xdr:cNvPr id="4" name="Group 3"/><xdr:cNvGrpSpPr/></xdr:nvGrpSpPr>'
+        b"<xdr:grpSpPr><a:xfrm>" + xfrm + b"</a:xfrm></xdr:grpSpPr>" + frame + sp + b"</xdr:grpSp><xdr:clientData/></xdr:twoCellAnchor>"
+    )
+    return drawing.replace(chart, b"").replace(shape, grouped)
+
+
+path = f"{out}/against_before.xlsx"
+with zipfile.ZipFile(path) as z:
+    items = [(i, z.read(i.filename)) for i in z.infolist()]
+with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+    for info, data in items:
+        if info.filename == "xl/workbook.xml":
+            data = data.replace(b' fullCalcOnLoad="1"', b"")
+        elif info.filename == "xl/worksheets/sheet1.xml":
+            data = data.replace(b"</worksheet>", x14_list + b"</worksheet>")
+        elif info.filename == "xl/drawings/drawing1.xml":
+            data = group(data)
+        z.writestr(info, data)
+
+# against_openpyxl.xlsx: the same workbook loaded by openpyxl, Data!B2
+# changed, and saved. openpyxl stores no results, keeps no shape, no chart
+# in a group and no extension list.
+import openpyxl
+
+wb = openpyxl.load_workbook(path)
+wb["Data"]["B2"] = 6
+wb.save(f"{out}/against_openpyxl.xlsx")
+
+# against_chartsheet.xlsx: a chart on a chart sheet (a sheet that is one
+# chart, which sheets does not read as a sheet) beside a worksheet;
+# against_chartsheet_deleted.xlsx: openpyxl loads it, deletes the chart
+# sheet and saves, which loses the chart without a trace in the cells.
+cs = xlsxwriter.Workbook(f"{out}/against_chartsheet.xlsx")
+cs_data = cs.add_worksheet("Data")
+cs_data.write_column("A1", [1, 2, 3])
+cs_chart = cs.add_chart({"type": "bar"})
+cs_chart.add_series({"values": "=Data!$A$1:$A$3"})
+cs.add_chartsheet("Chart1").set_chart(cs_chart)
+cs.close()
+
+wb = openpyxl.load_workbook(f"{out}/against_chartsheet.xlsx")
+del wb["Chart1"]
+wb.save(f"{out}/against_chartsheet_deleted.xlsx")
+
+# against_1904.xlsx: a workbook counting dates from 1904 (a Mac's), with a
+# date typed in and a formula reading it, as XlsxWriter stores them: the
+# date 2024-01-31 is the serial 43860 here, 45322 in a workbook counting from
+# 1900. check --against against a file that counts from 1900 compares dates.
+d1904 = xlsxwriter.Workbook(f"{out}/against_1904.xlsx", {"date_1904": True})
+d1904_data = d1904.add_worksheet("Data")
+d1904_data.write_datetime("A1", datetime.datetime(2024, 1, 31), d1904.add_format({"num_format": "yyyy-mm-dd"}))
+d1904_data.write("B1", 5)
+d1904_data.write_formula("C1", "=YEAR(A1)", None, 2024)
+d1904.close()
+
+# against_nodata.xlsx: openpyxl deletes the sheet Data, which Summary's
+# formulas read, and leaves them as they were (Excel would write #REF!);
+# against_noname.xlsx: openpyxl deletes the name TaxRate, which Summary!B4
+# uses (Excel leaves it, now #NAME?), and Data!B2 changed; against_facts.xlsx:
+# openpyxl renames Data to Facts and leaves the formulas reading Data.
+wb = openpyxl.load_workbook(path)
+del wb["Data"]
+wb.save(f"{out}/against_nodata.xlsx")
+wb = openpyxl.load_workbook(path)
+del wb.defined_names["TaxRate"]
+wb["Data"]["B2"] = 6
+wb.save(f"{out}/against_noname.xlsx")
+wb = openpyxl.load_workbook(path)
+wb["Data"].title = "Facts"
+wb.save(f"{out}/against_facts.xlsx")
+
+# against_cut.xlsx: openpyxl cuts the regions' rows Data!A2:D6 and pastes
+# them at A12 (move_range, its own formulas translated), and leaves the
+# formulas reading them as they were (Excel rewrites them to follow).
+wb = openpyxl.load_workbook(path)
+wb["Data"].move_range("A2:D6", rows=10, translate=True)
+wb.save(f"{out}/against_cut.xlsx")
+
+# against_rtd.xlsx and against_rtd2.xlsx: a rate a server sends (RTD), as
+# Excel stored it at two times, 1.08 and then 1.09, and a formula reading
+# it. Nothing in the workbook changed.
+for name, rate in (("against_rtd", 1.08), ("against_rtd2", 1.09)):
+    rtd = xlsxwriter.Workbook(f"{out}/{name}.xlsx")
+    rtd_data = rtd.add_worksheet("Data")
+    rtd_data.write("A1", "EURUSD")
+    rtd_data.write_formula("B1", '=RTD("my.server",,"EURUSD")', None, rate)
+    rtd_data.write("A2", "Price")
+    rtd_data.write("B2", 100)
+    rtd_data.write_formula("C2", "=B2*B1", None, round(100 * rate, 2))
+    rtd.close()
+    # Excel's results: not marked to be computed again on open.
+    with zipfile.ZipFile(f"{out}/{name}.xlsx") as z:
+        items = [(info, z.read(info.filename)) for info in z.infolist()]
+    with zipfile.ZipFile(f"{out}/{name}.xlsx", "w", zipfile.ZIP_DEFLATED) as z:
+        for info, data in items:
+            if info.filename == "xl/workbook.xml":
+                data = data.replace(b' fullCalcOnLoad="1"', b"")
+            z.writestr(info, data)
+
+# against_legacy.xlsx: openpyxl writes a formula reading a range where one
+# value goes as older Excel stores it (implicit intersection: Model!C2 reads
+# the row of Data!C2:C3 it is in), with no results stored. A row inserted
+# above the range moves it off that row: the value moves with the rows
+# added, though the formula reads none of them.
+wb = openpyxl.Workbook()
+legacy = wb.active
+legacy.title = "Data"
+for row in (["Item", "Units", "Price"], ["a", 1, 5], ["b", 2, 7], ["c", 3, 9]):
+    legacy.append(row)
+model = wb.create_sheet("Model")
+model["A2"] = "x"
+model["C2"] = "=Data!C2:C3*2"
+model["D2"] = "=C2+1"
+wb.save(f"{out}/against_legacy.xlsx")
+
+# against_addchart.xlsx: against_before.xlsx loaded by openpyxl, a chart of
+# other data (Units) added at H20 and another validation (a list typed in,
+# E2:E6) with it, and saved. The round trip drops the grouped chart, the text
+# box and the list read from Summary (in the 2010 extension list) all the
+# same, though a chart and a list validation are now on the sheet.
+from openpyxl.chart import BarChart, Reference
+from openpyxl.worksheet.datavalidation import DataValidation
+
+wb = openpyxl.load_workbook(f"{out}/against_before.xlsx")
+ws = wb["Data"]
+units = BarChart()
+units.type = "col"
+units.add_data(Reference(ws, min_col=2, min_row=1, max_row=6), titles_from_data=True)
+ws.add_chart(units, "H20")
+dv = DataValidation(type="list", formula1='"North,South,East,West"')
+ws.add_data_validation(dv)
+dv.add("E2:E6")
+wb.save(f"{out}/against_addchart.xlsx")
+
+# against_table.xlsx: an Excel table (Sales, Data!A1:B3) that two formulas
+# read by its name. against_table_renamed.xlsx: the table renamed Sales2,
+# with the formulas as Excel rewrites them for it.
+from openpyxl.worksheet.table import Table
+
+wb = openpyxl.Workbook()
+ws = wb.active
+ws.title = "Data"
+for row in (("Region", "Units"), ("North", 5), ("South", 7)):
+    ws.append(row)
+ws.add_table(Table(displayName="Sales", ref="A1:B3"))
+total = wb.create_sheet("Sum")
+total["A1"] = "=SUM(Sales[Units])"
+total["A2"] = "=Sales[[#This Row],[Units]]"
+wb.save(f"{out}/against_table.xlsx")
+table = ws.tables["Sales"]
+table.name = table.displayName = "Sales2"
+total["A1"] = "=SUM(Sales2[Units])"
+total["A2"] = "=Sales2[[#This Row],[Units]]"
+wb.save(f"{out}/against_table_renamed.xlsx")
+
+# against_block.xlsx: a table (Data!A1:D4) with a block of cells beside it
+# (H1:J4) that formulas read, Sum's among them. against_blockcut.xlsx: openpyxl
+# cuts the block and pastes it below the table, in other columns
+# (move_range, Data!H1:J4 to A30), and leaves the formulas reading the cells
+# as they were, which Excel would have rewritten.
+wb = openpyxl.Workbook()
+ws = wb.active
+ws.title = "Data"
+for row in (("Item", "Units", "Price", "Total"), ("a", 3, 5, "=B2*C2"), ("b", 4, 6, "=B3*C3"), ("c", 5, 7, "=B4*C4")):
+    ws.append(row)
+for r, row in enumerate((("Key", "Qty", "Cost"), ("x", 10, "=I2*B2"), ("y", 20, "=I3*B3"), ("z", 30, "=SUM(J2:J3)+I4")), 1):
+    for c, v in enumerate(row, 8):
+        ws.cell(r, c, v)
+total = wb.create_sheet("Sum")
+total["A1"] = "=SUM(Data!I2:I4)"
+total["A2"] = "=Data!D2+Data!J2"
+wb.save(f"{out}/against_block.xlsx")
+ws.move_range("H1:J4", rows=29, cols=-7)
+wb.save(f"{out}/against_blockcut.xlsx")
+
+# noresults.xlsx: formulas as openpyxl writes them, with no stored result:
+# Data!B1 divides by A1, C1 is an error already (1/0), D1 is fine, and A1
+# is the cell an edit changes.
+wb = openpyxl.Workbook()
+ws = wb.active
+ws.title = "Data"
+ws["A1"] = 5
+ws["B1"] = "=1/A1"
+ws["C1"] = "=1/0"
+ws["D1"] = "=A1+1"
+wb.save(f"{out}/noresults.xlsx")
