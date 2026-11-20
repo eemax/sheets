@@ -78,6 +78,7 @@ func (e *Editor) touch(sheet string, row, col int) {
 	k := keyOf(sheet, row, col)
 	e.changed[k] = sheet
 	delete(e.spilled, k) // written, whatever else it was
+	delete(e.regrown, k)
 	e.edits++
 }
 
@@ -435,6 +436,7 @@ type calcState struct {
 	changed   map[cellKey]string    // cells written, by sheet name
 	carried   map[cellKey]carryKind // formulas moved that showed an error, or had no result, already
 	recompute map[cellKey]bool      // formulas an edit of rows, columns or sheets reached
+	regrown   map[cellKey]bool      // among changed, formulas only regrown as Excel would (see Editor.regrown)
 	edited    bool                  // rows, columns or sheets changed
 	// restore stores again the results of formulas not recomputed: an
 	// edit of rows took them off with their formulas (see relines).
@@ -537,7 +539,7 @@ func (e *Editor) results() (calcResult, error) {
 	if err != nil {
 		return calcResult{}, err
 	}
-	st := calcState{formulas: all, rs: e.resolver(), changed: e.changed, carried: e.carried, recompute: e.recompute,
+	st := calcState{formulas: all, rs: e.resolver(), changed: e.changed, carried: e.carried, recompute: e.recompute, regrown: e.regrown,
 		edited: e.structural || e.sheetsChanged, restore: e.lines != nil, unshared: e.unshared, order: e.sheetIndex, calcFile: e.calcFile,
 		typer: func(all map[cellKey]*formulaAt, computing map[*formulaAt]bool, rs *resolver) *typer {
 			return e.newTyper(all, computing, rs)
@@ -600,6 +602,13 @@ func (e *Editor) calcFile(list []*formulaAt, rs *resolver, computing map[*formul
 		return calcToCell(v), true
 	})
 	return book, plan, nil
+}
+
+// wrote tells whether the command wrote the cell: changed, and not only
+// a formula whose references were regrown as Excel would.
+func (st calcState) wrote(k cellKey) bool {
+	_, ok := st.changed[k]
+	return ok && !st.regrown[k]
 }
 
 // computeResults works out the results to store for a session's state.
@@ -755,7 +764,7 @@ func computeResults(st calcState) (calcResult, error) {
 				out.dropped[keyOf(f.sheet, f.row, f.col)] = linkNote
 			}
 			if i < len(first) {
-				_, written := st.changed[keyOf(f.sheet, f.row, f.col)]
+				written := st.wrote(keyOf(f.sheet, f.row, f.col))
 				if rc, keep := effectOf(f, written, st.carried[keyOf(f.sheet, f.row, f.col)], true, grid.Cell{}, false, linkNote); keep {
 					out.effects = append(out.effects, rc)
 				}
@@ -763,7 +772,7 @@ func computeResults(st calcState) (calcResult, error) {
 			continue
 		}
 		key := keyOf(f.sheet, f.row, f.col)
-		_, written := st.changed[key]
+		written := st.wrote(key)
 		ok, why := j.holds(f)
 		var v grid.Cell
 		if ok {

@@ -1569,6 +1569,44 @@ average of 2 to 4:
 - **Under `-race` the fuzz package runs 66 s**, its default mode at its 200-edit
   minimum, and `TestPoolPanesMove` takes three panes of the pool (4 s).
 
+**On the integrated tree** (wave 2's integration, 2026-11-20, after the change
+report's short form, the receipt and the causes landed): the audit timed check full
+at **197.9 and 189.9 s** at a load of 3 to 5. The fuzzer was not the cause, though
+its runs are the longest single tests and the first a busy Mac slows:
+
+- **Every command a txtar script runs paid a second under `-race`.** A
+  race-detecting process sleeps for `atexit_sleep_ms` (1,000 ms by default) as it
+  exits, and `against.txtar` runs 190 commands: 183 s, the race stage's longest,
+  against 2.5 s plain. `cmd/sheets`' scripts now give their commands
+  `GORACE=atexit_sleep_ms=0`, keeping any other option set. A command waits for its
+  own goroutines before it exits, and a race found is still reported when found:
+  the race stage's `cmd/sheets` takes 31 s.
+- **Two `--against` speed tests on a grid-wide sheet skip under `-race`**
+  (`TestAgainstCausesWholeGridSort` 26 s and `TestAgainstCausesWholeGrid` 10 s
+  there, whatever the rows). The plain and streaming stages run them.
+- **`TestFuzz` collects garbage less often** (`SetGCPercent(400)` for the test):
+  its 2,000 edits take 45 s alone, 52 s before. The edits, findings and invariants
+  are the same. The plain run is 44 to 46 s before the change report, which every
+  edit's commands now compute.
+
+| run | load average before (1 min) | check full | longest stages |
+|---|---|---|---|
+| after the `GORACE` change alone | 2.5 | 144 s | race `internal/cli` 142 s, plain fuzz 115 s |
+| with the grid-wide sort skipped under `-race` | 2.0 | **121 s** | race `internal/cli` 119 s, race fuzz 114 s |
+| with `SetGCPercent` too | 4.6 | **132 s** | race `internal/cli` 131 s, fuzz 117 s |
+| straight after it | 7.7 | 151 s | race `internal/cli` 149 s, race fuzz 144 s |
+| with the grid-wide test skipped under `-race` too | 4.4 | **117 s** | race fuzz 115 s, race `internal/cli` 110 s |
+
+- **Under 135 s from a load of 2 to 5, not under 110 s.** The longest stages
+  are now the race stage's `internal/cli` (its tests run one after another, about
+  75 s alone) and the two fuzz runs (45 s plain and 66 s under `-race` alone,
+  110 to 117 s beside the other stages). A run started straight after another
+  at a load of 7.7 took 151 s. Getting under 110 s would take running the fuzz
+  run's sequences side by side. Its edits set `SHEETS_STREAM` and `SHEETS_UNDO`
+  in the process, so that means processes, not goroutines: next wave's.
+- **The plain suite alone** (`go test -count=1 ./...`) takes 71 s, the fuzz
+  package being its longest.
+
 ## How the fuzzer was checked
 
 ### The mutants

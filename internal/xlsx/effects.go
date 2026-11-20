@@ -109,6 +109,11 @@ func effectOf(f *formulaAt, written bool, carried carryKind, must bool, v grid.C
 	if !written && f.stored.Kind != grid.Empty && !f.pending {
 		rc.Before, rc.Was = valueOnly(f.stored), true
 	}
+	if !written && f.written && f.priorKnown {
+		// A formula regrown as Excel would (Editor.regrown): read back as
+		// written, its result before is the one it stored.
+		rc.Before, rc.Was = f.prior, true
+	}
 	if written && f.priorKnown {
 		rc.Before, rc.Was = f.prior, true
 	}
@@ -126,11 +131,12 @@ func effectOf(f *formulaAt, written bool, carried carryKind, must bool, v grid.C
 }
 
 // writtenCells lists cells written, from a session's changed map; the
-// cells a dynamic array's result fills or leaves are not among them.
-func writtenCells(changed map[cellKey]string, spilled map[cellKey]*spillCell) []EffectCell {
+// cells a dynamic array's result fills or leaves, and the formulas only
+// regrown as Excel would, are not among them.
+func writtenCells(changed map[cellKey]string, spilled map[cellKey]*spillCell, regrown map[cellKey]bool) []EffectCell {
 	out := make([]EffectCell, 0, len(changed))
 	for k, sheet := range changed {
-		if _, ok := spilled[k]; ok {
+		if _, ok := spilled[k]; ok || regrown[k] {
 			continue
 		}
 		out = append(out, EffectCell{Sheet: sheet, Row: k.row, Col: k.col})
@@ -168,6 +174,15 @@ func (e *Editor) remapNotes(move func(cellKey) (cellKey, bool)) {
 		}
 		e.carried = m
 	}
+	if len(e.regrown) > 0 {
+		m := map[cellKey]bool{}
+		for k := range e.regrown {
+			if k2, ok := move(k); ok {
+				m[k2] = true
+			}
+		}
+		e.regrown = m
+	}
 	if len(e.spilled) > 0 {
 		m := map[cellKey]*spillCell{}
 		for k, c := range e.spilled {
@@ -183,7 +198,7 @@ func (e *Editor) remapNotes(move func(cellKey) (cellKey, bool)) {
 func (e *Editor) Effects() []Effects { return []Effects{e.effects()} }
 
 func (e *Editor) effects() Effects {
-	ef := Effects{Written: writtenCells(e.changed, e.spilled), Ops: e.lineOps}
+	ef := Effects{Written: writtenCells(e.changed, e.spilled, e.regrown), Ops: e.lineOps}
 	if e.res != nil {
 		ef.Results = append(ef.Results, e.res.effects...)
 	}
@@ -200,7 +215,7 @@ func (e *Editor) After() []byte  { return e.out }
 func (s *StreamEditor) Effects() []Effects { return []Effects{s.effects()} }
 
 func (s *StreamEditor) effects() Effects {
-	ef := Effects{Written: writtenCells(s.changed, nil)}
+	ef := Effects{Written: writtenCells(s.changed, nil, nil)}
 	for _, op := range s.ops {
 		switch op.kind {
 		case 'i':

@@ -30,6 +30,13 @@ func TestScripts(t *testing.T) {
 			if v := os.Getenv("SHEETS_STREAM"); v != "" {
 				env.Setenv("SHEETS_STREAM", v)
 			}
+			// Under -race each command is a race-detecting process, which
+			// sleeps a second as it exits (atexit_sleep_ms) for reports from
+			// goroutines still running: 190 commands made against.txtar 183 s,
+			// the race stage's longest, against 2.5 s plain. A command waits
+			// for its own goroutines before it exits, and a race found is
+			// still reported when found (exit 66 fails the script).
+			env.Setenv("GORACE", strings.TrimSpace(os.Getenv("GORACE")+" atexit_sleep_ms=0"))
 			return nil
 		},
 		Cmds: map[string]func(ts *testscript.TestScript, neg bool, args []string){

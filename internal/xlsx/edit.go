@@ -60,6 +60,10 @@ type Editor struct {
 	// Both are for the change report (see effects.go).
 	carried map[cellKey]carryKind
 	spilled map[cellKey]*spillCell
+	// regrown are formulas whose references the session grew as Excel
+	// grows them (a table taking in rows written below it), not formulas
+	// the command wrote: their results moved downstream (see effects.go).
+	regrown map[cellKey]bool
 	// merges are sheets' merged cells (by lower-cased name), read when
 	// first needed; whatever merges, unmerges or moves cells drops them.
 	merges map[string][]grid.Range

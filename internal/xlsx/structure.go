@@ -425,6 +425,7 @@ func (e *Editor) relines(target string, cols bool, rewrite func(f, home string) 
 	for home, sec := range e.patches.conds {
 		sec.each(edit(home).moveRule)
 	}
+	e.x14Rule(func(home string) func([]byte) []byte { return edit(home).moveRule })
 	if err := e.moveNotes(target, move); err != nil {
 		return err
 	}
@@ -640,11 +641,15 @@ func (e *Editor) sheetEdit(from, to string, copy bool, rewrite func(string) stri
 	// Conditional formats, which excelize does not hold, follow now.
 	if to == "" {
 		delete(e.patches.conds, from)
+		delete(e.patches.x14Rules, from)
 	}
 	if rewrite != nil {
 		for _, sec := range e.patches.conds {
 			sec.formulas(rewrite)
 		}
+		e.x14Rule(func(string) func([]byte) []byte {
+			return func(el []byte) []byte { return ruleFormulas(el, rewrite) }
+		})
 	}
 	move := func(k cellKey) (cellKey, bool) {
 		if k.sheet != strings.ToLower(from) {
@@ -975,6 +980,9 @@ func (e *Editor) CopySheet(from, to string) ([]string, error) {
 	// Its conditional formats, held aside (see linefix.go), go with it.
 	if sec := e.patches.conds[from]; sec != nil {
 		e.patches.conds[to] = sec.copy()
+	}
+	if fns := e.patches.x14Rules[from]; len(fns) > 0 {
+		e.patches.x14Rules[to] = append([]func([]byte) []byte{}, fns...)
 	}
 	// The copy's styling is kept by fmt as the original's is.
 	for _, rec := range e.Records() {

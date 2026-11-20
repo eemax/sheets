@@ -740,7 +740,14 @@ func TestAgainstCausesRuleFirstCell(t *testing.T) {
 	} {
 		after := edited(t, before, filepath.Join(dir, "a.xlsx"), c.cmd)
 		r, _ := against(t, after, before) // the exit code counts the file's own errors too
-		if len(r.FeaturesLost) != 0 || len(r.FeaturesChanged) != 0 {
+		lost := r.FeaturesLost
+		if c.name == "column before deleted" && len(lost) == 1 && lost[0].Kind == "validation" && lost[0].Where == "Data!A2:A6" {
+			// The fixture's list on Data!A2:A6 (in Excel 2010's extension
+			// list) had all its cells in the column: gone with it, as Excel
+			// drops it, and lost.
+			lost = nil
+		}
+		if len(lost) != 0 || len(r.FeaturesChanged) != 0 {
 			t.Errorf("%s: lost %+v, changed %+v", c.name, r.FeaturesLost, r.FeaturesChanged)
 		}
 	}
@@ -938,6 +945,11 @@ func TestAgainstCausesNameNotRewritten(t *testing.T) {
 // compares the cells there are, not the rectangle, in a few seconds on
 // either side and either way round (f5.7); so does sheets diff.
 func TestAgainstCausesWholeGrid(t *testing.T) {
+	if raceSlow > 1 {
+		// A grid-wide sheet costs 10 s under the race detector for what is a
+		// test of speed; the plain and streaming stages run it.
+		t.Skip("takes 10 s under -race; run without it")
+	}
 	dir := t.TempDir()
 	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
 	small := func(name string, a int, far bool) string {
@@ -1002,11 +1014,19 @@ func runWithin(limit time.Duration, run func()) time.Duration {
 // something, not the 16,384 of each row (f0.5). A total over the rows is
 // not moved by it; a cell reading one by position is.
 func TestAgainstCausesWholeGridSort(t *testing.T) {
+	if raceSlow > 1 {
+		// Under the race detector following a sort through a grid-wide sheet
+		// takes 25 s, whatever the rows (300 or 2,000): the stage's longest.
+		// The plain and streaming stages run it; the race stage checks the
+		// same code through the other sorts here.
+		t.Skip("takes 25 s under -race; run without it")
+	}
+	rows := 2000
 	dir := t.TempDir()
 	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
 	var csv strings.Builder
 	csv.WriteString("Item,Units\n")
-	for i := 1; i <= 2000; i++ {
+	for i := 1; i <= rows; i++ {
 		fmt.Fprintf(&csv, "I%d,%d\n", i, i*37%101)
 	}
 	src := filepath.Join(dir, "S.csv")
@@ -1017,7 +1037,7 @@ func TestAgainstCausesWholeGridSort(t *testing.T) {
 	if out, code := runCLI("", "convert", src, plain); code != 0 {
 		t.Fatal(out)
 	}
-	if out, code := runCLI("", "set", plain, "S!D1", "=SUM(B2:B2001)", "S!D2", "=B2"); code != 0 {
+	if out, code := runCLI("", "set", plain, "S!D1", fmt.Sprintf("=SUM(B2:B%d)", rows+1), "S!D2", "=B2"); code != 0 {
 		t.Fatal(out)
 	}
 	before := filepath.Join(dir, "b.xlsx")
@@ -1025,11 +1045,11 @@ func TestAgainstCausesWholeGridSort(t *testing.T) {
 		b = regexp.MustCompile(`<dimension ref="[^"]*"/>`).ReplaceAll(b, []byte(`<dimension ref="A1:XFD1048576"/>`))
 		return bytes.Replace(b, []byte("</sheetData>"), []byte(`<row r="1048576"><c r="XFD1048576"><v>5</v></c></row></sheetData>`), 1)
 	})
-	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"sort", "S!A1:B2001", "Units:desc"})
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"sort", fmt.Sprintf("S!A1:B%d", rows+1), "Units:desc"})
 	var r causesResult
 	var code int
 	took := runWithin(5*time.Second*raceSlow, func() { r, code = against(t, after, before) })
-	t.Logf("sort of 2,000 rows on a grid-wide sheet: %s", took.Round(time.Millisecond))
+	t.Logf("sort of %d rows on a grid-wide sheet: %s", rows, took.Round(time.Millisecond))
 	if took > 5*time.Second*raceSlow {
 		t.Errorf("took %s", took)
 	}
@@ -1040,7 +1060,7 @@ func TestAgainstCausesWholeGridSort(t *testing.T) {
 	if got := m["S!D2"]; !strings.HasPrefix(got, "rows moved: S!A2:B2 (were S!A") {
 		t.Errorf("S!D2 (=B2): cause %q (moved %+v)", got, r.Moved)
 	}
-	if code != 0 || len(r.Unexplained) != 0 || r.Summary.MovedRows < 1900 {
+	if code != 0 || len(r.Unexplained) != 0 || r.Summary.MovedRows < rows*19/20 {
 		t.Errorf("exit %d, unexplained %+v, %d rows moved", code, r.Unexplained, r.Summary.MovedRows)
 	}
 }
@@ -1409,10 +1429,16 @@ func TestAgainstCausesMoveBelowTotal(t *testing.T) {
 // The calls over what a sort moved cost the sorted rows once each, not once
 // for every run of rows it moved (f2.3): 20,000 rows sorted, 200 lookups over
 // the table, each run of rows a source of its own over the same block.
+//
+// The bar is the time with the lookups over the time of the same sort
+// without them, the best of up to three runs each: a machine busy with other tests
+// (check full runs three suites at once) slows both alike, where a wall-clock
+// bar failed on load alone. On an M4: 2.5 s against 0.44 s (5.7 times); with
+// f2.3's fix taken out, 7 s (16 times).
 func TestAgainstCausesSortRunsFast(t *testing.T) {
-	rows, lookups, limit := 20000, 200, 5*time.Second
+	rows, lookups, bar := 20000, 200, 10.0
 	if raceSlow > 1 {
-		rows, lookups, limit = 3000, 40, 0 // the race detector: what it finds, not how fast
+		rows, lookups, bar = 3000, 40, 0 // the race detector: what it finds, not how fast
 	}
 	dir := t.TempDir()
 	t.Setenv("SHEETS_CACHE_DIR", filepath.Join(dir, ".cache"))
@@ -1421,9 +1447,16 @@ func TestAgainstCausesSortRunsFast(t *testing.T) {
 	for i := 0; i < rows; i++ {
 		fmt.Fprintf(&b, "I%d\t%d\t10\t=B{r}*C{r}\n", i, i*37%101)
 	}
-	before := filepath.Join(dir, "b.xlsx")
-	if out, code := runCLI(b.String(), "write", before, "Data!A1"); code != 0 {
+	plain := filepath.Join(dir, "p.xlsx")
+	if out, code := runCLI(b.String(), "write", plain, "Data!A1"); code != 0 {
 		t.Fatalf("write: %s", out)
+	}
+	before := filepath.Join(dir, "b.xlsx")
+	if err := os.WriteFile(before, mustRead(t, plain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := runCLI("", "set", plain, "Summary!A1", "none"); code != 0 {
+		t.Fatalf("set: %s", out)
 	}
 	args := []string{"set", before}
 	for k := 0; k < lookups; k++ {
@@ -1432,16 +1465,40 @@ func TestAgainstCausesSortRunsFast(t *testing.T) {
 	if out, code := runCLI("", args...); code != 0 {
 		t.Fatalf("set: %s", out)
 	}
-	after := edited(t, before, filepath.Join(dir, "a.xlsx"), []string{"sort", fmt.Sprintf("Data!A1:D%d", rows+1), "Units:desc"})
+	sort := []string{"sort", fmt.Sprintf("Data!A1:D%d", rows+1), "Units:desc"}
+	after := edited(t, before, filepath.Join(dir, "a.xlsx"), sort)
+	plainAfter := edited(t, plain, filepath.Join(dir, "pa.xlsx"), sort)
 	var r causesResult
 	var code int
-	took := runWithin(limit, func() { r, code = against(t, after, before) })
-	t.Logf("%d rows sorted, %d lookups: %s", rows, lookups, took.Round(time.Millisecond))
-	if limit > 0 && took > limit {
-		t.Errorf("check --against after a sort of %d rows with %d lookups over them took %s, over %s", rows, lookups, took.Round(time.Millisecond), limit)
+	if bar == 0 {
+		r, code = against(t, after, before)
+	}
+	// Each timed again, the best kept, only while over the bar: a run slowed
+	// by the machine is rerun, a slow step stays slow.
+	var took, base time.Duration
+	ratio := 0.0
+	for try := 0; bar > 0 && try < 3 && (try == 0 || ratio > bar); try++ {
+		start := time.Now()
+		r, code = against(t, after, before)
+		if d := time.Since(start); try == 0 || d < took {
+			took = d
+		}
+		start = time.Now()
+		against(t, plainAfter, plain)
+		if d := time.Since(start); try == 0 || d < base {
+			base = d
+		}
+		ratio = float64(took) / float64(max(base, time.Millisecond))
 	}
 	if code != 0 || len(r.Unexplained) != 0 || r.Summary.MovedRows < rows*9/10 {
 		t.Errorf("exit %d, %+v, unexplained %+v", code, r.Summary, r.Unexplained)
+	}
+	if bar == 0 {
+		return
+	}
+	t.Logf("%d rows sorted: %d lookups over them %s, none %s: %.1f times", rows, lookups, took.Round(time.Millisecond), base.Round(time.Millisecond), ratio)
+	if ratio > bar {
+		t.Errorf("check --against after a sort of %d rows with %d lookups over them took %s, %.1f times the %s of the same sort without them (bar %.0f times)", rows, lookups, took.Round(time.Millisecond), ratio, base.Round(time.Millisecond), bar)
 	}
 }
 

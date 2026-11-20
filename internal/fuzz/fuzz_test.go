@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
@@ -433,6 +434,11 @@ func TestDefaultOptions(t *testing.T) {
 // fuzzLong).
 func TestFuzz(t *testing.T) {
 	t.Setenv("SHEETS_STREAM", "")
+	// The edits make and drop many short-lived workbooks: collecting less
+	// often (a heap four times the live one, not twice) takes 52 s to 46 s
+	// alone on an M4, and leaves more of the cores to the stages check full
+	// runs beside it. What the run makes and judges is the same.
+	defer debug.SetGCPercent(debug.SetGCPercent(400))
 	pool := loadPool(t)
 	text, err := os.ReadFile("known.txt")
 	if err != nil {

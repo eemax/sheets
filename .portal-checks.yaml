@@ -10,8 +10,9 @@
 # random comparison, the fuzzer's long mode (SHEETS_FUZZ=long, a timed run over fresh pools),
 # scripts/fuzz-mutants.sh (the fuzzer against wave 1's bugs put back), and
 # scripts/excel-check.sh (a manual look in real Excel).
-# No per-area check: the whole plain suite runs in ~72 s with the fuzzer (MacBook M4, 2026-11-20;
-# the fuzzer's package alone ~71 s), so narrowing paths buys little.
+# No per-area check: the whole plain suite runs in ~71 s with the fuzzer (MacBook M4, 2026-11-20;
+# the fuzzer's package is the longest), so narrowing paths buys little. check full: 117 to 132 s
+# from a load of 2 to 5 (internal/fuzz/README.md, Timings).
 checks:
   fast:   # go vet, go test ./... (go's test cache on)
     run: scripts/check.sh fast

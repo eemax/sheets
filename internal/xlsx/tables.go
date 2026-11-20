@@ -132,7 +132,18 @@ func (e *Editor) ExtendTable(sheet string, body grid.Range, n int) {
 				e.warnings = append(e.warnings, "could not extend "+grid.FormatRef(f.sheet, grid.Range{R1: f.row, C1: f.col, R2: f.row, C2: f.col})+": "+err.Error())
 				continue
 			}
+			k := keyOf(f.sheet, f.row, f.col)
+			_, wrote := e.changed[k]
+			wrote = wrote && !e.regrown[k]
 			e.touch(f.sheet, f.row, f.col)
+			if !wrote {
+				// Excel grows it; the command did not write it. Its result
+				// before is the one it stored (see effectOf).
+				if e.regrown == nil {
+					e.regrown = map[cellKey]bool{}
+				}
+				e.regrown[k] = true
+			}
 		}
 	}
 	if err := e.growRecords(sheet, body, n); err != nil {
